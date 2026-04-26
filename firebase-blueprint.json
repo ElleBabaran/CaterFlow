@@ -1,0 +1,41 @@
+{
+  "entities": {
+    "user": {
+      "title": "User",
+      "description": "User profile and authentication info",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    },
+    "cateringEvent": {
+      "title": "Catering Event",
+      "description": "Details about a specific catering inquiry and its generated plan",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "rawInput": { "type": "string" },
+        "eventDetails": { "type": "object" },
+        "plan": { "type": "array" },
+        "status": { "type": "string", "enum": ["draft", "finalized"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "rawInput"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "user",
+      "description": "User profiles"
+    },
+    "events/{eventId}": {
+      "schema": "cateringEvent",
+      "description": "Catering event inquiries and plans"
+    }
+  }
+}
