@@ -139,7 +139,15 @@ export async function orchestrateCatering(input: string, onStep: (step: any) => 
             inventory: { type: Type.OBJECT },
             logistics: { type: Type.OBJECT },
             pricing: { type: Type.OBJECT },
-            monitoring: { type: Type.OBJECT }
+            monitoring: { 
+              type: Type.OBJECT,
+              properties: {
+                overall_status: { type: Type.STRING },
+                execution_readiness: { type: Type.STRING },
+                final_summary: { type: Type.STRING }
+              },
+              required: ["overall_status", "final_summary"]
+            }
           }
         }
       }

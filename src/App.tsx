@@ -78,9 +78,25 @@ export default function App() {
   const [qIndex, setQIndex] = useState(0);
   const [eventData, setEventData] = useState<any>({});
   const [isChatting, setIsChatting] = useState(true);
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+
+  const sanitizeForFirestore = (data: any): any => {
+    if (Array.isArray(data)) {
+      return data.map(item => sanitizeForFirestore(item));
+    } else if (data !== null && typeof data === 'object') {
+      const sanitized: any = {};
+      Object.keys(data).forEach(key => {
+        const value = data[key];
+        if (value !== undefined) {
+          sanitized[key] = sanitizeForFirestore(value);
+        }
+      });
+      return sanitized;
+    }
+    return data;
+  };
 
   // Auth State
-  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -222,7 +238,7 @@ export default function App() {
             if (weather && weather.summary) {
               setMessages(prev => [...prev, { 
                 role: 'bot', 
-                content: `🌦️ Weather Forecast: ${weather.summary}. Risk Level: ${weather.risk_level.toUpperCase()}. With this info, we will decide what food should we suggest!`, 
+                content: `🌦️ Weather Forecast: ${weather.summary}. Risk Level: ${weather.risk_level?.toUpperCase() || 'LOW'}. With this info, we will decide what food should we suggest!`, 
                 timestamp: new Date() 
               }]);
               // Also store it for orchestration
@@ -270,21 +286,22 @@ export default function App() {
 
         if (result.success) {
           if (user) {
-            await addDoc(collection(db, 'events'), {
+            const eventData = sanitizeForFirestore({
               userId: user.uid,
               rawInput: fullPrompt,
               steps: [
-                { agent: "Customer Interaction Agent", data: result.data.customer },
-                { agent: "Dietary & Allergens Agent", data: result.data.dietary },
-                { agent: "Weather Intelligence Agent", data: result.data.weather },
-                { agent: "Menu Planning Agent", data: result.data.menu },
-                { agent: "Inventory & Procurement Agent", data: result.data.inventory },
-                { agent: "Logistics Planning Agent", data: result.data.logistics },
-                { agent: "Pricing & Optimization Agent", data: result.data.pricing },
-                { agent: "Monitoring Agent", data: result.data.monitoring }
+                { agent: "Customer Interaction Agent", data: result.data.customer || {} },
+                { agent: "Dietary & Allergens Agent", data: result.data.dietary || {} },
+                { agent: "Weather Intelligence Agent", data: result.data.weather || {} },
+                { agent: "Menu Planning Agent", data: result.data.menu || {} },
+                { agent: "Inventory & Procurement Agent", data: result.data.inventory || {} },
+                { agent: "Logistics Planning Agent", data: result.data.logistics || {} },
+                { agent: "Pricing & Optimization Agent", data: result.data.pricing || {} },
+                { agent: "Monitoring Agent", data: result.data.monitoring || {} }
               ],
               createdAt: Timestamp.now()
             });
+            await addDoc(collection(db, 'events'), eventData);
             fetchHistory(user.uid);
           }
         }
@@ -647,7 +664,7 @@ export default function App() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <h3 className={`text-[9px] font-bold truncate tracking-widest ${isActive ? 'text-violet-400' : isCompleted ? 'text-violet-100' : 'text-violet-500/30'}`}>
-                        {agent.name.toUpperCase()}
+                        {agent.name?.toUpperCase()}
                       </h3>
                     </div>
                   </div>
@@ -714,7 +731,7 @@ export default function App() {
                   <div className="space-y-2 relative z-10">
                     <span className="text-[8px] uppercase font-bold text-violet-200/60 block">INTEGRATED_SUMMARY</span>
                     <p className="text-sm font-medium text-white font-mono leading-relaxed bg-black/20 p-3 border-l-2 border-emerald-400">
-                      {steps[7]?.data.final_summary}
+                      {steps[7]?.data?.final_summary || 'Synchronizing final data...'}
                     </p>
                   </div>
                 </motion.div>
@@ -769,13 +786,13 @@ export default function App() {
                        <div className="text-[8px] text-violet-500 uppercase font-bold tracking-widest">Readiness</div>
                     </div>
                     <div className="border border-violet-500/10 bg-black/40 rounded-none p-2 shadow-[inset_0_0_10px_rgba(139,92,246,0.05)]">
-                       <div className="text-sm font-bold text-violet-400 font-mono tracking-tighter">{steps.find(s => s.agent === 'Monitoring Agent')?.data.overall_status.toUpperCase()}</div>
+                       <div className="text-sm font-bold text-violet-400 font-mono tracking-tighter">{steps.find(s => s.agent === 'Monitoring Agent')?.data.overall_status?.toUpperCase() || 'UNKNOWN'}</div>
                        <div className="text-[8px] text-violet-500 uppercase font-bold tracking-widest">Status</div>
                     </div>
                   </div>
                   <div className="p-3 bg-violet-950/20 rounded-none border border-violet-500/10">
                     <p className="text-[9px] leading-relaxed text-violet-300/80 font-medium font-mono lowercase italic">
-                      {steps.find(s => s.agent === 'Monitoring Agent')?.data.final_summary}
+                      {steps.find(s => s.agent === 'Monitoring Agent')?.data?.final_summary || 'Protocols finalising...'}
                     </p>
                   </div>
                 </div>
@@ -813,7 +830,7 @@ export default function App() {
               <div>[00:00:00] KERNEL_INIT: PROTOCOL_CATER_AI_v4.5</div>
               <div>[{new Date().toLocaleTimeString([], { hour12: false })}] UPLINK_ESTABLISHED: USER_{user.uid.slice(0, 8)}</div>
               {steps.map((s, i) => (
-                <div key={i}>[{new Date().toLocaleTimeString([], { hour12: false })}] AGENT_{s.agent.toUpperCase().replace(' ', '_')}: SYNC_COMPLETE</div>
+                <div key={i}>[{new Date().toLocaleTimeString([], { hour12: false })}] AGENT_{s.agent?.toUpperCase()?.replace(' ', '_') || 'UNKNOWN'}: SYNC_COMPLETE</div>
               ))}
               {isProcessing && (
                 <div className="text-violet-300 animate-pulse">[{new Date().toLocaleTimeString([], { hour12: false })}] ORCHESTRATOR: EXECUTING_CHAIN_LOGIC...</div>
@@ -1002,7 +1019,7 @@ function AgentReport({ step }: { step: AgentStep }) {
               <span className="text-[10px] font-bold text-violet-400">{data.execution_readiness}% synced</span>
             </div>
             <p className="text-[9px] text-violet-300/80 leading-relaxed italic border-l border-violet-500/20 pl-2">
-              "{data.final_summary}"
+              "{data?.final_summary || 'Synchronizing report...'}"
             </p>
           </div>
         );
