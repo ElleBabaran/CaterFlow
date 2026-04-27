@@ -222,108 +222,122 @@ export default function App() {
 
     setEventData(newEventData);
 
-    if (qIndex < QUESTIONS.length - 1) {
-      const nextIdx = qIndex + 1;
-      setIsProcessing(true);
+      if (qIndex < QUESTIONS.length - 1) {
+        const nextIdx = qIndex + 1;
+        setIsProcessing(true);
 
-      // Check if we just answered location or date, and if we have both, check weather
-      let botMessage = QUESTIONS[nextIdx].text;
-      
-      if (currentQuestion.key === 'event_location' || currentQuestion.key === 'event_date') {
-        const loc = newEventData.event_location;
-        const dat = newEventData.event_date;
-        if (loc && dat) {
-          try {
-            const weather = await predictWeather(loc, dat);
-            if (weather && weather.summary) {
-              setMessages(prev => [...prev, { 
-                role: 'bot', 
-                content: `🌦️ Weather Forecast: ${weather.summary}. Risk Level: ${weather.risk_level?.toUpperCase() || 'LOW'}. With this info, we will decide what food should we suggest!`, 
-                timestamp: new Date() 
-              }]);
-              // Also store it for orchestration
-              setEventData(prev => ({ ...prev, weather_data: weather }));
+        // Check if we just answered location or date, and if we have both, check weather
+        let botMessage = QUESTIONS[nextIdx].text;
+        
+        if (currentQuestion.key === 'event_location' || currentQuestion.key === 'event_date') {
+          const loc = newEventData.event_location;
+          const dat = newEventData.event_date;
+          if (loc && dat) {
+            try {
+              const weather = await predictWeather(loc, dat);
+              if (weather && weather.summary) {
+                setMessages(prev => [...prev, { 
+                  id: `bot-weather-${Date.now()}`,
+                  role: 'bot', 
+                  content: `🌦️ Weather Forecast: ${weather.summary}. Risk Level: ${weather.risk_level?.toUpperCase() || 'LOW'}. With this info, we will decide what food should we suggest!`, 
+                  timestamp: new Date() 
+                }]);
+                // Also store it for orchestration
+                setEventData(prev => ({ ...prev, weather_data: weather }));
+              }
+            } catch (err) {
+              console.error("Chat weather error:", err);
             }
-          } catch (err) {
-            console.error("Chat weather error:", err);
           }
         }
-      }
 
-      setTimeout(() => {
-        setQIndex(nextIdx);
+        setTimeout(() => {
+          setQIndex(nextIdx);
+          setMessages(prev => [...prev, { 
+            id: `bot-q-${Date.now()}`,
+            role: 'bot', 
+            content: botMessage, 
+            timestamp: new Date() 
+          }]);
+          setIsProcessing(false);
+        }, 800);
+      } else {
+        // We are at the end or in a clarification loop
+        const fullPrompt = Object.entries(newEventData)
+          .map(([k, v]) => `${k.replace('_', ' ')}: ${v}`)
+          .join(', ');
+        triggerOrchestration(fullPrompt, newEventData);
+      }
+    }
+
+  const triggerOrchestration = async (fullInput: string, data: any) => {
+    setIsChatting(false);
+    setIsProcessing(true);
+    setSteps([]);
+    setCurrentStepIndex(-1);
+
+    setMessages(prev => [...prev, { 
+      id: `sys-proc-${Date.now()}`,
+      role: 'system', 
+      content: "🤖 Activating all AI agents. Collaboration in progress...", 
+      timestamp: new Date() 
+    }]);
+
+    try {
+      const result = await orchestrateCatering(fullInput, (step) => {
+        setSteps(prev => [...prev, step]);
+        setCurrentStepIndex(prev => prev + 1);
+      });
+
+      if (result.success) {
+        if (user) {
+          const eventDataToStore = sanitizeForFirestore({
+            userId: user.uid,
+            rawInput: fullInput,
+            steps: [
+              { agent: "Customer Interaction Agent", data: result.data.customer || {} },
+              { agent: "Dietary & Allergens Agent", data: result.data.dietary || {} },
+              { agent: "Weather Intelligence Agent", data: result.data.weather || {} },
+              { agent: "Menu Planning Agent", data: result.data.menu || {} },
+              { agent: "Inventory & Procurement Agent", data: result.data.inventory || {} },
+              { agent: "Logistics Planning Agent", data: result.data.logistics || {} },
+              { agent: "Pricing & Optimization Agent", data: result.data.pricing || {} },
+              { agent: "Monitoring Agent", data: result.data.monitoring || {} }
+            ],
+            createdAt: Timestamp.now()
+          });
+          await addDoc(collection(db, 'events'), eventDataToStore);
+          fetchHistory(user.uid);
+        }
+      } else if (result.needs_clarification) {
+        setIsChatting(true);
         setMessages(prev => [...prev, { 
-          id: `bot-q-${Date.now()}`,
+          id: `bot-clarify-${Date.now()}`,
           role: 'bot', 
-          content: botMessage, 
+          content: result.question, 
           timestamp: new Date() 
         }]);
-        setIsProcessing(false);
-      }, 800);
-    } else {
-      // End of questions - Trigger Orchestration
-      setIsChatting(false);
-      setIsProcessing(true);
-      setSteps([]);
-      setCurrentStepIndex(-1);
-
-      const fullPrompt = Object.entries(newEventData)
-        .map(([k, v]) => `${k.replace('_', ' ')}: ${v}`)
-        .join(', ');
-
+      }
+    } catch (error: any) {
+      console.error("Orchestration error:", error);
+      let errorMsg = error?.message || "Critical error in AI Orchestration. Connection severed.";
+      
+      if (errorMsg.includes("429") || errorMsg.toLowerCase().includes("quota")) {
+        errorMsg = "Neural link saturated (Quota Exceeded). If running locally, check your GEMINI_API_KEY limits. Please try again in 60 seconds.";
+      } else if (errorMsg.includes("503") || errorMsg.includes("high demand")) {
+        errorMsg = "AI Models under heavy load. Please retry in a few moments.";
+      } else if (errorMsg.includes("GEMINI_API_KEY")) {
+        errorMsg = "GEMINI_API_KEY missing. Ensure you have a .env file with your key.";
+      }
+      
       setMessages(prev => [...prev, { 
-        id: `sys-proc-${Date.now()}`,
-        role: 'system', 
-        content: "🤖 Activating all AI agents. Collaboration in progress...", 
+        id: `bot-err-${Date.now()}`,
+        role: 'bot', 
+        content: `⚠️ ALERT: ${errorMsg}`, 
         timestamp: new Date() 
       }]);
-
-      try {
-        const result = await orchestrateCatering(fullPrompt, (step) => {
-          setSteps(prev => [...prev, step]);
-          setCurrentStepIndex(prev => prev + 1);
-        });
-
-        if (result.success) {
-          if (user) {
-            const eventData = sanitizeForFirestore({
-              userId: user.uid,
-              rawInput: fullPrompt,
-              steps: [
-                { agent: "Customer Interaction Agent", data: result.data.customer || {} },
-                { agent: "Dietary & Allergens Agent", data: result.data.dietary || {} },
-                { agent: "Weather Intelligence Agent", data: result.data.weather || {} },
-                { agent: "Menu Planning Agent", data: result.data.menu || {} },
-                { agent: "Inventory & Procurement Agent", data: result.data.inventory || {} },
-                { agent: "Logistics Planning Agent", data: result.data.logistics || {} },
-                { agent: "Pricing & Optimization Agent", data: result.data.pricing || {} },
-                { agent: "Monitoring Agent", data: result.data.monitoring || {} }
-              ],
-              createdAt: Timestamp.now()
-            });
-            await addDoc(collection(db, 'events'), eventData);
-            fetchHistory(user.uid);
-          }
-        }
-      } catch (error: any) {
-        console.error("Orchestration error:", error);
-        let errorMsg = error?.message || "Critical error in AI Orchestration. Connection severed.";
-        
-        if (errorMsg.includes("429") || errorMsg.includes("quota")) {
-          errorMsg = "Neural link saturated (Quota Exceeded). Please try again in 60 seconds.";
-        } else if (errorMsg.includes("503") || errorMsg.includes("high demand")) {
-          errorMsg = "AI Models under heavy load. Please retry in a few moments.";
-        }
-        
-        setMessages(prev => [...prev, { 
-          id: `bot-err-${Date.now()}`,
-          role: 'bot', 
-          content: `⚠️ ALERT: ${errorMsg}`, 
-          timestamp: new Date() 
-        }]);
-      } finally {
-        setIsProcessing(false);
-      }
+    } finally {
+      setIsProcessing(false);
     }
   };
 
