@@ -817,7 +817,7 @@ export default function App() {
       <footer className="h-10 bg-black border-t border-violet-500/20 px-6 flex items-center justify-between text-[8px] text-violet-500/40 font-bold uppercase tracking-[0.4em] flex-shrink-0 z-20">
         <div>© 2024 CATER-AI NEURAL OPS v4.5</div>
         <div className="flex items-center space-x-6">
-          <span className="hidden sm:inline">CORE: GEMINI_FLASH_PREVIEW</span>
+          <span className="hidden sm:inline">CORE: GEMINI_3_FLASH_PREVIEW</span>
           <div className="flex items-center space-x-2">
             <div className="w-1 h-1 bg-violet-500 shadow-[0_0_5px_rgba(139,92,246,1)]"></div>
             <span>NODE_SYNC_STABLE</span>
