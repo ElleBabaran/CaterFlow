@@ -268,18 +268,6 @@ export default function App() {
           setCurrentStepIndex(prev => prev + 1);
         });
 
-        if (result && result.clarification_required) {
-          setMessages(prev => [...prev, { 
-            id: `bot-clarification-${Date.now()}`,
-            role: 'bot', 
-            content: result.message, 
-            timestamp: new Date() 
-          }]);
-          setIsProcessing(false);
-          setIsChatting(true);
-          return;
-        }
-        
         if (result.success) {
           if (user) {
             await addDoc(collection(db, 'events'), {
@@ -300,8 +288,22 @@ export default function App() {
             fetchHistory(user.uid);
           }
         }
-      } catch (error) {
-        console.error("Error:", error);
+      } catch (error: any) {
+        console.error("Orchestration error:", error);
+        let errorMsg = error?.message || "Critical error in AI Orchestration. Connection severed.";
+        
+        if (errorMsg.includes("429") || errorMsg.includes("quota")) {
+          errorMsg = "Neural link saturated (Quota Exceeded). Please try again in 60 seconds.";
+        } else if (errorMsg.includes("503") || errorMsg.includes("high demand")) {
+          errorMsg = "AI Models under heavy load. Please retry in a few moments.";
+        }
+        
+        setMessages(prev => [...prev, { 
+          id: `bot-err-${Date.now()}`,
+          role: 'bot', 
+          content: `⚠️ ALERT: ${errorMsg}`, 
+          timestamp: new Date() 
+        }]);
       } finally {
         setIsProcessing(false);
       }
@@ -407,7 +409,14 @@ export default function App() {
             </div>
             
             {authError && (
-              <p className="text-[9px] text-pink-400 bg-pink-400/5 p-2 border border-pink-400/20 font-mono uppercase">{authError}</p>
+              <div className="bg-pink-500/10 p-4 border border-pink-500/30 mb-4 animate-shake">
+                <p className="text-[11px] text-pink-400 font-mono font-bold uppercase">{authError}</p>
+                {authError.includes('operation-not-allowed') && (
+                  <p className="text-[10px] text-pink-400/80 mt-2 lowercase font-mono leading-relaxed">
+                    CRITICAL: Email/Password login is locked. Enable it in Firebase Console (Auth &gt; Sign-in Method) or use Google Access.
+                  </p>
+                )}
+              </div>
             )}
 
             <button
@@ -474,7 +483,7 @@ export default function App() {
             <span className="text-[9px] font-mono uppercase tracking-tighter text-violet-400/80">Kernel {isProcessing ? 'Processing' : 'Idle'}</span>
           </div>
           <div className="flex items-center gap-3 pl-4 border-l border-violet-500/20">
-            <img src={user.photoURL || ''} className="w-6 h-6 rounded-none border border-violet-500/20 grayscale hover:grayscale-0 transition-all" alt="User" />
+            <img src={user.photoURL || null} className="w-6 h-6 rounded-none border border-violet-500/20 grayscale hover:grayscale-0 transition-all" alt="User" />
             <button onClick={logout} className="text-violet-400/40 hover:text-pink-500 transition-colors">
               <LogOut className="w-4 h-4" />
             </button>
@@ -891,7 +900,7 @@ function AgentReport({ step }: { step: AgentStep }) {
                 <div key={i} className="bg-violet-950/20 border border-violet-500/10 overflow-hidden flex flex-col group transition-all hover:border-violet-500/40 shadow-lg">
                   <div className="h-48 w-full bg-violet-950/40 relative">
                     <img 
-                      src={item.image_url} 
+                      src={item.image_url || null} 
                       alt={item.dish} 
                       className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity duration-500"
                       referrerPolicy="no-referrer"
