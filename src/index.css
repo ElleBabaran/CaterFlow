@@ -16,57 +16,58 @@
 }
 
 :root {
-  --bg-color: #030303;
+  --bg-color: #0f172a;
   --text-color: #f1f5f9;
-  --card-bg: rgba(0, 0, 0, 0.6);
-  --header-bg: rgba(13, 10, 20, 0.9);
+  --card-bg: rgba(30, 41, 59, 0.6);
+  --header-bg: rgba(15, 23, 42, 0.8);
   --border-color: rgba(139, 92, 246, 0.2);
   --grid-color: rgba(139, 92, 246, 0.05);
   --accent-color: #8b5cf6;
-  --card-shadow: 0 0 20px rgba(139, 92, 246, 0.05);
+  --card-shadow: 0 20px 50px -10px rgba(0, 0, 0, 0.5);
 }
 
 [data-theme='light'] {
-  --bg-color: #f1f5f9;
-  --text-color: #0f172a;
-  --card-bg: #ffffff;
-  --header-bg: #f8fafc;
-  --border-color: #e2e8f0;
+  --bg-color: #f8fafc;
+  --text-color: #1e293b;
+  --card-bg: rgba(255, 255, 255, 0.8);
+  --header-bg: rgba(241, 245, 249, 0.9);
+  --border-color: rgba(139, 92, 246, 0.1);
   --grid-color: rgba(99, 102, 241, 0.05);
-  --accent-color: #4f46e5;
-  --card-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+  --accent-color: #6366f1;
+  --card-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.05);
 }
 
 @layer base {
   body {
     background-color: var(--bg-color);
     color: var(--text-color);
+    background-image: 
+      radial-gradient(circle at 50% 50%, var(--grid-color) 1px, transparent 1px);
+    background-size: 30px 30px;
     @apply font-sans selection:bg-violet-500 selection:text-white transition-colors duration-300;
   }
 }
 
 .high-density-label {
-  @apply text-[10px] font-bold text-violet-500 uppercase tracking-[0.2em];
+  @apply text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em];
 }
 
 .high-density-card {
   background-color: var(--card-bg);
   border: 1px solid var(--border-color);
   box-shadow: var(--card-shadow);
-  @apply backdrop-blur-md rounded-none overflow-hidden transition-all duration-300;
-  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%);
+  @apply backdrop-blur-xl rounded-2xl overflow-hidden transition-all duration-300;
 }
 
 .high-density-header {
   border-bottom: 1px solid var(--border-color);
   background-color: var(--header-bg);
-  @apply p-3 flex justify-between items-center transition-all duration-300;
+  @apply p-4 flex justify-between items-center transition-all duration-300;
 }
 
 .cyber-grid {
   background-image: 
-    linear-gradient(var(--grid-color) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid-color) 1px, transparent 1px);
+    radial-gradient(circle at 50% 50%, var(--grid-color) 1px, transparent 1px);
   background-size: 30px 30px;
 }
 

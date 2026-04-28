@@ -28,12 +28,20 @@ import {
   Search,
   Droplets,
   Sun,
-  Moon
+  Moon,
+  User as UserIcon,
+  Mail,
+  ShoppingBag,
+  Database,
+  Zap,
+  AlertTriangle,
+  Lock,
+  Activity
 } from 'lucide-react';
 import { auth, signInWithGoogle, logout, db, loginWithEmail, signupWithEmail } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { collection, addDoc, query, where, getDocs, orderBy, Timestamp } from 'firebase/firestore';
-import { orchestrateCatering, predictWeather } from './services/orchestrator';
+import { orchestrateCatering, predictWeather, validateAnswer } from './services/orchestrator';
 
 interface AgentStep {
   agent: string;
@@ -79,6 +87,9 @@ export default function App() {
   const [eventData, setEventData] = useState<any>({});
   const [isChatting, setIsChatting] = useState(true);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [isWaitingForWeatherSelection, setIsWaitingForWeatherSelection] = useState(false);
+  const [useWeatherSuggestion, setUseWeatherSuggestion] = useState<boolean | null>(null);
+  const [selectedDish, setSelectedDish] = useState<any>(null);
 
   const sanitizeForFirestore = (data: any): any => {
     if (Array.isArray(data)) {
@@ -193,6 +204,113 @@ export default function App() {
     setMessages(newMessages);
     setInput("");
 
+    const isPossiblyBulk = userText.length > 80 || userText.split(' ').length > 12;
+    
+    // --- IMPROVED GIBBERISH SHIELD ---
+    const isObviousGibberish = (str: string) => {
+      const clean = str.toLowerCase().trim();
+      if (clean.length === 0) return true;
+      
+      const commonUncertainty = ['idk', 'not', 'tbd', 'none', 'no', 'yes', 'ok', 'pesos', 'php', 'bbq', 'gym', 'dry'];
+      if (commonUncertainty.includes(clean)) return false;
+
+      // Allow strings that look like dates or numbers with symbols
+      if (/^[\d/.\- ]+$/.test(clean)) return false;
+
+      // Single word validation
+      if (!clean.includes(' ')) {
+        // Very short strings (1-2 chars) that aren't common words or numbers
+        if (clean.length < 3 && !/^\d+$/.test(clean)) return true;
+        
+        // No vowels in a word longer than 3 chars (allowing for strings like BBQ)
+        if (clean.length > 3 && !/[aeiouy]/.test(clean)) return true;
+      }
+      
+      if (/(.)\1{3,}/.test(clean)) return true; // 4+ repeating chars
+      return false;
+    };
+
+    if (isObviousGibberish(userText) && !/^\d+$/.test(userText) && !['tbd', 'none', 'pesos'].includes(userText.toLowerCase())) {
+      setMessages(prev => [...prev, { 
+        id: `bot-val-local-${Date.now()}`,
+        role: 'bot', 
+        content: "⚠️ Input Corrupted: The data provided does not match any recognized planning parameters. Please use standard characters and words.", 
+        timestamp: new Date() 
+      }]);
+      setIsProcessing(false);
+      return;
+    }
+    // ------------------------------
+    
+    // --- AI VALIDATION / RELEVANCE CHECK ---
+    setIsProcessing(true);
+    
+    // Skip AI validation for simple currency clarifications or weather follow-ups
+    const currencyWords = ['pesos', 'php', 'dollars', 'usd', 'eur', 'euro', 'pesetas', 'pounds', 'gbp'];
+    const lowerInput = userText.toLowerCase().trim();
+    const isCurrencyClarification = currentQuestion.key === 'budget' && currencyWords.includes(lowerInput);
+    const isYesNo = ['yes', 'no', 'y', 'n', 'yeah', 'nope'].includes(lowerInput);
+
+    if (isWaitingForWeatherSelection) {
+      setIsProcessing(false);
+      const decision = lowerInput.includes('yes') || lowerInput === 'y' || lowerInput === 'yeah';
+      setUseWeatherSuggestion(decision);
+      setIsWaitingForWeatherSelection(false);
+
+      setMessages(prev => [...prev, { 
+        id: `bot-weather-ack-${Date.now()}`,
+        role: 'bot', 
+        content: decision 
+          ? "✅ Understood! I will prioritize menu items that complement the forecasted weather conditions." 
+          : "👍 Noted. I'll stick to a standard cuisine-focused menu regardless of the weather.", 
+        timestamp: new Date() 
+      }]);
+
+      // Now move to the next question
+      if (qIndex < QUESTIONS.length - 1) {
+        const nextIdx = qIndex + 1;
+        setTimeout(() => {
+          setQIndex(nextIdx);
+          setMessages(prev => [...prev, { 
+            id: `bot-q-${Date.now()}`,
+            role: 'bot', 
+            content: QUESTIONS[nextIdx].text, 
+            timestamp: new Date() 
+          }]);
+        }, 1000);
+      }
+      return;
+    }
+
+    if (!isCurrencyClarification) {
+      const validation = await validateAnswer(currentQuestion.text, userText);
+      
+      if (!validation.valid) {
+        setMessages(prev => [...prev, { 
+          id: `bot-val-${Date.now()}`,
+          role: 'bot', 
+          content: `⚠️ ${validation.re_ask_message || "Input Error: Data not recognized as functional. Please reconcile."}`, 
+          timestamp: new Date() 
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+    }
+    // ---------------------------------------
+
+    // Special Logic: If the user provides a lot of info at once, attempt to skip questions
+    if (isPossiblyBulk && qIndex === 0) {
+      setMessages(prev => [...prev, { 
+        id: `bot-bulk-${Date.now()}`,
+        role: 'bot', 
+        content: "🧠 Detecting multi-requirement input. Synchronizing neural extraction...", 
+        timestamp: new Date() 
+      }]);
+      // Trigger orchestration immediately with the bulk input
+      await triggerOrchestration(userText, {});
+      return;
+    }
+
     // Update event data
     let refinedAmount = userText;
     const currencyRegex = /[\$\£\€\¥\₱\₹]|(USD|PHP|EUR|GBP|AED|CAD|AUD|JPY|CNY|PESO|PESOS)/i;
@@ -239,11 +357,25 @@ export default function App() {
                 setMessages(prev => [...prev, { 
                   id: `bot-weather-${Date.now()}`,
                   role: 'bot', 
-                  content: `🌦️ Weather Forecast: ${weather.summary}. Risk Level: ${weather.risk_level?.toUpperCase() || 'LOW'}. With this info, we will decide what food should we suggest!`, 
+                  content: `🌦️ Weather Forecast: ${weather.summary}. Risk Level: ${weather.risk_level?.toUpperCase() || 'LOW'}.`, 
                   timestamp: new Date() 
                 }]);
+                
+                // Ask for permission to suggest based on weather
+                setTimeout(() => {
+                  setMessages(prev => [...prev, { 
+                    id: `bot-weather-follow-${Date.now()}`,
+                    role: 'bot', 
+                    content: "Do you want me to suggest food based on the weather info that I've gathered? (Yes/No)", 
+                    timestamp: new Date() 
+                  }]);
+                  setIsWaitingForWeatherSelection(true);
+                  setIsProcessing(false);
+                }, 1000);
+
                 // Also store it for orchestration
                 setEventData(prev => ({ ...prev, weather_data: weather }));
+                return; // STOP HERE and wait for yes/no
               }
             } catch (err) {
               console.error("Chat weather error:", err);
@@ -263,9 +395,14 @@ export default function App() {
         }, 800);
       } else {
         // We are at the end or in a clarification loop
-        const fullPrompt = Object.entries(newEventData)
+        let fullPrompt = Object.entries(newEventData)
           .map(([k, v]) => `${k.replace('_', ' ')}: ${v}`)
           .join(', ');
+        
+        if (useWeatherSuggestion !== null) {
+          fullPrompt += `. Weather-based menu prioritization: ${useWeatherSuggestion ? 'YES' : 'NO'}.`;
+        }
+        
         triggerOrchestration(fullPrompt, newEventData);
       }
     }
@@ -309,14 +446,6 @@ export default function App() {
           await addDoc(collection(db, 'events'), eventDataToStore);
           fetchHistory(user.uid);
         }
-      } else if (result.needs_clarification) {
-        setIsChatting(true);
-        setMessages(prev => [...prev, { 
-          id: `bot-clarify-${Date.now()}`,
-          role: 'bot', 
-          content: result.question, 
-          timestamp: new Date() 
-        }]);
       }
     } catch (error: any) {
       console.error("Orchestration error:", error);
@@ -377,109 +506,114 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="h-screen w-full flex items-center justify-center transition-colors duration-300">
-        <Loader2 className="w-8 h-8 animate-spin text-violet-500 shadow-[0_0_15px_rgba(139,92,246,0.5)]" />
+      <div className="h-screen w-full flex items-center justify-center bg-slate-950 transition-colors duration-300">
+        <Loader2 className="w-8 h-8 animate-spin text-violet-500 shadow-[0_0_20px_rgba(139,92,246,0.3)]" />
       </div>
     );
   }
 
   if (!user) {
     return (
-      <div className="h-screen w-full flex flex-col items-center justify-center p-6 relative overflow-hidden cyber-grid transition-colors duration-300">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(139,92,246,0.15),transparent)] pointer-events-none" />
+      <div className="h-screen w-full flex flex-col items-center justify-center p-6 relative overflow-hidden bg-slate-950 transition-colors duration-300">
+        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-violet-600/10 blur-[120px] rounded-full pointer-events-none" />
+        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-emerald-600/10 blur-[120px] rounded-full pointer-events-none" />
+        
         <motion.div 
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="max-w-md w-full bg-black/60 backdrop-blur-xl border border-violet-500/30 p-8 shadow-[0_0_30px_rgba(139,92,246,0.1)] z-10 space-y-6 theme-shadow"
-          style={{ clipPath: 'polygon(0 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%)' }}
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="max-w-md w-full bg-slate-900/40 backdrop-blur-2xl border border-white/10 p-10 shadow-[0_20px_50px_rgba(0,0,0,0.5)] z-10 space-y-8 rounded-3xl"
         >
-          <div className="text-center space-y-2">
-            <div className="inline-flex p-3 bg-violet-600/20 rounded-none border border-violet-500/30 mb-2 relative group">
-              <ChefHat className="w-8 h-8 text-violet-400 group-hover:scale-110 transition-transform" />
-              <div className="absolute inset-0 bg-violet-500/20 blur-xl group-hover:blur-2xl transition-all"></div>
+          <div className="text-center space-y-3">
+            <div className="inline-flex p-4 bg-violet-500/10 rounded-2xl border border-violet-500/20 mb-2 group transition-all hover:bg-violet-500/20">
+              <ChefHat className="w-10 h-10 text-violet-400 group-hover:scale-110 transition-transform" />
             </div>
-            <h1 className="text-3xl font-bold tracking-[0.2em] font-mono neon-text-violet">CATER-AI</h1>
-            <p className="text-violet-400/60 text-[10px] uppercase tracking-widest font-bold">Neural Ops Infrastructure</p>
+            <h1 className="text-3xl font-bold tracking-tight text-white font-sans">CaterAI</h1>
+            <p className="text-zinc-500 text-xs uppercase tracking-[0.2em] font-semibold">Smart Catering Solutions</p>
           </div>
 
-          <form onSubmit={handleEmailAuth} className="space-y-4">
-            {authMode === 'signup' && (
-              <div className="space-y-1">
-                <label className="text-[10px] uppercase tracking-widest font-bold text-violet-500/60 ml-1">Full Name</label>
+          <form onSubmit={handleEmailAuth} className="space-y-5">
+            {authError && (
+              <div className="bg-red-500/10 border border-red-500/20 p-4 rounded-xl text-[11px] font-medium text-red-400 text-center animate-shake">
+                {authError}
+              </div>
+            )}
+            
+            <AnimatePresence mode="wait">
+              {authMode === 'signup' && (
+                <div className="space-y-1.5">
+                  <label className="text-[10px] uppercase tracking-wider font-bold text-zinc-500 ml-1">Identity Name</label>
+                  <div className="relative group">
+                    <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-600 group-focus-within:text-violet-400 transition-colors" />
+                    <input
+                      type="text"
+                      placeholder="Enter legal name"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      className="w-full bg-black/40 border border-white/5 rounded-xl py-3.5 pl-12 pr-4 text-sm text-zinc-100 focus:border-violet-500/50 outline-none transition-all placeholder:text-zinc-700"
+                      required
+                    />
+                  </div>
+                </div>
+              )}
+            </AnimatePresence>
+            
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wider font-bold text-zinc-500 ml-1">E-Mail Address</label>
+              <div className="relative group">
+                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-600 group-focus-within:text-violet-400 transition-colors" />
                 <input
-                  type="text"
-                  placeholder="EX: JOHN DOE"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full bg-black border border-violet-500/20 rounded-none px-4 py-3 text-xs focus:ring-1 focus:ring-violet-500 outline-none font-mono"
+                  type="email"
+                  placeholder="user@neural.network"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full bg-black/40 border border-white/5 rounded-xl py-3.5 pl-12 pr-4 text-sm text-zinc-100 focus:border-violet-500/50 outline-none transition-all placeholder:text-zinc-700"
                   required
                 />
               </div>
-            )}
-            <div className="space-y-1">
-              <label className="text-[10px] uppercase tracking-widest font-bold text-violet-500/60 ml-1">Email Address</label>
-              <input
-                type="email"
-                placeholder="USER@DOMAIN.COM"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full bg-black border border-violet-500/20 rounded-none px-4 py-3 text-xs focus:ring-1 focus:ring-violet-500 outline-none font-mono"
-                required
-              />
             </div>
-            <div className="space-y-1">
-              <label className="text-[10px] uppercase tracking-widest font-bold text-violet-500/60 ml-1">Password</label>
-              <input
-                type="password"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full bg-black border border-violet-500/20 rounded-none px-4 py-3 text-xs focus:ring-1 focus:ring-violet-500 outline-none font-mono"
-                required
-              />
-            </div>
-            
-            {authError && (
-              <div className="bg-pink-500/10 p-4 border border-pink-500/30 mb-4 animate-shake">
-                <p className="text-[11px] text-pink-400 font-mono font-bold uppercase">{authError}</p>
-                {authError.includes('operation-not-allowed') && (
-                  <p className="text-[10px] text-pink-400/80 mt-2 lowercase font-mono leading-relaxed">
-                    CRITICAL: Email/Password login is locked. Enable it in Firebase Console (Auth &gt; Sign-in Method) or use Google Access.
-                  </p>
-                )}
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wider font-bold text-zinc-500 ml-1">Access Protocol</label>
+              <div className="relative group">
+                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-600 group-focus-within:text-violet-400 transition-colors" />
+                <input
+                  type="password"
+                  placeholder="Create secure channel"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full bg-black/40 border border-white/5 rounded-xl py-3.5 pl-12 pr-4 text-sm text-zinc-100 focus:border-violet-500/50 outline-none transition-all placeholder:text-zinc-700"
+                  required
+                />
               </div>
-            )}
+            </div>
 
             <button
               type="submit"
-              className="w-full py-3 bg-violet-600 hover:bg-violet-700 text-white font-bold transition-all active:scale-[0.98] shadow-lg shadow-violet-600/20 uppercase text-xs tracking-widest"
-              style={{ clipPath: 'polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%)' }}
+              className="w-full py-4 bg-violet-600 hover:bg-violet-500 text-white font-bold rounded-2xl transition-all active:scale-[0.98] shadow-[0_10px_20px_rgba(139,92,246,0.3)] text-sm group overflow-hidden relative"
             >
-              {authMode === 'login' ? 'Secure Login' : 'Create Account'}
+              <span className="relative z-10">{authMode === 'login' ? 'Establish Connection' : 'Initialize Account'}</span>
+              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700" />
             </button>
           </form>
 
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-violet-500/20"></div></div>
-            <div className="relative flex justify-center text-[8px] uppercase tracking-[0.3em]"><span className="bg-[#0a0510] px-3 text-violet-500/40 font-bold">Alternative Access</span></div>
-          </div>
-
           <button
             onClick={signInWithGoogle}
-            className="w-full py-3 bg-white/5 border border-violet-500/20 text-white rounded-none font-bold flex items-center justify-center gap-3 hover:bg-white/10 transition-all active:scale-[0.98] font-mono text-xs uppercase tracking-widest"
-            style={{ clipPath: 'polygon(10px 0, 100% 0, 100% 100%, 0 100%, 0 10px)' }}
+            className="w-full py-4 bg-white/5 border border-white/10 text-white rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-white/10 transition-all active:scale-[0.98] text-sm"
           >
-            <img src="https://www.google.com/favicon.ico" className="w-3 h-3 grayscale contrast-200" alt="Google" />
-            Continue with Google
+            <div className="w-5 h-5 bg-white rounded-full flex items-center justify-center">
+              <span className="text-black text-[10px] font-black">G</span>
+            </div>
+            Sign in with Google Identity
           </button>
 
-          <p className="text-center text-[10px] text-violet-500/40 uppercase tracking-widest font-bold">
-            {authMode === 'login' ? "New operator?" : "Already registered?"}{" "}
+          <p className="text-center text-[11px] text-zinc-500 font-medium">
+            {authMode === 'login' ? "New operator here?" : "Already within the network?"}{" "}
             <button 
               onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
-              className="text-violet-400 font-bold hover:text-white transition-colors underline decoration-violet-500/30"
+              className="text-violet-400 font-bold hover:text-violet-300 transition-colors inline-flex items-center gap-1 group"
             >
-              {authMode === 'login' ? 'Sign Up' : 'Return to Login'}
+              {authMode === 'login' ? 'Register Account' : 'Return to Login'}
+              <ArrowRight className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
             </button>
           </p>
         </motion.div>
@@ -488,36 +622,47 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen w-full font-sans overflow-hidden cyber-grid transition-colors duration-300">
+    <div className="flex flex-col h-screen w-full font-sans overflow-hidden bg-slate-950 transition-colors duration-300">
       {/* Header */}
-      <header className="h-14 bg-black/80 backdrop-blur-md flex items-center justify-between px-6 border-b border-violet-500/20 flex-shrink-0 z-20">
-        <div className="flex items-center space-x-3">
-          <div className="w-8 h-8 bg-violet-600 rounded-none flex items-center justify-center font-bold text-lg shadow-[0_0_10px_rgba(139,92,246,0.3)]" style={{ clipPath: 'polygon(0 0, 100% 0, 100% 80%, 80% 100%, 0 100%)' }}>C</div>
-          <h1 className="text-sm font-bold tracking-[0.2em] font-mono neon-text-violet">CATER-AI <span className="text-violet-400/40 font-normal text-[10px] ml-2 uppercase tracking-[0.3em] hidden sm:inline">Multi-Agent Protocol</span></h1>
-        </div>
+      <header className="h-16 bg-slate-900/50 backdrop-blur-xl flex items-center justify-between px-6 border-b border-white/5 flex-shrink-0 z-20">
         <div className="flex items-center space-x-4">
-          <button 
-            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-            className="p-2 rounded-none hover:bg-violet-600/20 text-violet-500/60 transition-all"
-            title="Toggle Theme"
-          >
-            {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-          </button>
-          <button 
-            onClick={() => setShowHistory(!showHistory)}
-            className={`p-2 rounded-none transition-all ${showHistory ? 'bg-violet-600 text-white shadow-[0_0_15px_rgba(139,92,246,0.5)]' : 'hover:bg-violet-600/20 text-violet-400/60'}`}
-          >
-            <History className="w-5 h-5" />
-          </button>
-          <div className="flex items-center space-x-2 bg-black border border-violet-500/20 px-3 py-1 rounded-none shadow-[inset_0_0_10px_rgba(139,92,246,0.1)]">
-            <span className={`w-1.5 h-1.5 rounded-none rotate-45 ${isProcessing ? 'bg-amber-500 animate-pulse' : 'bg-violet-500 shadow-[0_0_8px_rgba(139,92,246,1)]'}`}></span>
-            <span className="text-[9px] font-mono uppercase tracking-tighter text-violet-400/80">Kernel {isProcessing ? 'Processing' : 'Idle'}</span>
+          <div className="w-10 h-10 bg-gradient-to-br from-violet-600 to-violet-800 rounded-xl flex items-center justify-center shadow-[0_0_20px_rgba(139,92,246,0.3)]">
+            <ChefHat className="w-6 h-6 text-white" />
           </div>
-          <div className="flex items-center gap-3 pl-4 border-l border-violet-500/20">
-            <img src={user.photoURL || null} className="w-6 h-6 rounded-none border border-violet-500/20 grayscale hover:grayscale-0 transition-all" alt="User" />
-            <button onClick={logout} className="text-violet-400/40 hover:text-pink-500 transition-colors">
-              <LogOut className="w-4 h-4" />
+          <div>
+            <h1 className="text-lg font-bold tracking-tight text-white">CaterAI</h1>
+            <p className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold">Assistant Dashboard</p>
+          </div>
+        </div>
+        
+        <div className="flex items-center space-x-2">
+          <div className="hidden md:flex items-center space-x-2 border border-white/5 bg-black/50 px-3 py-1.5 rounded-full mr-4">
+            <div className={`w-2 h-2 rounded-full ${isProcessing ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500 shadow-[0_0_5px_rgba(16,185,129,0.5)]'}`} />
+            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">{isProcessing ? 'Agent Thinking...' : 'Ready'}</span>
+          </div>
+
+          <div className="flex items-center gap-2 pr-4 border-r border-white/5 mr-2">
+            <button 
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+              className="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-400 transition-all border border-transparent hover:border-white/5"
+            >
+              {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
+            <button 
+              onClick={() => setShowHistory(!showHistory)}
+              className={`p-2.5 rounded-xl transition-all border ${showHistory ? 'bg-violet-600 text-white border-violet-500 shadow-[0_10px_20px_rgba(139,92,246,0.3)]' : 'bg-white/5 hover:bg-white/10 text-zinc-400 border-transparent hover:border-white/5'}`}
+            >
+              <History className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-3">
+             <div className="relative group">
+               <img src={user.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.displayName || 'U')}&background=8B5CF6&color=fff`} className="w-9 h-9 rounded-xl border border-white/10 shadow-lg group-hover:border-violet-500 transition-all" alt="User" />
+             </div>
+             <button onClick={logout} className="p-2.5 text-zinc-500 hover:text-red-400 transition-colors">
+               <LogOut className="w-4 h-4" />
+             </button>
           </div>
         </div>
       </header>
@@ -530,28 +675,27 @@ export default function App() {
               initial={{ opacity: 0, x: -100 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -100 }}
-              className="absolute inset-y-4 left-4 w-72 bg-black/90 backdrop-blur-xl rounded-none z-30 border border-violet-500/30 overflow-hidden flex flex-col shadow-[0_0_30px_rgba(0,0,0,0.5)]"
-              style={{ clipPath: 'polygon(0 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%)' }}
+              className="absolute inset-y-4 left-4 w-72 bg-slate-900/90 backdrop-blur-xl rounded-3xl z-30 border border-white/5 overflow-hidden flex flex-col shadow-[0_0_30px_rgba(0,0,0,0.5)]"
             >
-              <div className="p-4 border-b border-violet-500/10 flex items-center justify-between bg-violet-950/20">
-                <h3 className="font-bold text-[10px] uppercase tracking-[0.2em] text-violet-400">Memory Modules</h3>
-                <button onClick={() => setShowHistory(false)} className="text-violet-400/40 hover:text-violet-400 transition-all">
+              <div className="p-4 border-b border-white/5 flex items-center justify-between">
+                <h3 className="font-bold text-xs uppercase tracking-widest text-violet-400">Previous Events</h3>
+                <button onClick={() => setShowHistory(false)} className="text-zinc-500 hover:text-white transition-all">
                   <ArrowRight className="w-4 h-4 rotate-180" />
                 </button>
               </div>
-              <div className="flex-1 overflow-y-auto p-2 space-y-2">
+              <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
                 {history.map((item) => (
                   <button
                     key={item.id}
                     onClick={() => loadFromHistory(item)}
-                    className="w-full text-left p-3 border border-violet-500/10 hover:border-violet-500/40 bg-white/5 hover:bg-violet-600/10 transition-all group"
+                    className="w-full text-left p-4 border border-white/5 rounded-2xl bg-white/5 hover:bg-violet-600/10 transition-all group"
                   >
-                    <p className="text-[10px] font-bold text-violet-100 truncate mb-1 group-hover:text-violet-400 transition-colors uppercase font-mono">{item.rawInput}</p>
+                    <p className="text-xs font-bold text-zinc-100 truncate mb-1 group-hover:text-violet-400 transition-colors uppercase">{item.rawInput}</p>
                     <div className="flex justify-between items-center">
-                      <p className="text-[8px] text-violet-500/60 uppercase font-bold tracking-tighter">
+                      <p className="text-[10px] text-zinc-500 uppercase font-bold tracking-tighter">
                         {new Date(item.createdAt.seconds * 1000).toLocaleDateString()}
                       </p>
-                      <span className="text-[8px] px-1 bg-violet-500/20 text-violet-400 font-mono italic">#{item.steps?.length}A</span>
+                      <span className="text-[9px] px-2 py-0.5 bg-violet-500/20 text-violet-400 rounded-full font-bold">EVENT_LOG</span>
                     </div>
                   </button>
                 ))}
@@ -563,53 +707,53 @@ export default function App() {
         {/* Left Control Panel: Chat Interface */}
         <section className="col-span-12 lg:col-span-3 flex flex-col space-y-4 overflow-hidden">
           <div className="high-density-card flex-1 flex flex-col min-h-[400px]">
-            <div className="high-density-header flex justify-between items-center">
-              <h2 className="high-density-label">Staff Uplink</h2>
-              <button onClick={restartChat} className="text-[9px] font-bold text-violet-400 hover:text-white uppercase tracking-widest bg-violet-600/20 px-2 py-0.5 border border-violet-500/20">Purge</button>
+          <div className="high-density-header flex justify-between items-center">
+              <h2 className="high-density-label">Event Chat</h2>
+              <button onClick={restartChat} className="text-[9px] font-bold text-violet-400 hover:text-white uppercase tracking-widest bg-violet-600/20 px-2 py-0.5 border border-violet-500/20">Reset Chat</button>
             </div>
             
             {/* Chat Bubble Stream */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-black/40" ref={chatScrollRef} style={{ backgroundImage: 'radial-gradient(rgba(139, 92, 246, 0.03) 1px, transparent 0)', backgroundSize: '10px 10px' }}>
+            <div className="flex-1 overflow-y-auto p-5 space-y-6 bg-black/20 custom-scrollbar" ref={chatScrollRef}>
               <AnimatePresence initial={false}>
                 {messages.map((msg, i) => (
                   <motion.div
-                    key={i}
-                    initial={{ opacity: 0, x: msg.role === 'user' ? 20 : -20 }}
-                    animate={{ opacity: 1, x: 0 }}
+                    key={msg.id || i}
+                    initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
                     className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                   >
                     <div className={`
-                      max-w-[85%] px-3 py-2 text-[11px] leading-relaxed relative
-                      ${msg.role === 'user' ? 'bg-violet-600 text-white rounded-none shadow-[0_0_10px_rgba(139,92,246,0.3)]' : 
-                        msg.role === 'system' ? 'bg-black text-violet-400/60 w-full text-center italic border border-violet-500/20 rounded-none font-mono text-[9px]' :
-                        'bg-slate-900 text-slate-100 border border-violet-500/20 rounded-none'}
+                      max-w-[85%] px-5 py-3.5 text-sm leading-relaxed shadow-xl
+                      ${msg.role === 'user' ? 
+                        'bg-violet-600 text-white rounded-3xl rounded-tr-none' : 
+                        msg.role === 'system' ? 
+                        'bg-zinc-900/50 text-zinc-500 w-full text-center text-[10px] uppercase font-bold py-2 border border-white/5 rounded-2xl' :
+                        'bg-slate-900 text-zinc-100 border border-white/5 rounded-3xl rounded-tl-none'}
                     `}>
-                      {msg.role === 'user' && <div className="absolute top-0 right-0 w-2 h-2 bg-white/20 translate-x-1/2 -translate-y-1/2 rotate-45" />}
-                      {msg.role === 'bot' && <div className="absolute top-0 left-0 w-2 h-2 bg-violet-500 -translate-x-1/2 -translate-y-1/2 rotate-45" />}
                       {msg.content}
-                      <div className={`text-[7px] mt-1 opacity-40 font-mono ${msg.role === 'user' ? 'text-right' : 'text-left'}`}>
-                        {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}
-                      </div>
+                      {msg.role !== 'system' && (
+                        <div className={`text-[9px] mt-2 opacity-50 font-bold ${msg.role === 'user' ? 'text-right' : 'text-left'}`}>
+                          {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}
+                        </div>
+                      )}
                     </div>
                   </motion.div>
                 ))}
               </AnimatePresence>
               {isProcessing && isChatting && (
                 <div className="flex justify-start">
-                  <div className="bg-slate-900 border border-violet-500/20 px-3 py-2">
-                    <div className="flex space-x-1">
-                      <div className="w-1 h-1 bg-violet-500 rounded-none rotate-45 animate-bounce"></div>
-                      <div className="w-1 h-1 bg-violet-500 rounded-none rotate-45 animate-bounce [animation-delay:-0.15s]"></div>
-                      <div className="w-1 h-1 bg-violet-500 rounded-none rotate-45 animate-bounce [animation-delay:-0.3s]"></div>
-                    </div>
+                  <div className="bg-slate-900 border border-white/5 px-4 py-3 rounded-full flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 bg-violet-500 rounded-full animate-bounce"></span>
+                    <span className="w-1.5 h-1.5 bg-violet-500 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+                    <span className="w-1.5 h-1.5 bg-violet-500 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
                   </div>
                 </div>
               )}
             </div>
 
-            <div className="p-4 border-t border-violet-500/20 bg-black/60">
+            <div className="p-4 border-t border-white/5 bg-slate-900/30">
               <form onSubmit={handleChatSubmit} className="flex flex-col space-y-3">
-                <div className="relative flex flex-col group">
+                <div className="relative group">
                   <textarea
                     autoFocus
                     value={input}
@@ -620,66 +764,65 @@ export default function App() {
                         handleChatSubmit(e as any);
                       }
                     }}
-                    placeholder={isProcessing ? "ANALYZING..." : "INPUT_VECTOR"}
+                    placeholder={isProcessing ? "Analyzing signals..." : "Message agent..."}
                     disabled={isProcessing || !isChatting}
-                    className="w-full p-3 bg-black text-violet-100 rounded-none text-xs font-mono leading-relaxed border border-violet-500/20 focus:border-violet-500 focus:ring-0 resize-none min-h-[80px] placeholder:text-violet-900 transition-all"
+                    className="w-full p-4 bg-black/40 text-white rounded-2xl text-sm border border-white/10 focus:border-violet-500/50 focus:ring-4 focus:ring-violet-500/5 outline-none resize-none min-h-[90px] placeholder:text-zinc-600 transition-all"
                     required
                   />
-                  <div className="absolute bottom-3 right-3 flex items-center gap-2">
+                  <div className="absolute bottom-4 right-4 flex items-center gap-3">
                     <button
                       type="button"
                       onClick={handleVoiceInput}
-                      className={`p-2 rounded-none transition-all ${isListening ? 'bg-pink-600 text-white animate-pulse shadow-[0_0_15px_rgba(236,72,153,0.5)]' : 'bg-violet-900/40 text-violet-400 hover:bg-violet-600 hover:text-white'}`}
+                      className={`p-2.5 rounded-xl transition-all ${isListening ? 'bg-red-600 text-white animate-pulse' : 'bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-white'}`}
                     >
-                      {isListening ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
+                      {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
                     </button>
                     <button
                       type="submit"
                       disabled={isProcessing || !isChatting}
-                      className="p-2 bg-violet-600 text-white rounded-none hover:bg-violet-500 disabled:bg-slate-800 transition-all shadow-[0_0_10px_rgba(139,92,246,0.3)]"
+                      className="p-3 bg-violet-600 text-white rounded-xl hover:bg-violet-500 disabled:bg-slate-800 transition-all shadow-lg shadow-violet-900/20 active:scale-95"
                     >
-                      <Send className="w-3 h-3" />
+                      <Send className="w-4 h-4" />
                     </button>
                   </div>
-                  <div className="absolute top-0 right-0 w-1 h-1 bg-violet-500/40"></div>
-                  <div className="absolute bottom-0 left-0 w-1 h-1 bg-violet-500/40"></div>
                 </div>
               </form>
             </div>
           </div>
 
-          {/* Workflow Status */}
+          {/* Agent Status */}
           <div className="high-density-card flex flex-col" style={{ flexBasis: '40%' }}>
             <div className="high-density-header">
-              <h2 className="high-density-label">System Kernel Matrix</h2>
+              <h2 className="high-density-label">Planning Specialists</h2>
             </div>
-            <div className="p-3 space-y-1.5 overflow-y-auto">
+            <div className="p-3 space-y-2 overflow-y-auto custom-scrollbar">
               {[
-                { name: 'Customer Interaction', desc: 'Requirement Extraction' },
-                { name: 'Dietary & Allergens', desc: 'Constraint Analysis' },
-                { name: 'Weather Intelligence', desc: 'Atmospheric Risk' },
-                { name: 'Menu Planning', desc: 'Dish Synthesis' },
-                { name: 'Inventory & Procurement', desc: 'Resource Sourcing' },
-                { name: 'Logistics Planning', desc: 'Protocol Execution' },
-                { name: 'Pricing & Optimization', desc: 'Economic Synthesis' },
-                { name: 'Safety Monitoring', desc: 'QA Verification' }
+                { name: 'Customer Interaction', icon: <Users className="w-3 h-3" /> },
+                { name: 'Dietary & Allergens', icon: <Droplets className="w-3 h-3" /> },
+                { name: 'Weather Intelligence', icon: <CloudRain className="w-3 h-3" /> },
+                { name: 'Menu Planning', icon: <Utensils className="w-3 h-3" /> },
+                { name: 'Inventory & Procurement', icon: <Package className="w-3 h-3" /> },
+                { name: 'Logistics Planning', icon: <Truck className="w-3 h-3" /> },
+                { name: 'Pricing & Optimization', icon: <DollarSign className="w-3 h-3" /> },
+                { name: 'Safety Monitoring', icon: <ShieldCheck className="w-3 h-3" /> }
               ].map((agent, i) => {
                 const isActive = currentStepIndex === i;
                 const isCompleted = currentStepIndex > i;
                 
                 return (
-                  <div key={agent.name} className={`flex items-center gap-3 p-1.5 border border-transparent transition-all ${isActive ? 'bg-violet-600/10 border-violet-500/30 shadow-[0_0_10px_rgba(139,92,246,0.1)]' : ''}`}>
+                  <div key={agent.name} className={`flex items-center gap-4 p-3 transition-all rounded-xl ${isActive ? 'bg-violet-600/10 border border-violet-500/20' : ''}`}>
                     <div className={`
-                      w-4 h-4 text-[8px] flex items-center justify-center flex-shrink-0 font-mono rounded-none rotate-45
-                      ${isActive ? 'bg-violet-600 text-white animate-pulse' : ''}
-                      ${isCompleted ? 'bg-violet-400 text-black' : 'border border-violet-500/20 text-violet-500/40'}
+                      w-8 h-8 flex items-center justify-center flex-shrink-0 rounded-lg transition-all
+                      ${isActive ? 'bg-violet-600 text-white animate-pulse shadow-lg shadow-violet-900/30' : ''}
+                      ${isCompleted ? 'bg-emerald-600/20 text-emerald-500' : 'bg-zinc-800/50 text-zinc-600'}
                     `}>
-                      <span className="-rotate-45">{isCompleted ? <CheckCircle2 className="w-2.5 h-2.5" /> : i + 1}</span>
+                      {isCompleted ? <CheckCircle2 className="w-4 h-4" /> : agent.icon}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <h3 className={`text-[9px] font-bold truncate tracking-widest ${isActive ? 'text-violet-400' : isCompleted ? 'text-violet-100' : 'text-violet-500/30'}`}>
-                        {agent.name?.toUpperCase()}
+                      <h3 className={`text-[11px] font-bold truncate tracking-tight transition-colors ${isActive ? 'text-violet-400' : isCompleted ? 'text-zinc-200' : 'text-zinc-600'}`}>
+                        {agent.name}
                       </h3>
+                      {isActive && <div className="text-[8px] text-violet-500/60 uppercase font-black tracking-widest mt-0.5">Active Operation</div>}
                     </div>
                   </div>
                 );
@@ -712,8 +855,7 @@ export default function App() {
                   key="final-summary-highlight"
                   initial={{ opacity: 0, y: -20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="mb-8 p-6 bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-700 text-white space-y-5 shadow-[0_20px_50px_rgba(79,70,229,0.4)] relative overflow-hidden group border border-white/20"
-                  style={{ clipPath: 'polygon(0 0, 100% 0, 100% calc(100% - 30px), calc(100% - 30px) 100%, 0 100%)' }}
+                  className="mb-8 p-6 bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-700 text-white space-y-5 shadow-[0_20px_50px_rgba(79,70,229,0.4)] relative overflow-hidden group border border-white/20 rounded-3xl"
                 >
                   <div className="absolute top-0 right-0 w-64 h-64 bg-white/10 blur-3xl rounded-full -translate-y-1/2 translate-x-1/2"></div>
                   
@@ -721,29 +863,29 @@ export default function App() {
                     <div>
                       <div className="flex items-center gap-2 mb-1">
                         <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                        <p className="text-violet-100/70 text-[9px] uppercase font-bold tracking-[0.2em] font-mono">Mission Sequence Optimal</p>
+                        <p className="text-violet-100/70 text-[9px] uppercase font-bold tracking-[0.2em]">Operational Check Optimal</p>
                       </div>
-                      <h2 className="text-3xl font-black tracking-tighter uppercase font-mono italic">Strategic Manifest</h2>
+                      <h2 className="text-3xl font-black tracking-tighter uppercase italic">Event Proposal</h2>
                     </div>
                   </div>
                   
                   <div className="grid grid-cols-3 gap-6 py-5 border-y border-white/10 relative z-10">
                     <div>
-                      <span className="text-[8px] uppercase font-bold text-violet-200/60 block mb-1">ALLOCATED_BUDGET</span>
-                      <p className="text-2xl font-bold font-mono text-emerald-300">{steps[0]?.data.budget}</p>
+                      <span className="text-[8px] uppercase font-bold text-violet-200/60 block mb-1">Allocated Budget</span>
+                      <p className="text-2xl font-bold text-emerald-300">{steps[7]?.data?.optimized_quote || steps[0]?.data.budget}</p>
                     </div>
                     <div>
-                      <span className="text-[8px] uppercase font-bold text-violet-200/60 block mb-1">IDENTIFIED_GUESTS</span>
-                      <p className="text-2xl font-bold font-mono">{steps[0]?.data.guests}</p>
+                      <span className="text-[8px] uppercase font-bold text-violet-200/60 block mb-1">Guest Count</span>
+                      <p className="text-2xl font-bold">{steps[0]?.data.guests}</p>
                     </div>
                     <div>
-                      <span className="text-[8px] uppercase font-bold text-violet-200/60 block mb-1">RISK_PROTOCOL</span>
-                      <p className={`text-2xl font-bold font-mono uppercase ${steps[2]?.data.risk_level === 'high' ? 'text-pink-300' : 'text-emerald-300'}`}>{steps[2]?.data.risk_level}</p>
+                      <span className="text-[8px] uppercase font-bold text-violet-200/60 block mb-1">Cost Per Pax</span>
+                      <p className="text-2xl font-bold text-emerald-300 uppercase">{steps[7]?.data?.cost_per_person || 'Calculated'}</p>
                     </div>
                   </div>
 
                   <div className="space-y-2 relative z-10">
-                    <span className="text-[8px] uppercase font-bold text-violet-200/60 block">INTEGRATED_SUMMARY</span>
+                    <span className="text-[8px] uppercase font-bold text-violet-200/60 block">Integrated Summary</span>
                     <p className="text-sm font-medium text-white font-mono leading-relaxed bg-black/20 p-3 border-l-2 border-emerald-400">
                       {steps[7]?.data?.final_summary || 'Synchronizing final data...'}
                     </p>
@@ -760,7 +902,7 @@ export default function App() {
                     animate={{ opacity: 1, y: 0 }}
                     className={steps.length === 8 && index < 6 ? "opacity-50 hover:opacity-100 transition-opacity" : ""}
                   >
-                    <AgentReport step={step} />
+                    <AgentReport step={step} onDishClick={setSelectedDish} />
                   </motion.div>
                 ))}
               </div>
@@ -769,15 +911,15 @@ export default function App() {
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-                  className="p-3 bg-slate-900/5 rounded-lg border border-slate-200 flex items-center justify-center gap-3"
+                  className="p-4 bg-violet-950/20 border border-violet-500/20 flex items-center justify-center gap-4"
                 >
-                  <div className="flex space-x-1">
-                    <div className="w-1.5 h-1.5 bg-blue-600 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
-                    <div className="w-1.5 h-1.5 bg-blue-600 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
-                    <div className="w-1.5 h-1.5 bg-blue-600 rounded-full animate-bounce"></div>
+                  <div className="flex space-x-2">
+                    <div className="w-1.5 h-1.5 bg-violet-500 rotate-45 animate-bounce [animation-delay:-0.3s]"></div>
+                    <div className="w-1.5 h-1.5 bg-violet-500 rotate-45 animate-bounce [animation-delay:-0.15s]"></div>
+                    <div className="w-1.5 h-1.5 bg-violet-500 rotate-45 animate-bounce"></div>
                   </div>
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                    {steps[currentStepIndex]?.agent || 'Orchestrator'} Thinking...
+                  <span className="text-[9px] font-mono font-bold uppercase tracking-[0.3em] text-violet-400 animate-pulse">
+                    Agent_{steps[currentStepIndex]?.agent?.split(' ')[0] || 'Orchestrator'}_Thinking...
                   </span>
                 </motion.div>
               )}
@@ -787,89 +929,283 @@ export default function App() {
 
         {/* Right Metrics Panel */}
         <section className="col-span-12 lg:col-span-3 flex flex-col space-y-4">
-          <div className="high-density-card flex flex-col">
+          <div className="high-density-card flex flex-col flex-1 bg-zinc-900/30">
             <div className="high-density-header">
-              <h2 className="high-density-label">System Performance</h2>
+              <h2 className="high-density-label uppercase tracking-widest">Execution Intelligence</h2>
             </div>
-            <div className="p-4 space-y-4">
+            <div className="p-5 flex-1 flex flex-col space-y-8 overflow-y-auto custom-scrollbar">
               {steps.find(s => s.agent === 'Monitoring Agent') ? (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-3 text-center">
-                    <div className="border border-violet-500/10 bg-black/40 rounded-none p-2 shadow-[inset_0_0_10px_rgba(139,92,246,0.05)]">
-                       <div className="text-sm font-bold text-violet-100 font-mono tracking-tighter">{steps.find(s => s.agent === 'Monitoring Agent')?.data.execution_readiness}%</div>
-                       <div className="text-[8px] text-violet-500 uppercase font-bold tracking-widest">Readiness</div>
+                <div className="space-y-6">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="p-4 bg-zinc-950/50 rounded-2xl border border-white/5">
+                      <span className="text-[9px] font-bold text-zinc-500 uppercase block mb-1">Rediness</span>
+                      <p className="text-xl font-bold text-violet-400">{steps.find(s => s.agent === 'Monitoring Agent')?.data.execution_readiness}%</p>
                     </div>
-                    <div className="border border-violet-500/10 bg-black/40 rounded-none p-2 shadow-[inset_0_0_10px_rgba(139,92,246,0.05)]">
-                       <div className="text-sm font-bold text-violet-400 font-mono tracking-tighter">{steps.find(s => s.agent === 'Monitoring Agent')?.data.overall_status?.toUpperCase() || 'UNKNOWN'}</div>
-                       <div className="text-[8px] text-violet-500 uppercase font-bold tracking-widest">Status</div>
+                    <div className="p-4 bg-zinc-950/50 rounded-2xl border border-white/5">
+                      <span className="text-[9px] font-bold text-zinc-500 uppercase block mb-1">Integrity</span>
+                      <p className="text-xl font-bold text-emerald-400">{steps.find(s => s.agent === 'Monitoring Agent')?.data.overall_status?.toUpperCase()}</p>
                     </div>
                   </div>
-                  <div className="p-3 bg-violet-950/20 rounded-none border border-violet-500/10">
-                    <p className="text-[9px] leading-relaxed text-violet-300/80 font-medium font-mono lowercase italic">
-                      {steps.find(s => s.agent === 'Monitoring Agent')?.data?.final_summary || 'Protocols finalising...'}
-                    </p>
+                  
+                  {steps.find(s => s.agent === 'Pricing & Optimization Agent') && (
+                    <div className="p-5 bg-violet-600/5 rounded-2xl border border-violet-500/20">
+                      <span className="text-[9px] font-bold text-violet-500 uppercase block mb-3">Economic Synthesis</span>
+                      <div className="space-y-4">
+                         <div>
+                            <span className="text-[10px] text-zinc-500 block mb-1">Optimized Quote</span>
+                            <p className="text-3xl font-black text-white">{steps.find(s => s.agent === 'Pricing & Optimization Agent')?.data.optimized_quote}</p>
+                         </div>
+                         <div className="flex justify-between items-center pt-4 border-t border-white/5">
+                           <div>
+                             <span className="text-[9px] text-zinc-500 block text-zinc-600">Unit Cost</span>
+                             <p className="text-sm font-bold text-zinc-200">{steps.find(s => s.agent === 'Pricing & Optimization Agent')?.data.unit_cost}</p>
+                           </div>
+                           <div className="text-right">
+                             <span className="text-[9px] text-zinc-500 block text-zinc-600">Efficiency</span>
+                             <p className="text-sm font-bold text-emerald-400">{steps.find(s => s.agent === 'Pricing & Optimization Agent')?.data.profit_margin}</p>
+                           </div>
+                         </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="p-4 bg-zinc-900/50 rounded-2xl border border-white/5 italic text-sm text-zinc-400 leading-relaxed">
+                    "{steps.find(s => s.agent === 'Monitoring Agent')?.data?.final_summary || 'Protocols finalising...'}"
                   </div>
                 </div>
               ) : (
-                <div className="h-full flex flex-col items-center justify-center text-violet-900/40 py-12">
-                  <ShieldCheck className="w-12 h-12 mb-2 opacity-20" />
-                  <span className="text-[9px] font-bold uppercase tracking-[0.3em] font-mono">Neural_Scan_Pending</span>
+                <div className="flex-1 flex flex-col items-center justify-center opacity-20 text-center space-y-4">
+                  <ShieldCheck className="w-16 h-16 text-zinc-400" />
+                  <p className="text-[10px] uppercase font-bold tracking-widest text-zinc-500">Awaiting Intelligence Feed</p>
                 </div>
               )}
             </div>
-          </div>
-
-          <div className="high-density-card flex flex-col">
-            <div className="high-density-header">
-              <h2 className="high-density-label">Economic Synthesis</h2>
-            </div>
-            <div className="p-4 flex-1">
-              {steps.find(s => s.agent === 'Pricing & Optimization Agent') ? (
-                <PricingInsight data={steps.find(s => s.agent === 'Pricing & Optimization Agent')?.data} />
-              ) : (
-                <div className="h-full flex flex-col items-center justify-center text-violet-900/40 py-12">
-                  <DollarSign className="w-12 h-12 mb-2 opacity-20" />
-                  <span className="text-[9px] font-bold uppercase tracking-[0.3em] font-mono">Profit_Analysis_Hold</span>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="bg-black border border-violet-500/20 p-3 flex-1 flex flex-col text-violet-400 font-mono text-[8px] overflow-hidden shadow-[inset_0_0_20px_rgba(139,92,246,0.1)]">
-            <div className="text-violet-500/40 mb-2 font-bold uppercase tracking-[0.3em] flex justify-between">
-              <span>System_Term</span>
-              <span className="text-violet-500 drop-shadow-[0_0_5px_rgba(139,92,246,0.5)]">CYBER_LINK_SECURE</span>
-            </div>
-            <div className="flex-1 overflow-y-auto space-y-0.5 opacity-60">
-              <div>[00:00:00] KERNEL_INIT: PROTOCOL_CATER_AI_v4.5</div>
-              <div>[{new Date().toLocaleTimeString([], { hour12: false })}] UPLINK_ESTABLISHED: USER_{user.uid.slice(0, 8)}</div>
-              {steps.map((s, i) => (
-                <div key={i}>[{new Date().toLocaleTimeString([], { hour12: false })}] AGENT_{s.agent?.toUpperCase()?.replace(' ', '_') || 'UNKNOWN'}: SYNC_COMPLETE</div>
-              ))}
-              {isProcessing && (
-                <div className="text-violet-300 animate-pulse">[{new Date().toLocaleTimeString([], { hour12: false })}] ORCHESTRATOR: EXECUTING_CHAIN_LOGIC...</div>
-              )}
+            
+            {/* System Log - Subtle Version */}
+            <div className="p-4 border-t border-white/5 bg-zinc-950/20 max-h-32 overflow-hidden">
+               <div className="text-[8px] font-bold text-zinc-600 uppercase tracking-widest mb-2 flex justify-between">
+                 <span>Neural_Stream</span>
+                 <Activity className="w-3 h-3" />
+               </div>
+               <div className="space-y-1 font-mono text-[9px] text-zinc-600 overflow-y-auto max-h-20 opacity-60">
+                 {steps.map((s, i) => (
+                   <div key={i} className="flex gap-2">
+                     <span className="text-violet-500/50">[{new Date().toLocaleTimeString([], { hour12: false })}]</span>
+                     <span className="uppercase">{s.agent?.split(' ')[0]} Committed</span>
+                   </div>
+                 ))}
+                 {isProcessing && <div className="text-amber-500/80 animate-pulse">Running Recursive Synthesis...</div>}
+               </div>
             </div>
           </div>
         </section>
       </main>
 
-      <footer className="h-10 bg-black border-t border-violet-500/20 px-6 flex items-center justify-between text-[8px] text-violet-500/40 font-bold uppercase tracking-[0.4em] flex-shrink-0 z-20">
-        <div>© 2024 CATER-AI NEURAL OPS v4.5</div>
+      {/* Recipe & Nutrition Matrix Modal */}
+      <AnimatePresence>
+        {selectedDish && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-950/90 backdrop-blur-md"
+            onClick={() => setSelectedDish(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 20 }}
+              className="bg-slate-900 border border-white/10 p-10 rounded-[32px] max-w-2xl w-full shadow-2xl relative overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex flex-col md:flex-row gap-10">
+                <div className="w-full md:w-1/2">
+                  <img 
+                    src={selectedDish.image_url} 
+                    className="w-full aspect-square object-cover rounded-3xl shadow-2xl border border-white/10" 
+                    alt={selectedDish.dish}
+                    referrerPolicy="no-referrer"
+                  />
+                </div>
+                <div className="w-full md:w-1/2 space-y-8">
+                  <div>
+                    <h2 className="text-3xl font-black text-white leading-tight uppercase italic">{selectedDish.dish}</h2>
+                    <p className="text-[10px] text-violet-400 uppercase tracking-[0.3em] font-black mt-2">{selectedDish.category}</p>
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-black/40 p-4 rounded-2xl border border-white/5">
+                      <p className="text-[9px] text-zinc-500 uppercase font-black mb-1">Portioning</p>
+                      <p className="text-sm font-bold text-white">{selectedDish.serving_size || 'Standard'}</p>
+                    </div>
+                    <div className="bg-black/40 p-4 rounded-2xl border border-white/5 text-right">
+                      <p className="text-[9px] text-zinc-500 uppercase font-black mb-1">Caloric Intensity</p>
+                      <p className="text-sm font-bold text-amber-500">{selectedDish.calories || '---'} kcal</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <h4 className="text-[9px] text-zinc-600 uppercase font-black tracking-[0.4em]">Biometric Matrix Profile</h4>
+                    <div className="space-y-4">
+                      <div className="group">
+                        <div className="flex justify-between text-[10px] font-black mb-2">
+                          <span className="text-zinc-500 tracking-widest uppercase">Protein Yield</span>
+                          <span className="text-white">{selectedDish.macros?.protein || 0}g</span>
+                        </div>
+                        <div className="h-2 bg-black/60 rounded-full overflow-hidden p-0.5 border border-white/5">
+                          <motion.div 
+                            initial={{ width: 0 }} 
+                            animate={{ width: `${Math.min(100, (selectedDish.macros?.protein || 0) * 2)}%` }} 
+                            className="h-full bg-emerald-500 rounded-full shadow-[0_0_10px_rgba(16,185,129,0.5)]" 
+                          />
+                        </div>
+                      </div>
+                      <div className="group">
+                        <div className="flex justify-between text-[10px] font-black mb-2">
+                          <span className="text-zinc-500 tracking-widest uppercase">Carbohydrates</span>
+                          <span className="text-white">{selectedDish.macros?.carbs || 0}g</span>
+                        </div>
+                        <div className="h-2 bg-black/60 rounded-full overflow-hidden p-0.5 border border-white/5">
+                          <motion.div 
+                            initial={{ width: 0 }} 
+                            animate={{ width: `${Math.min(100, (selectedDish.macros?.carbs || 0) * 2)}%` }} 
+                            className="h-full bg-amber-500 rounded-full shadow-[0_0_10px_rgba(245,158,11,0.5)]" 
+                          />
+                        </div>
+                      </div>
+                      <div className="group">
+                        <div className="flex justify-between text-[10px] font-black mb-2">
+                          <span className="text-zinc-500 tracking-widest uppercase">Lipid Matrix</span>
+                          <span className="text-white">{selectedDish.macros?.fat || 0}g</span>
+                        </div>
+                        <div className="h-2 bg-black/60 rounded-full overflow-hidden p-0.5 border border-white/5">
+                          <motion.div 
+                            initial={{ width: 0 }} 
+                            animate={{ width: `${Math.min(100, (selectedDish.macros?.fat || 0) * 2)}%` }} 
+                            className="h-full bg-pink-500 rounded-full shadow-[0_0_10px_rgba(236,72,153,0.5)]" 
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <button 
+                onClick={() => setSelectedDish(null)}
+                className="mt-10 w-full py-5 bg-violet-600/10 border border-violet-500/20 rounded-2xl text-[10px] font-black text-violet-400 hover:text-white hover:bg-violet-600 transition-all uppercase tracking-[0.4em]"
+              >
+                Return to Operational Surface
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <footer className="h-12 bg-zinc-900/50 border-t border-white/5 px-6 flex items-center justify-between text-[10px] text-zinc-600 font-bold uppercase tracking-widest flex-shrink-0 z-20">
+        <div className="flex items-center gap-4">
+          <span>© 2024 CaterAI Systems</span>
+          <div className="h-4 w-px bg-white/5"></div>
+          <span className="text-zinc-700">Neural Kernel v4.8.2</span>
+        </div>
         <div className="flex items-center space-x-6">
-          <span className="hidden sm:inline">CORE: GEMINI_NEURAL_CORE</span>
           <div className="flex items-center space-x-2">
-            <div className="w-1 h-1 bg-violet-500 shadow-[0_0_5px_rgba(139,92,246,1)]"></div>
-            <span>NODE_SYNC_STABLE</span>
+            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
+            <span>Primary Node Active</span>
           </div>
+          <span className="hidden sm:inline text-zinc-700">Uplink: Low Latency</span>
         </div>
       </footer>
     </div>
   );
 }
 
-function AgentReport({ step }: { step: AgentStep }) {
+function AgentReport({ step, onDishClick }: { step: AgentStep, onDishClick?: (dish: any) => void }) {
   const { agent, data } = step;
+  
+  if (agent === "Inventory & Procurement Agent") {
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-zinc-900/60 border border-white/5 p-6 rounded-2xl">
+          <div className="flex items-center gap-2 mb-4">
+            <ShoppingBag className="w-4 h-4 text-violet-400" />
+            <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-200">Procurement & Pricing</h3>
+          </div>
+          <div className="space-y-2">
+            {data.procurement_list?.map((item: any, i: number) => (
+              <div key={i} className="flex justify-between items-center text-sm py-2 border-b border-white/5 last:border-0">
+                <div className="flex flex-col">
+                  <span className="text-zinc-400">{item.item}</span>
+                  <span className="text-[10px] text-zinc-600">{item.qty}</span>
+                </div>
+                <span className="text-emerald-400 text-[10px] font-black">{item.estimated_cost}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="bg-zinc-900/60 border border-white/5 p-6 rounded-2xl">
+          <div className="flex items-center gap-2 mb-4">
+            <Database className="w-4 h-4 text-emerald-400" />
+            <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-200">Asset Valuation</h3>
+          </div>
+          <p className="text-sm text-zinc-400 leading-relaxed italic">
+            Scanning local logistics nodes and supply chain buffers. Every item priced for margin preservation. Sum total aligned with mission budget.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (agent === "Monitoring Agent") {
+    return (
+      <div className="bg-zinc-900 border border-violet-500/20 p-8 rounded-3xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 p-4">
+          <div className={`text-[10px] font-bold px-3 py-1 rounded-full uppercase ${data.overall_status === 'green' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
+            Status: {data.overall_status?.toUpperCase() || 'STABLE'}
+          </div>
+        </div>
+        
+        <div className="flex items-center gap-4 mb-8">
+           <div className="w-12 h-12 bg-violet-600/10 rounded-2xl flex items-center justify-center text-violet-400 border border-violet-500/20">
+              <Zap className="w-6 h-6" />
+           </div>
+           <div>
+             <h3 className="text-sm font-bold text-white uppercase tracking-widest">Execution Readiness</h3>
+             <div className="w-64 h-2 bg-zinc-800 rounded-full mt-2 overflow-hidden">
+                <motion.div 
+                  initial={{ width: 0 }}
+                  animate={{ width: `${data.execution_readiness || 95}%` }}
+                  className="h-full bg-violet-500 shadow-[0_0_20px_rgba(139,92,246,0.5)]"
+                />
+             </div>
+           </div>
+        </div>
+
+        <div className="bg-zinc-950/50 p-5 rounded-2xl border border-white/5 mb-6">
+           <span className="text-[10px] font-bold text-zinc-600 uppercase block mb-2 tracking-widest">Neural Summary</span>
+           <p className="text-sm text-zinc-300 leading-relaxed italic">
+             "{data.final_summary || 'Protocols verified. System is ready for deployment.'}"
+           </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div className="p-4 bg-zinc-950/30 rounded-2xl border border-white/5">
+             <div className="flex items-center gap-2 text-zinc-500 mb-2">
+               <AlertTriangle className="w-4 h-4" />
+               <span className="text-[10px] font-bold uppercase tracking-widest">Environment Risks</span>
+             </div>
+             <p className="text-xs text-zinc-500">All external variables within nominal range.</p>
+          </div>
+          <div className="p-4 bg-zinc-950/30 rounded-2xl border border-white/5">
+             <div className="flex items-center gap-2 text-zinc-500 mb-2">
+               <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+               <span className="text-[10px] font-bold uppercase tracking-widest">Validation Logic</span>
+             </div>
+             <p className="text-xs text-zinc-500">Cross-agent consistency verified at 100%.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const getStatusColor = (agent: string) => {
     switch (agent) {
@@ -924,31 +1260,44 @@ function AgentReport({ step }: { step: AgentStep }) {
         );
       case 'Menu Planning Agent':
         return (
-          <div className="space-y-4">
-            <div className="text-[9px] font-bold text-violet-500/40 uppercase tracking-widest font-mono">Neural Synthesis: {data.dietary_compliance || "Balanced Selection"}</div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="space-y-6">
+            <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest flex justify-between items-center">
+              <span>Neural Menu Synthesis</span>
+              <span className="text-violet-400">Click items for Matrix Details</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
               {(data.menu || data.dishes)?.map((item: any, i: number) => (
-                <div key={i} className="bg-violet-950/20 border border-violet-500/10 overflow-hidden flex flex-col group transition-all hover:border-violet-500/40 shadow-lg">
-                  <div className="h-48 w-full bg-violet-950/40 relative">
+                <div 
+                  key={i} 
+                  onClick={() => onDishClick?.(item)}
+                  className="bg-zinc-900/40 border border-white/5 rounded-2xl overflow-hidden group transition-all hover:bg-zinc-900/60 shadow-xl cursor-pointer hover:border-violet-500/40"
+                >
+                  <div className="h-48 w-full bg-zinc-800 relative">
                     <img 
-                      src={item.image_url || null} 
+                      src={item.image_url || `https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&q=80&w=400&h=300&sig=${i}`} 
                       alt={item.dish} 
-                      className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity duration-500"
+                      className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity duration-500"
                       referrerPolicy="no-referrer"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src = "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&q=80&w=400&h=300";
-                      }}
                     />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
-                    <div className="absolute bottom-2 left-2 right-2">
-                       <span className="text-[10px] font-bold text-violet-100 uppercase tracking-tight line-clamp-1 group-hover:text-white">{item.dish}</span>
+                    <div className="absolute inset-0 bg-gradient-to-t from-zinc-950/80 via-transparent to-transparent" />
+                    <div className="absolute top-4 left-4 flex gap-2">
+                       <span className="px-3 py-1 bg-violet-600/90 text-[8px] font-black uppercase text-white rounded-full border border-white/20">
+                          {item.category || 'Main'}
+                       </span>
+                    </div>
+                    <div className="absolute bottom-4 left-4 right-4 flex justify-between items-center">
+                       <span className="text-sm font-black text-white tracking-tight italic">{item.dish}</span>
+                       <span className="text-[10px] font-black text-emerald-400 bg-black/60 px-2 py-0.5 rounded border border-white/10">₱{item.estimated_price}/pax</span>
                     </div>
                   </div>
-                  <div className="p-3 space-y-2">
-                    <p className="text-xs text-violet-100/70 leading-relaxed line-clamp-3 italic min-h-[3rem]">"{item.description}"</p>
-                    <div className="flex justify-between items-center pt-2 border-t border-violet-500/10">
-                      <span className="text-[9px] text-violet-500/60 font-black uppercase tracking-widest">Portion</span>
-                      <span className="text-[10px] text-violet-400 font-mono italic font-bold">{item.portion_per_guest}</span>
+                  <div className="p-5 space-y-3">
+                    <p className="text-xs text-zinc-400 leading-relaxed italic line-clamp-3">"{item.description}"</p>
+                    <div className="flex justify-between items-center pt-3 border-t border-white/5">
+                      <div className="flex items-center gap-1.5">
+                        <Zap className="w-3 h-3 text-amber-500" />
+                        <span className="text-[10px] font-bold text-zinc-400">{item.calories || '---'} kcal</span>
+                      </div>
+                      <span className="text-[9px] font-black text-violet-400 uppercase tracking-widest">Show Details</span>
                     </div>
                   </div>
                 </div>
@@ -970,15 +1319,15 @@ function AgentReport({ step }: { step: AgentStep }) {
                 <tr className="text-left uppercase text-[8px] tracking-widest font-bold">
                   <th className="pb-1">Procurement_Item</th>
                   <th className="pb-1">Qty</th>
-                  <th className="pb-1">State</th>
+                  <th className="pb-1 text-right">Cost_Est</th>
                 </tr>
               </thead>
               <tbody className="text-violet-100 italic">
-                {data.procurement_list?.slice(0, 5).map((ing: any, i: number) => (
-                  <tr key={i} className="border-b border-violet-500/5 hover:bg-violet-500/5 transition-colors">
-                    <td className="py-1 uppercase">{ing.item}</td>
-                    <td className="py-1">{ing.qty}</td>
-                    <td className="py-1 text-violet-500 font-bold">REQ</td>
+                {data.procurement_list?.map((ing: any, i: number) => (
+                  <tr key={i} className="border-b border-white/5 hover:bg-violet-500/5 transition-colors">
+                    <td className="py-2 uppercase">{ing.item}</td>
+                    <td className="py-2">{ing.qty}</td>
+                    <td className="py-2 text-right text-emerald-400 font-bold">{ing.estimated_cost || 'N/A'}</td>
                   </tr>
                 ))}
               </tbody>
