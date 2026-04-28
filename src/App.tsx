@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend, BarChart, Bar, XAxis, YAxis } from 'recharts';
 import { 
   Send, 
   ChefHat, 
@@ -36,7 +37,20 @@ import {
   Zap,
   AlertTriangle,
   Lock,
-  Activity
+  Activity,
+  History as HistoryIcon,
+  Terminal,
+  Cpu,
+  Share2,
+  Maximize2,
+  Minimize2,
+  Clock,
+  Wine,
+  IceCream,
+  UtensilsCrossed,
+  PieChart as PieChartIcon,
+  CloudSun,
+  Target
 } from 'lucide-react';
 import { auth, signInWithGoogle, logout, db, loginWithEmail, signupWithEmail } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
@@ -211,7 +225,7 @@ export default function App() {
       const clean = str.toLowerCase().trim();
       if (clean.length === 0) return true;
       
-      const commonUncertainty = ['idk', 'not', 'tbd', 'none', 'no', 'yes', 'ok', 'pesos', 'php', 'bbq', 'gym', 'dry'];
+      const commonUncertainty = ['idk', 'not', 'tbd', 'none', 'no', 'yes', 'ok', 'pesos', 'php', 'bbq', 'gym', 'dry', 'ikaw', 'bahala', 'any', 'surprise', 'u', 'you'];
       if (commonUncertainty.includes(clean)) return false;
 
       // Allow strings that look like dates or numbers with symbols
@@ -839,13 +853,68 @@ export default function App() {
                 <motion.div 
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-                  className="h-full flex flex-col items-center justify-center text-slate-400 text-center p-8 bg-white border border-dashed border-slate-200 rounded-lg"
+                  className="h-full flex flex-col items-center justify-center p-12 bg-zinc-900/40 border border-white/5 rounded-[40px] relative overflow-hidden backdrop-blur-3xl group"
                 >
-                  <div className="bg-slate-50 p-3 rounded-full mb-3">
-                    <ChefHat className="w-8 h-8" />
+                  <div className="absolute inset-0 bg-gradient-to-br from-violet-500/5 via-transparent to-emerald-500/5" />
+                  <div className="absolute -top-24 -left-24 w-64 h-64 bg-violet-600/10 blur-[120px] rounded-full animate-pulse" />
+                  <div className="absolute -bottom-24 -right-24 w-64 h-64 bg-emerald-600/10 blur-[120px] rounded-full" />
+                  
+                  <div className="relative z-10 flex flex-col items-center">
+                    <div className="relative mb-8">
+                       <ChefHat className="w-16 h-16 text-violet-400 group-hover:scale-110 transition-transform duration-700" />
+                       <div className="absolute -inset-4 bg-violet-500/20 blur-2xl rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
+                    </div>
+                    
+                    <div className="space-y-2 text-center mb-10">
+                      <h3 className="text-xl font-black italic tracking-tighter text-white uppercase italic">System Standby</h3>
+                      <p className="text-[10px] uppercase font-bold tracking-[0.4em] text-violet-500/60 font-mono">Agentic Protocols Primed</p>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 w-full max-w-3xl px-6">
+                      <div className="bg-zinc-950/60 border border-white/5 p-4 rounded-[24px] flex flex-col items-center text-center hover:bg-violet-600/10 hover:border-violet-500/20 transition-all duration-500 group/item">
+                         <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center mb-3 group-hover/item:scale-110 transition-transform">
+                            <Database className="w-5 h-5 text-emerald-400" />
+                         </div>
+                         <span className="text-[8px] font-black text-zinc-500 uppercase mb-1 tracking-tighter">Knowledge Base</span>
+                         <span className="text-[11px] font-mono text-emerald-400 font-black">SYNCHRONIZED</span>
+                      </div>
+                      <div className="bg-zinc-950/60 border border-white/5 p-4 rounded-[24px] flex flex-col items-center text-center hover:bg-blue-600/10 hover:border-blue-500/20 transition-all duration-500 group/item">
+                         <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center mb-3 group-hover/item:scale-110 transition-transform">
+                            <CloudSun className="w-5 h-5 text-blue-400" />
+                         </div>
+                         <span className="text-[8px] font-black text-zinc-500 uppercase mb-1 tracking-tighter">Weather Core</span>
+                         <span className="text-[11px] font-mono text-blue-400 font-black">ACTIVE</span>
+                      </div>
+                      <div className="bg-zinc-950/60 border border-white/5 p-4 rounded-[24px] flex flex-col items-center text-center hover:bg-violet-600/10 hover:border-violet-500/20 transition-all duration-500 group/item">
+                         <div className="w-10 h-10 rounded-xl bg-violet-500/10 flex items-center justify-center mb-3 group-hover/item:scale-110 transition-transform">
+                            <Target className="w-5 h-5 text-violet-400" />
+                         </div>
+                         <span className="text-[8px] font-black text-zinc-500 uppercase mb-1 tracking-tighter">Budget Logic</span>
+                         <span className="text-[11px] font-mono text-violet-400 font-black">CALIBRATED</span>
+                      </div>
+                      <div className="bg-zinc-950/60 border border-white/5 p-4 rounded-[24px] flex flex-col items-center text-center hover:bg-pink-600/10 hover:border-pink-500/20 transition-all duration-500 group/item">
+                         <div className="w-10 h-10 rounded-xl bg-pink-500/10 flex items-center justify-center mb-3 group-hover/item:scale-110 transition-transform">
+                            <Cpu className="w-5 h-5 text-pink-400" />
+                         </div>
+                         <span className="text-[8px] font-black text-zinc-500 uppercase mb-1 tracking-tighter">Orchestrator</span>
+                         <span className="text-[11px] font-mono text-pink-400 font-black">READY</span>
+                      </div>
+                    </div>
+                    
+                    <div className="mt-12 flex items-center gap-4">
+                       <div className="flex gap-1.5">
+                          {[0, 0.2, 0.4].map((delay, i) => (
+                            <motion.div
+                              key={i}
+                              animate={{ opacity: [0.3, 1, 0.3] }}
+                              transition={{ repeat: Infinity, duration: 1.5, delay }}
+                              className="w-1 h-1 bg-emerald-400 rounded-full"
+                            />
+                          ))}
+                       </div>
+                       <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest italic">Awaiting customer input for multi-agent synthesis...</p>
+                    </div>
                   </div>
-                  <h3 className="text-xs font-bold uppercase tracking-widest text-slate-600 mb-1">System Standby</h3>
-                  <p className="text-[10px] max-w-xs">Awaiting customer interaction to trigger multi-agent orchestration sequence.</p>
                 </motion.div>
               )}
 
@@ -1015,19 +1084,25 @@ export default function App() {
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.9, y: 20 }}
-              className="bg-slate-900 border border-white/10 p-10 rounded-[32px] max-w-2xl w-full shadow-2xl relative overflow-hidden"
+              className="bg-slate-900 border border-white/10 p-8 md:p-12 rounded-[40px] max-w-4xl w-full shadow-2xl relative overflow-y-auto max-h-[90vh] custom-scrollbar"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="flex flex-col md:flex-row gap-10">
-                <div className="w-full md:w-1/2">
-                  <img 
-                    src={selectedDish.image_url} 
-                    className="w-full aspect-square object-cover rounded-3xl shadow-2xl border border-white/10" 
-                    alt={selectedDish.dish}
-                    referrerPolicy="no-referrer"
-                  />
+              <div className="flex flex-col md:flex-row gap-8 lg:gap-16">
+                <div className="w-full md:w-5/12 flex-shrink-0">
+                  <div className="relative group">
+                    <img 
+                      src={selectedDish.image_url} 
+                      className="w-full aspect-[4/5] object-cover rounded-[32px] shadow-2xl border border-white/10 transition-transform duration-700 group-hover:scale-[1.02]" 
+                      alt={selectedDish.dish}
+                      referrerPolicy="no-referrer"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = `https://loremflickr.com/800/1000/food,${selectedDish.dish}`;
+                      }}
+                    />
+                    <div className="absolute -inset-4 bg-violet-600/10 blur-3xl -z-10 rounded-full opacity-50" />
+                  </div>
                 </div>
-                <div className="w-full md:w-1/2 space-y-8">
+                <div className="w-full md:w-7/12 space-y-10 py-4">
                   <div>
                     <h2 className="text-3xl font-black text-white leading-tight uppercase italic">{selectedDish.dish}</h2>
                     <p className="text-[10px] text-violet-400 uppercase tracking-[0.3em] font-black mt-2">{selectedDish.category}</p>
@@ -1045,7 +1120,40 @@ export default function App() {
                   </div>
 
                   <div className="space-y-4">
-                    <h4 className="text-[9px] text-zinc-600 uppercase font-black tracking-[0.4em]">Biometric Matrix Profile</h4>
+                    <h4 className="text-[9px] text-zinc-600 uppercase font-black tracking-[0.4em] flex justify-between items-center mb-2">
+                      <span>Biometric Matrix Profile</span>
+                      <span className="text-violet-500 font-mono">DISTRIBUTION MAP</span>
+                    </h4>
+                    
+                    <div className="h-40 w-full bg-black/20 rounded-3xl border border-white/5 flex items-center justify-center overflow-hidden mb-6">
+                       <ResponsiveContainer width="100%" height="100%">
+                         <PieChart>
+                           <Pie
+                             data={[
+                               { name: 'Protein', value: selectedDish.macros?.protein || 0, color: '#10b981' },
+                               { name: 'Carbs', value: selectedDish.macros?.carbs || 0, color: '#f59e0b' },
+                               { name: 'Fat', value: selectedDish.macros?.fat || 0, color: '#ec4899' }
+                             ]}
+                             cx="50%"
+                             cy="50%"
+                             innerRadius={40}
+                             outerRadius={55}
+                             paddingAngle={8}
+                             dataKey="value"
+                             stroke="none"
+                           >
+                             <Cell fill="#10b981" />
+                             <Cell fill="#f59e0b" />
+                             <Cell fill="#ec4899" />
+                           </Pie>
+                           <Tooltip 
+                             contentStyle={{ backgroundColor: '#0f172a', borderColor: 'rgba(255,255,255,0.1)', borderRadius: '12px', fontSize: '10px' }} 
+                             itemStyle={{ fontWeight: '900', textTransform: 'uppercase' }}
+                           />
+                         </PieChart>
+                       </ResponsiveContainer>
+                    </div>
+
                     <div className="space-y-4">
                       <div className="group">
                         <div className="flex justify-between text-[10px] font-black mb-2">
@@ -1124,32 +1232,38 @@ function AgentReport({ step, onDishClick }: { step: AgentStep, onDishClick?: (di
   
   if (agent === "Inventory & Procurement Agent") {
     return (
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-zinc-900/60 border border-white/5 p-6 rounded-2xl">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="md:col-span-2 bg-zinc-900/60 border border-white/5 p-6 rounded-2xl">
           <div className="flex items-center gap-2 mb-4">
             <ShoppingBag className="w-4 h-4 text-violet-400" />
-            <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-200">Procurement & Pricing</h3>
+            <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-200">Procurement Matrix</h3>
           </div>
-          <div className="space-y-2">
+          <div className="space-y-1">
             {data.procurement_list?.map((item: any, i: number) => (
-              <div key={i} className="flex justify-between items-center text-sm py-2 border-b border-white/5 last:border-0">
+              <div key={i} className="flex justify-between items-center text-[11px] py-1.5 border-b border-white/5 last:border-0 group">
                 <div className="flex flex-col">
-                  <span className="text-zinc-400">{item.item}</span>
-                  <span className="text-[10px] text-zinc-600">{item.qty}</span>
+                  <span className="text-zinc-400 group-hover:text-white transition-colors">{item.item}</span>
+                  <span className="text-[9px] text-zinc-600">{item.qty}</span>
                 </div>
-                <span className="text-emerald-400 text-[10px] font-black">{item.estimated_cost}</span>
+                <span className="text-emerald-400 font-black bg-emerald-400/5 px-2 py-0.5 rounded border border-emerald-400/10 tracking-tighter">{item.estimated_cost}</span>
               </div>
             ))}
           </div>
         </div>
-        <div className="bg-zinc-900/60 border border-white/5 p-6 rounded-2xl">
-          <div className="flex items-center gap-2 mb-4">
-            <Database className="w-4 h-4 text-emerald-400" />
-            <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-200">Asset Valuation</h3>
+        <div className="space-y-4">
+          <div className="bg-zinc-900/60 border border-white/5 p-6 rounded-2xl">
+            <div className="flex items-center gap-2 mb-4">
+              <Database className="w-4 h-4 text-emerald-400" />
+              <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-200">Resource Analysis</h3>
+            </div>
+            <p className="text-[11px] text-zinc-500 leading-relaxed italic">
+              Scanning local logistics nodes. Sum total aligned with mission budget at 98.4% efficiency.
+            </p>
           </div>
-          <p className="text-sm text-zinc-400 leading-relaxed italic">
-            Scanning local logistics nodes and supply chain buffers. Every item priced for margin preservation. Sum total aligned with mission budget.
-          </p>
+          <div className="bg-zinc-900/60 border border-white/5 p-6 rounded-2xl text-center">
+            <span className="text-3xl font-black text-white italic">{data.procurement_list?.length || 0}</span>
+            <p className="text-[9px] text-zinc-600 uppercase font-bold tracking-widest mt-1">Unique Line Items</p>
+          </div>
         </div>
       </div>
     );
@@ -1265,19 +1379,22 @@ function AgentReport({ step, onDishClick }: { step: AgentStep, onDishClick?: (di
               <span>Neural Menu Synthesis</span>
               <span className="text-violet-400">Click items for Matrix Details</span>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-8">
               {(data.menu || data.dishes)?.map((item: any, i: number) => (
                 <div 
                   key={i} 
                   onClick={() => onDishClick?.(item)}
-                  className="bg-zinc-900/40 border border-white/5 rounded-2xl overflow-hidden group transition-all hover:bg-zinc-900/60 shadow-xl cursor-pointer hover:border-violet-500/40"
+                  className="bg-zinc-900/40 border border-white/5 rounded-[32px] overflow-hidden group transition-all hover:bg-zinc-900/60 shadow-2xl cursor-pointer hover:border-violet-500/40 flex flex-col h-full"
                 >
-                  <div className="h-48 w-full bg-zinc-800 relative">
+                  <div className="h-56 w-full bg-zinc-800 relative overflow-hidden flex-shrink-0">
                     <img 
-                      src={item.image_url || `https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&q=80&w=400&h=300&sig=${i}`} 
+                      src={item.image_url} 
                       alt={item.dish} 
-                      className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity duration-500"
+                      className="w-full h-full object-cover opacity-90 group-hover:opacity-100 group-hover:scale-110 transition-all duration-1000 ease-out"
                       referrerPolicy="no-referrer"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = `https://loremflickr.com/800/600/food,${i}`;
+                      }}
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-zinc-950/80 via-transparent to-transparent" />
                     <div className="absolute top-4 left-4 flex gap-2">
@@ -1335,37 +1452,68 @@ function AgentReport({ step, onDishClick }: { step: AgentStep, onDishClick?: (di
           </div>
         );
       case 'Pricing & Optimization Agent':
+        const breakdownData = data.cost_breakdown ? Object.entries(data.cost_breakdown).map(([name, value]) => ({ 
+          name, 
+          value: Number(value) 
+        })) : [];
+
+        const COLORS = ['#d946ef', '#8b5cf6', '#6366f1', '#f472b6'];
+
         return (
           <div className="space-y-6">
-             <div className="text-[10px] font-black text-fuchsia-400 uppercase tracking-[0.2em] font-mono mb-4 px-2 bg-fuchsia-500/5 border-l-2 border-fuchsia-500 py-1">
-               Economic Strategy: {data.pricing_strategy}
+             <div className="text-[10px] font-black text-fuchsia-400 uppercase tracking-[0.2em] font-mono mb-4 px-2 bg-fuchsia-500/5 border-l-2 border-fuchsia-500 py-1 flex justify-between items-center">
+               <span>Economic Strategy: {data.pricing_strategy}</span>
+               <span className="text-fuchsia-500/40">ANALYTICS-GRADE DATA</span>
              </div>
              
-             <div className="grid grid-cols-1 gap-6">
-                <div className="bg-fuchsia-950/20 p-8 border border-fuchsia-500/20 relative overflow-hidden group hover:border-fuchsia-500/40 transition-all shadow-[0_0_50px_rgba(217,70,239,0.1)]">
-                   <div className="absolute top-0 right-0 w-32 h-32 bg-fuchsia-500/5 blur-3xl rounded-full translate-x-1/4 -translate-y-1/4" />
-                   
-                   <div className="relative z-10 flex flex-col items-center py-6">
-                      <span className="text-[10px] font-black text-fuchsia-500 uppercase tracking-[0.5em] mb-4 bg-fuchsia-500/10 px-4 py-1 border border-fuchsia-500/20">Final Integrated Quote</span>
-                      <p className="text-7xl font-black text-white font-mono tracking-[0.05em] italic drop-shadow-[0_0_30px_rgba(217,70,239,0.5)]">
-                         {data.optimized_quote}
-                      </p>
-                      <div className="mt-4 flex items-center gap-2">
-                        <div className="h-px w-8 bg-fuchsia-500/30"></div>
-                        <span className="text-[9px] text-fuchsia-400/60 uppercase font-mono tracking-tighter italic">Precision Optimized Global Analysis</span>
-                        <div className="h-px w-8 bg-fuchsia-500/30"></div>
-                      </div>
-                   </div>
+             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="bg-zinc-950 p-8 border border-white/5 relative overflow-hidden flex flex-col items-center justify-center min-h-[300px] rounded-3xl">
+                   <h4 className="absolute top-4 left-6 text-[8px] font-black uppercase text-zinc-600 tracking-widest">Pricing Composition Matrix</h4>
+                   <ResponsiveContainer width="100%" height={200}>
+                      <PieChart>
+                        <Pie
+                          data={breakdownData}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={60}
+                          outerRadius={90}
+                          paddingAngle={5}
+                          dataKey="value"
+                          stroke="none"
+                        >
+                          {breakdownData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip 
+                          contentStyle={{ backgroundColor: '#09090b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', fontSize: '10px' }}
+                        />
+                        <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '9px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.1em' }} />
+                      </PieChart>
+                   </ResponsiveContainer>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                   <div className="bg-fuchsia-950/10 p-5 border border-fuchsia-500/10 hover:bg-fuchsia-500/5 transition-colors">
-                      <span className="text-[9px] font-bold text-fuchsia-400/60 uppercase block mb-1 font-mono">Cost Per Guest</span>
-                      <p className="text-2xl font-black text-white font-mono">{data.unit_cost}</p>
+                <div className="space-y-4 flex flex-col justify-center">
+                   <div className="bg-fuchsia-950/20 p-8 border border-fuchsia-500/20 relative overflow-hidden group hover:border-fuchsia-500/40 transition-all shadow-[0_0_50px_rgba(217,70,239,0.1)] rounded-3xl">
+                      <div className="absolute top-0 right-0 w-32 h-32 bg-fuchsia-500/5 blur-3xl rounded-full translate-x-1/4 -translate-y-1/4" />
+                      
+                      <div className="relative z-10 flex flex-col items-center py-4 text-center">
+                         <span className="text-[10px] font-black text-fuchsia-500 uppercase tracking-[0.5em] mb-4 bg-fuchsia-500/10 px-4 py-1 border border-fuchsia-500/20">Final Integrated Quote</span>
+                         <p className="text-5xl font-black text-white font-mono tracking-[0.05em] italic drop-shadow-[0_0_30px_rgba(217,70,239,0.5)]">
+                            {data.optimized_quote}
+                         </p>
+                      </div>
                    </div>
-                   <div className="bg-fuchsia-950/10 p-5 border border-fuchsia-500/10 hover:bg-fuchsia-500/5 transition-colors">
-                      <span className="text-[9px] font-bold text-fuchsia-400/60 uppercase block mb-1 font-mono">Profit Yield</span>
-                      <p className="text-2xl font-black text-emerald-400 font-mono italic">{data.profit_margin}</p>
+
+                   <div className="grid grid-cols-2 gap-4">
+                      <div className="bg-fuchsia-950/10 p-5 border border-fuchsia-500/10 hover:bg-fuchsia-500/5 transition-colors rounded-2xl">
+                         <span className="text-[9px] font-bold text-fuchsia-400/60 uppercase block mb-1 font-mono">Cost Per Guest</span>
+                         <p className="text-xl font-black text-white font-mono">{data.cost_per_person || data.unit_cost}</p>
+                      </div>
+                      <div className="bg-fuchsia-950/10 p-5 border border-fuchsia-500/10 hover:bg-fuchsia-500/5 transition-colors rounded-2xl">
+                         <span className="text-[9px] font-bold text-fuchsia-400/60 uppercase block mb-1 font-mono">Profit Yield</span>
+                         <p className="text-xl font-black text-emerald-400 font-mono italic">{data.margin || data.profit_margin}</p>
+                      </div>
                    </div>
                 </div>
              </div>

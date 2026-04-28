@@ -20,7 +20,7 @@ async function callGemini(modelName: string, prompt: string, config: any = {}) {
 }
 
 export async function validateAnswer(question: string, answer: string) {
-  const commonAnswers = ['wedding', 'birthday', 'corporate', 'party', 'event', 'catering', 'food', 'pesos', 'php', 'bbq'];
+  const commonAnswers = ['wedding', 'birthday', 'corporate', 'party', 'event', 'catering', 'food', 'pesos', 'php', 'bbq', 'ikaw', 'bahala', 'any', 'surprise', 'suprise'];
   if (commonAnswers.includes(answer.toLowerCase().trim())) {
     return { valid: true, re_ask_message: "" };
   }
@@ -121,6 +121,11 @@ export async function orchestrateCatering(input: string, onStep: (step: any) => 
 
     // 3. Menu Synthesis Agent
     const menuPrompt = `Suggest a comprehensive catering menu for ${JSON.stringify(requirements)} considering ${JSON.stringify(context)}. 
+    
+    CUISINE LOGIC:
+    1. If the user provided a specific cuisine preference (e.g., "BBQ", "Japanese", "Filipino"), you MUST follow it strictly.
+    2. If the user said "surprise me", "ikaw bahala", "you decide", or haven't specified, you as a high-end AI chef should suggest a cohesive, trending, and suitable cuisine based on the event type and weather.
+    
     STRICT CATEGORIES: You MUST include at least: 2 Main Courses, 1 Side, 1 Dessert, and 1 Drink.
     Note: If the user input mentions prioritizing weather-based suggestions, ensure items match that context.
     
@@ -170,7 +175,7 @@ export async function orchestrateCatering(input: string, onStep: (step: any) => 
         ...menuData,
         menu: menuData.menu.map((it: any) => ({ 
             ...it, 
-            image_url: `https://source.unsplash.com/800x600/?${encodeURIComponent(it.image_keyword || it.dish)},food` 
+            image_url: `https://loremflickr.com/800/600/food,${encodeURIComponent(it.image_keyword || it.dish)}` 
         }))
     };
     onStep({ agent: "Menu Planning Agent", data: menu });
@@ -181,7 +186,10 @@ export async function orchestrateCatering(input: string, onStep: (step: any) => 
     CRITICAL: 
     1. Inventory items MUST include an 'estimated_cost' per quantity.
     2. The sum of all item costs should align with the total budget.
-    3. Pricing summary MUST include a 'cost_per_person' calculation based on the items provided.`;
+    3. Pricing summary MUST include:
+       - 'cost_per_person'
+       - 'cost_breakdown': { "Food": number, "Labor": number, "Logistics": number, "Overhead": number } (values should be percentages or absolute values summing to total cost)
+    4. Monitoring: provide health metrics.`;
 
     const opsRes = await callGemini("gemini-3-flash-preview", opsPrompt, {
         responseMimeType: "application/json",
@@ -225,6 +233,15 @@ export async function orchestrateCatering(input: string, onStep: (step: any) => 
                     properties: { 
                         optimized_quote: { type: Type.STRING }, 
                         cost_per_person: { type: Type.STRING }, 
+                        cost_breakdown: {
+                            type: Type.OBJECT,
+                            properties: {
+                                Food: { type: Type.NUMBER },
+                                Labor: { type: Type.NUMBER },
+                                Logistics: { type: Type.NUMBER },
+                                Overhead: { type: Type.NUMBER }
+                            }
+                        },
                         unit_cost: { type: Type.STRING }, 
                         margin: { type: Type.STRING } 
                     } 
