@@ -55,7 +55,7 @@ import {
 import { auth, signInWithGoogle, logout, db, loginWithEmail, signupWithEmail } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { collection, addDoc, query, where, getDocs, orderBy, Timestamp } from 'firebase/firestore';
-import { orchestrateCatering, predictWeather, validateAnswer } from './services/orchestrator';
+import { orchestrateCatering, predictWeather, validateAnswer, translateText } from './services/orchestrator';
 
 interface AgentStep {
   agent: string;
@@ -71,15 +71,14 @@ interface Message {
 }
 
 const QUESTIONS = [
-  { key: "event_type", text: "👋 Hi! I'm your AI Catering Assistant. What type of event are you planning? (e.g. Wedding, Birthday, Corporate)" },
+  { key: "language", text: "🌐 Please select your preferred language for this session (e.g., English, Spanish, Japanese, Filipino, or any other language)?" },
+  { key: "event_type", text: "👋 Great! Now, what type of event are you planning? (e.g. Wedding, Birthday, Corporate)" },
   { key: "guest_count", text: "👥 How many guests are you expecting?" },
   { key: "event_location", text: "📍 Where will the event be held? (City or venue name)" },
   { key: "event_date", text: "📅 What is the event date?" },
   { key: "budget", text: "💰 What is your total budget? (Please include the currency, e.g. $5000, ₱50000, 1000€)" },
-  { key: "cuisine_preference", text: "🍽️ Any cuisine preference? (e.g. Filipino, Italian, Japanese, BBQ)" },
+  { key: "catering_mode", text: "🍔 How would you like to build the menu? Should we suggest a cuisine (AI-Suggested) or do you have a specific list of dishes in mind? (User-Provided)" },
   { key: "dietary_needs", text: "🥗 Any dietary needs or restrictions? (e.g. None, Vegetarian, Allergies)" },
-  { key: "dessert_preference", text: "🍰 Would you like to include desserts in the menu? (Yes/No, or specific types)" },
-  { key: "drink_preference", text: "🥤 What are your preferences for drinks? (e.g. Soft drinks, Juices, Cocktails, Coffee)" },
   { key: "special_requests", text: "✨ Any final special requests? (e.g. Themed setup, specific equipment)" },
 ];
 
@@ -98,12 +97,15 @@ export default function App() {
   // Chatbot State
   const [messages, setMessages] = useState<Message[]>([]);
   const [qIndex, setQIndex] = useState(0);
-  const [eventData, setEventData] = useState<any>({});
+  const [eventData, setEventData] = useState<any>({ user_dishes: [] });
   const [isChatting, setIsChatting] = useState(true);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [isWaitingForWeatherSelection, setIsWaitingForWeatherSelection] = useState(false);
   const [useWeatherSuggestion, setUseWeatherSuggestion] = useState<boolean | null>(null);
   const [selectedDish, setSelectedDish] = useState<any>(null);
+  
+  // Advanced Flow States
+  const [flowState, setFlowState] = useState<'normal' | 'collecting_dishes' | 'collecting_drinks' | 'collecting_desserts'>('normal');
 
   const sanitizeForFirestore = (data: any): any => {
     if (Array.isArray(data)) {
@@ -218,6 +220,37 @@ export default function App() {
     setMessages(newMessages);
     setInput("");
 
+    // LANGUAGE SELECTION HANDLE
+    if (currentQuestion.key === 'language') {
+      setIsProcessing(true);
+      const chosenLang = userText;
+      setEventData({ ...eventData, language: chosenLang });
+      
+      const welcomeMsg = await translateText(`✨ Perfect! I will now proceed in **${chosenLang}**.`, chosenLang);
+      
+      setMessages(prev => [...prev, { 
+          id: `bot-language-confirm-${Date.now()}`,
+          role: 'bot', 
+          content: welcomeMsg, 
+          timestamp: new Date() 
+      }]);
+
+      const nextIdx = qIndex + 1;
+      const nextQText = await translateText(QUESTIONS[nextIdx].text, chosenLang);
+      
+      setTimeout(() => {
+        setQIndex(nextIdx);
+        setMessages(prev => [...prev, { 
+          id: `bot-q-${Date.now()}`,
+          role: 'bot', 
+          content: nextQText, 
+          timestamp: new Date() 
+        }]);
+        setIsProcessing(false);
+      }, 1500);
+      return;
+    }
+
     const isPossiblyBulk = userText.length > 80 || userText.split(' ').length > 12;
     
     // --- IMPROVED GIBBERISH SHIELD ---
@@ -225,7 +258,7 @@ export default function App() {
       const clean = str.toLowerCase().trim();
       if (clean.length === 0) return true;
       
-      const commonUncertainty = ['idk', 'not', 'tbd', 'none', 'no', 'yes', 'ok', 'pesos', 'php', 'bbq', 'gym', 'dry', 'ikaw', 'bahala', 'any', 'surprise', 'u', 'you'];
+      const commonUncertainty = ['idk', 'not', 'tbd', 'none', 'no', 'yes', 'ok', 'pesos', 'php', 'bbq', 'gym', 'dry', 'ikaw', 'bahala', 'any', 'surprise', 'u', 'you', 'done', 'stop'];
       if (commonUncertainty.includes(clean)) return false;
 
       // Allow strings that look like dates or numbers with symbols
@@ -244,7 +277,7 @@ export default function App() {
       return false;
     };
 
-    if (isObviousGibberish(userText) && !/^\d+$/.test(userText) && !['tbd', 'none', 'pesos'].includes(userText.toLowerCase())) {
+    if (isObviousGibberish(userText) && !/^\d+$/.test(userText) && !['tbd', 'none', 'pesos', 'done'].includes(userText.toLowerCase())) {
       setMessages(prev => [...prev, { 
         id: `bot-val-local-${Date.now()}`,
         role: 'bot', 
@@ -259,47 +292,125 @@ export default function App() {
     // --- AI VALIDATION / RELEVANCE CHECK ---
     setIsProcessing(true);
     
-    // Skip AI validation for simple currency clarifications or weather follow-ups
+    // Skip AI validation for simple currency clarifications or weather follow-ups or dish collection
     const currencyWords = ['pesos', 'php', 'dollars', 'usd', 'eur', 'euro', 'pesetas', 'pounds', 'gbp'];
     const lowerInput = userText.toLowerCase().trim();
     const isCurrencyClarification = currentQuestion.key === 'budget' && currencyWords.includes(lowerInput);
-    const isYesNo = ['yes', 'no', 'y', 'n', 'yeah', 'nope'].includes(lowerInput);
-
+    
     if (isWaitingForWeatherSelection) {
       setIsProcessing(false);
-      const decision = lowerInput.includes('yes') || lowerInput === 'y' || lowerInput === 'yeah';
+      const decision = lowerInput.includes('yes') || lowerInput === 'y' || lowerInput === 'yeah' || lowerInput.includes('oo') || lowerInput.includes('sige');
       setUseWeatherSuggestion(decision);
       setIsWaitingForWeatherSelection(false);
+
+      const ackText = decision 
+        ? "✅ Understood! I will prioritize menu items that complement the forecasted weather conditions." 
+        : "👍 Noted. I'll stick to a standard cuisine-focused menu regardless of the weather.";
+      
+      const translatedAck = await translateText(ackText, eventData.language);
 
       setMessages(prev => [...prev, { 
         id: `bot-weather-ack-${Date.now()}`,
         role: 'bot', 
-        content: decision 
-          ? "✅ Understood! I will prioritize menu items that complement the forecasted weather conditions." 
-          : "👍 Noted. I'll stick to a standard cuisine-focused menu regardless of the weather.", 
+        content: translatedAck, 
         timestamp: new Date() 
       }]);
 
-      // Now move to the next question
-      if (qIndex < QUESTIONS.length - 1) {
-        const nextIdx = qIndex + 1;
-        setTimeout(() => {
-          setQIndex(nextIdx);
-          setMessages(prev => [...prev, { 
-            id: `bot-q-${Date.now()}`,
-            role: 'bot', 
-            content: QUESTIONS[nextIdx].text, 
-            timestamp: new Date() 
-          }]);
-        }, 1000);
+      // Move to next question after weather decision
+      const nextIdx = qIndex + 1;
+      const nextQText = await translateText(QUESTIONS[nextIdx].text, eventData.language);
+      
+      setTimeout(() => {
+        setQIndex(nextIdx);
+        setMessages(prev => [...prev, { 
+          id: `bot-q-${Date.now()}`,
+          role: 'bot', 
+          content: nextQText, 
+          timestamp: new Date() 
+        }]);
+      }, 1000);
+      return;
+    }
+
+    // DISH COLLECTION LOGIC
+    if (flowState === 'collecting_dishes') {
+      if (lowerInput === 'done' || lowerInput === 'none' || lowerInput === 'stop' || lowerInput === 'tapos' || lowerInput === 'wala') {
+        setFlowState('collecting_drinks');
+        const nextPrompt = await translateText("🥤 Got it. Any drinks you'd like to include? (If none, type 'done')", eventData.language);
+        setMessages(prev => [...prev, { 
+          id: `bot-collect-drinks-${Date.now()}`,
+          role: 'bot', 
+          content: nextPrompt, 
+          timestamp: new Date() 
+        }]);
+      } else {
+        setEventData(prev => ({ ...prev, user_dishes: [...(prev.user_dishes || []), userText] }));
+        const ack = await translateText("✅ Added! Anything else? (If none, type 'done')", eventData.language);
+        setMessages(prev => [...prev, { 
+          id: `bot-collect-next-${Date.now()}`,
+          role: 'bot', 
+          content: ack, 
+          timestamp: new Date() 
+        }]);
       }
+      setIsProcessing(false);
+      return;
+    }
+
+    if (flowState === 'collecting_drinks') {
+      if (lowerInput === 'done' || lowerInput === 'none' || lowerInput === 'stop' || lowerInput === 'tapos' || lowerInput === 'wala') {
+        setFlowState('collecting_desserts');
+        const nextPrompt = await translateText("🍰 And for desserts? Any specific ones? (If none, type 'done')", eventData.language);
+        setMessages(prev => [...prev, { 
+          id: `bot-collect-desserts-${Date.now()}`,
+          role: 'bot', 
+          content: nextPrompt, 
+          timestamp: new Date() 
+        }]);
+      } else {
+        setEventData(prev => ({ ...prev, user_drinks: [...(prev.user_drinks || []), userText] }));
+        const ack = await translateText("🥤 Added to beverage list. Anything else? (If none, type 'done')", eventData.language);
+        setMessages(prev => [...prev, { 
+          id: `bot-collect-next-drink-${Date.now()}`,
+          role: 'bot', 
+          content: ack, 
+          timestamp: new Date() 
+        }]);
+      }
+      setIsProcessing(false);
+      return;
+    }
+
+    if (flowState === 'collecting_desserts') {
+      if (lowerInput === 'done' || lowerInput === 'none' || lowerInput === 'stop' || lowerInput === 'tapos' || lowerInput === 'wala') {
+        setFlowState('normal');
+        const nextIdx = qIndex + 1; // Move to dietary_needs
+        setQIndex(nextIdx);
+        const nextPrompt = await translateText(QUESTIONS[nextIdx].text, eventData.language);
+        setMessages(prev => [...prev, { 
+          id: `bot-q-dietary-${Date.now()}`,
+          role: 'bot', 
+          content: nextPrompt, 
+          timestamp: new Date() 
+        }]);
+      } else {
+        setEventData(prev => ({ ...prev, user_desserts: [...(prev.user_desserts || []), userText] }));
+        const ack = await translateText("🍰 Sweet! Added. Anything else? (If none, type 'done')", eventData.language);
+        setMessages(prev => [...prev, { 
+          id: `bot-collect-next-dessert-${Date.now()}`,
+          role: 'bot', 
+          content: ack, 
+          timestamp: new Date() 
+        }]);
+      }
+      setIsProcessing(false);
       return;
     }
 
     if (!isCurrencyClarification) {
       const validation = await validateAnswer(currentQuestion.text, userText);
       
-      if (!validation.valid) {
+      if (!validation.valid && currentQuestion.key !== 'catering_mode') {
         setMessages(prev => [...prev, { 
           id: `bot-val-${Date.now()}`,
           role: 'bot', 
@@ -310,27 +421,23 @@ export default function App() {
         return;
       }
     }
-    // ---------------------------------------
 
     // Special Logic: If the user provides a lot of info at once, attempt to skip questions
-    if (isPossiblyBulk && qIndex === 0) {
+    if (isPossiblyBulk && qIndex <= 1) {
       setMessages(prev => [...prev, { 
         id: `bot-bulk-${Date.now()}`,
         role: 'bot', 
         content: "🧠 Detecting multi-requirement input. Synchronizing neural extraction...", 
         timestamp: new Date() 
       }]);
-      // Trigger orchestration immediately with the bulk input
-      await triggerOrchestration(userText, {});
+      await triggerOrchestration(userText, { language: eventData.language || 'English' });
       return;
     }
 
-    // Update event data
     let refinedAmount = userText;
     const currencyRegex = /[\$\£\€\¥\₱\₹]|(USD|PHP|EUR|GBP|AED|CAD|AUD|JPY|CNY|PESO|PESOS)/i;
     
     if (currentQuestion.key === 'budget' && eventData.budget && !currencyRegex.test(eventData.budget)) {
-      // If we are clarifying currency, join them
       if (currencyRegex.test(userText) || /^\w{3}$/.test(userText)) {
         refinedAmount = `${eventData.budget} ${userText}`;
       }
@@ -338,7 +445,6 @@ export default function App() {
 
     const newEventData = { ...eventData, [currentQuestion.key]: refinedAmount };
 
-    // Validation for Budget Currency
     if (currentQuestion.key === 'budget') {
       const hasCurrency = currencyRegex.test(refinedAmount);
       if (!hasCurrency && /^\d+$/.test(refinedAmount.replace(/[,. ]/g, ''))) {
@@ -348,78 +454,146 @@ export default function App() {
           content: "I've noted the amount! Just to be precise, which currency are you using? (e.g., $, ₱, USD, PHP, Pesos)", 
           timestamp: new Date() 
         }]);
-        return; // Don't advance to next question
+        setIsProcessing(false);
+        return;
       }
     }
 
     setEventData(newEventData);
 
-      if (qIndex < QUESTIONS.length - 1) {
-        const nextIdx = qIndex + 1;
-        setIsProcessing(true);
-
-        // Check if we just answered location or date, and if we have both, check weather
-        let botMessage = QUESTIONS[nextIdx].text;
-        
-        if (currentQuestion.key === 'event_location' || currentQuestion.key === 'event_date') {
-          const loc = newEventData.event_location;
-          const dat = newEventData.event_date;
-          if (loc && dat) {
-            try {
-              const weather = await predictWeather(loc, dat);
-              if (weather && weather.summary) {
-                setMessages(prev => [...prev, { 
-                  id: `bot-weather-${Date.now()}`,
-                  role: 'bot', 
-                  content: `🌦️ Weather Forecast: ${weather.summary}. Risk Level: ${weather.risk_level?.toUpperCase() || 'LOW'}.`, 
-                  timestamp: new Date() 
-                }]);
-                
-                // Ask for permission to suggest based on weather
-                setTimeout(() => {
-                  setMessages(prev => [...prev, { 
-                    id: `bot-weather-follow-${Date.now()}`,
-                    role: 'bot', 
-                    content: "Do you want me to suggest food based on the weather info that I've gathered? (Yes/No)", 
-                    timestamp: new Date() 
-                  }]);
-                  setIsWaitingForWeatherSelection(true);
-                  setIsProcessing(false);
-                }, 1000);
-
-                // Also store it for orchestration
-                setEventData(prev => ({ ...prev, weather_data: weather }));
-                return; // STOP HERE and wait for yes/no
-              }
-            } catch (err) {
-              console.error("Chat weather error:", err);
-            }
-          }
+      // MODE SELECTION Logic
+      if (currentQuestion.key === 'catering_mode') {
+        const isManual = lowerInput.includes('manual') || lowerInput.includes('provide') || lowerInput.includes('list') || lowerInput.includes('sila') || lowerInput.includes('ako') || lowerInput.includes('kami');
+        if (isManual) {
+          setFlowState('collecting_dishes');
+          const promptText = await translateText("🍽️ Understood. Please list your dishes one by one. What is the first dish you'd like to include?", eventData.language);
+          setMessages(prev => [...prev, { 
+            id: `bot-collect-start-${Date.now()}`,
+            role: 'bot', 
+            content: promptText, 
+            timestamp: new Date() 
+          }]);
+          setIsProcessing(false);
+          return;
+        } else {
+          // AI Suggest mode - ask for cuisine preference first
+          const promptText = await translateText("🍽️ Excellent! I'm activating the **Microsoft Magentic-One Orchestrator**. Any specific cuisine preference for the suggestions? (e.g. Filipino, Italian, BBQ, or 'surprise me')", eventData.language);
+          setMessages(prev => [...prev, { 
+            id: `bot-cuisine-ask-${Date.now()}`,
+            role: 'bot', 
+            content: promptText, 
+            timestamp: new Date() 
+          }]);
+          setFlowState('normal'); 
+          setIsProcessing(false);
+          return;
         }
+      }
+
+    // CUISINE INPUT (Transient state after catering_mode if Suggest)
+    if (currentQuestion.key === 'catering_mode' && !flowState.startsWith('collecting')) {
+        setEventData(prev => ({ ...prev, cuisine_preference: userText }));
+        const nextIdx = qIndex + 1; // dietary_needs
+        
+        // Add a transition message
+        const confirmText = await translateText(`✨ Got it! I'll prepare some amazing **${userText}** options for you.`, eventData.language);
+        setMessages(prev => [...prev, { 
+            id: `bot-cuisine-confirm-${Date.now()}`,
+            role: 'bot', 
+            content: confirmText, 
+            timestamp: new Date() 
+        }]);
+
+        const nextQText = await translateText(QUESTIONS[nextIdx].text, eventData.language);
 
         setTimeout(() => {
           setQIndex(nextIdx);
           setMessages(prev => [...prev, { 
             id: `bot-q-${Date.now()}`,
             role: 'bot', 
-            content: botMessage, 
+            content: nextQText, 
             timestamp: new Date() 
           }]);
           setIsProcessing(false);
-        }, 800);
-      } else {
-        // We are at the end or in a clarification loop
-        let fullPrompt = Object.entries(newEventData)
-          .map(([k, v]) => `${k.replace('_', ' ')}: ${v}`)
-          .join(', ');
-        
-        if (useWeatherSuggestion !== null) {
-          fullPrompt += `. Weather-based menu prioritization: ${useWeatherSuggestion ? 'YES' : 'NO'}.`;
-        }
-        
-        triggerOrchestration(fullPrompt, newEventData);
-      }
+        }, 1500); // Increased delay
+        return;
     }
+
+    if (qIndex < QUESTIONS.length - 1) {
+      const nextIdx = qIndex + 1;
+      
+      if (currentQuestion.key === 'event_location' || currentQuestion.key === 'event_date') {
+        const loc = newEventData.event_location;
+        const dat = newEventData.event_date;
+        if (loc && dat) {
+          try {
+            const weather = await predictWeather(loc, dat);
+            if (weather && weather.summary) {
+              const translatedSummary = await translateText(`🌦️ Weather Forecast: ${weather.summary}. Risk Level: ${weather.risk_level?.toUpperCase() || 'LOW'}.`, eventData.language);
+              setMessages(prev => [...prev, { 
+                id: `bot-weather-${Date.now()}`,
+                role: 'bot', 
+                content: translatedSummary, 
+                timestamp: new Date() 
+              }]);
+              
+              const translatedFollowUp = await translateText("Do you want me to suggest food based on the weather info that I've gathered? (Yes/No)", eventData.language);
+              setTimeout(() => {
+                setMessages(prev => [...prev, { 
+                  id: `bot-weather-follow-${Date.now()}`,
+                  role: 'bot', 
+                  content: translatedFollowUp, 
+                  timestamp: new Date() 
+                }]);
+                setIsWaitingForWeatherSelection(true);
+                setIsProcessing(false);
+              }, 1000);
+              setEventData(prev => ({ ...prev, weather_data: weather }));
+              return;
+            }
+          } catch (err) {
+            console.error("Chat weather error:", err);
+          }
+        }
+      }
+
+      const nextQText = await translateText(QUESTIONS[nextIdx].text, eventData.language);
+
+      setTimeout(() => {
+        setQIndex(nextIdx);
+        setMessages(prev => [...prev, { 
+          id: `bot-q-${Date.now()}`,
+          role: 'bot', 
+          content: nextQText, 
+          timestamp: new Date() 
+        }]);
+        setIsProcessing(false);
+      }, 800);
+    } else {
+      const finalMsg = await translateText("🎯 All set! I have everything I need. Now, sit back while I synchronize with our AI experts to craft your perfect menu and operational plan...", eventData.language);
+      setMessages(prev => [...prev, { 
+        id: `bot-final-${Date.now()}`,
+        role: 'bot', 
+        content: finalMsg, 
+        timestamp: new Date() 
+      }]);
+
+      let fullPrompt = Object.entries(newEventData)
+        .filter(([k]) => k !== 'user_dishes' && k !== 'user_drinks' && k !== 'user_desserts')
+        .map(([k, v]) => `${k.replace('_', ' ')}: ${v}`)
+        .join(', ');
+      
+      if (newEventData.user_dishes?.length) fullPrompt += `. USER DISHES: ${newEventData.user_dishes.join(', ')}`;
+      if (newEventData.user_drinks?.length) fullPrompt += `. USER DRINKS: ${newEventData.user_drinks.join(', ')}`;
+      if (newEventData.user_desserts?.length) fullPrompt += `. USER DESSERTS: ${newEventData.user_desserts.join(', ')}`;
+      
+      if (useWeatherSuggestion !== null) {
+        fullPrompt += `. Weather-based menu prioritization: ${useWeatherSuggestion ? 'YES' : 'NO'}.`;
+      }
+      
+      triggerOrchestration(fullPrompt, newEventData);
+    }
+  }
 
   const triggerOrchestration = async (fullInput: string, data: any) => {
     setIsChatting(false);
@@ -438,7 +612,7 @@ export default function App() {
       const result = await orchestrateCatering(fullInput, (step) => {
         setSteps(prev => [...prev, step]);
         setCurrentStepIndex(prev => prev + 1);
-      });
+      }, { language: eventData.language });
 
       if (result.success) {
         if (user) {
@@ -469,6 +643,8 @@ export default function App() {
         errorMsg = "Neural link saturated (Quota Exceeded). If running locally, check your GEMINI_API_KEY limits. Please try again in 60 seconds.";
       } else if (errorMsg.includes("503") || errorMsg.includes("high demand")) {
         errorMsg = "AI Models under heavy load. Please retry in a few moments.";
+      } else if (errorMsg.includes("Rpc failed") || errorMsg.includes("xhr error") || errorMsg.includes("code: 6")) {
+        errorMsg = "Neural connection interface failure (RPC/XHR Error). This usually indicates a momentary link instability. Please try again or refresh the page.";
       } else if (errorMsg.includes("GEMINI_API_KEY")) {
         errorMsg = "GEMINI_API_KEY missing. Ensure you have a .env file with your key.";
       }
@@ -932,7 +1108,7 @@ export default function App() {
                     <div>
                       <div className="flex items-center gap-2 mb-1">
                         <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                        <p className="text-violet-100/70 text-[9px] uppercase font-bold tracking-[0.2em]">Operational Check Optimal</p>
+                        <p className="text-violet-100/70 text-[9px] uppercase font-bold tracking-[0.2em]">Microsoft Agent Framework | Magentic-One Orchestration</p>
                       </div>
                       <h2 className="text-3xl font-black tracking-tighter uppercase italic">Event Proposal</h2>
                     </div>
@@ -1096,7 +1272,7 @@ export default function App() {
                       alt={selectedDish.dish}
                       referrerPolicy="no-referrer"
                       onError={(e) => {
-                        (e.target as HTMLImageElement).src = `https://loremflickr.com/800/1000/food,${selectedDish.dish}`;
+                        (e.target as HTMLImageElement).src = `https://image.pollinations.ai/prompt/gourmet food plate, ${selectedDish.dish}?width=800&height=1000&seed=1`;
                       }}
                     />
                     <div className="absolute -inset-4 bg-violet-600/10 blur-3xl -z-10 rounded-full opacity-50" />
@@ -1119,26 +1295,27 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="space-y-4">
-                    <h4 className="text-[9px] text-zinc-600 uppercase font-black tracking-[0.4em] flex justify-between items-center mb-2">
+                  <div className="space-y-6">
+                    <h4 className="text-[9px] text-zinc-600 uppercase font-black tracking-[0.4em] flex flex-wrap justify-between items-center gap-2 mb-2">
                       <span>Biometric Matrix Profile</span>
                       <span className="text-violet-500 font-mono">DISTRIBUTION MAP</span>
                     </h4>
                     
-                    <div className="h-40 w-full bg-black/20 rounded-3xl border border-white/5 flex items-center justify-center overflow-hidden mb-6">
-                       <ResponsiveContainer width="100%" height="100%">
+                    <div className="h-48 md:h-56 lg:h-64 w-full bg-black/20 rounded-[32px] border border-white/5 flex items-center justify-center overflow-hidden mb-8 relative group">
+                       <div className="absolute inset-0 bg-gradient-to-br from-violet-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                       <ResponsiveContainer width="100%" height="90%">
                          <PieChart>
                            <Pie
                              data={[
-                               { name: 'Protein', value: selectedDish.macros?.protein || 0, color: '#10b981' },
-                               { name: 'Carbs', value: selectedDish.macros?.carbs || 0, color: '#f59e0b' },
-                               { name: 'Fat', value: selectedDish.macros?.fat || 0, color: '#ec4899' }
+                               { name: 'Protein', value: selectedDish.macros?.protein || 0 },
+                               { name: 'Carbs', value: selectedDish.macros?.carbs || 0 },
+                               { name: 'Fat', value: selectedDish.macros?.fat || 0 }
                              ]}
                              cx="50%"
                              cy="50%"
-                             innerRadius={40}
-                             outerRadius={55}
-                             paddingAngle={8}
+                             innerRadius="65%"
+                             outerRadius="85%"
+                             paddingAngle={10}
                              dataKey="value"
                              stroke="none"
                            >
@@ -1147,7 +1324,13 @@ export default function App() {
                              <Cell fill="#ec4899" />
                            </Pie>
                            <Tooltip 
-                             contentStyle={{ backgroundColor: '#0f172a', borderColor: 'rgba(255,255,255,0.1)', borderRadius: '12px', fontSize: '10px' }} 
+                             contentStyle={{ 
+                               backgroundColor: '#0f172a', 
+                               borderColor: 'rgba(255,255,255,0.1)', 
+                               borderRadius: '16px', 
+                               fontSize: '11px',
+                               boxShadow: '0 10px 25px -5px rgba(0,0,0,0.5)'
+                             }} 
                              itemStyle={{ fontWeight: '900', textTransform: 'uppercase' }}
                            />
                          </PieChart>
@@ -1393,28 +1576,35 @@ function AgentReport({ step, onDishClick }: { step: AgentStep, onDishClick?: (di
                       className="w-full h-full object-cover opacity-90 group-hover:opacity-100 group-hover:scale-110 transition-all duration-1000 ease-out"
                       referrerPolicy="no-referrer"
                       onError={(e) => {
-                        (e.target as HTMLImageElement).src = `https://loremflickr.com/800/600/food,${i}`;
+                        (e.target as HTMLImageElement).src = `https://image.pollinations.ai/prompt/gourmet food plate, ${i}?width=400&height=300&seed=${i}`;
                       }}
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-zinc-950/80 via-transparent to-transparent" />
                     <div className="absolute top-4 left-4 flex gap-2">
-                       <span className="px-3 py-1 bg-violet-600/90 text-[8px] font-black uppercase text-white rounded-full border border-white/20">
+                       <span className="px-3 py-1 bg-violet-600/90 text-[8px] font-black uppercase text-white rounded-full border border-white/20 shadow-lg backdrop-blur-sm">
                           {item.category || 'Main'}
                        </span>
                     </div>
-                    <div className="absolute bottom-4 left-4 right-4 flex justify-between items-center">
-                       <span className="text-sm font-black text-white tracking-tight italic">{item.dish}</span>
-                       <span className="text-[10px] font-black text-emerald-400 bg-black/60 px-2 py-0.5 rounded border border-white/10">₱{item.estimated_price}/pax</span>
+                    <div className="absolute bottom-0 left-0 right-0 p-5 bg-gradient-to-t from-zinc-950 via-zinc-950/70 to-transparent">
+                      <div className="flex flex-col gap-2">
+                        <span className="text-sm font-black text-white tracking-tight italic uppercase block leading-tight truncate">{item.dish}</span>
+                        <div className="flex justify-between items-center w-full">
+                          <span className="text-[10px] font-black text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded border border-emerald-400/20">₱{item.estimated_price}/pax</span>
+                          <div className="flex items-center gap-1.5 opacity-60">
+                            <Zap className="w-2.5 h-2.5 text-amber-500" />
+                            <span className="text-[9px] font-bold text-zinc-300">{item.calories || '---'} kcal</span>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                  <div className="p-5 space-y-3">
+                  <div className="p-5 flex-grow flex flex-col justify-between">
                     <p className="text-xs text-zinc-400 leading-relaxed italic line-clamp-3">"{item.description}"</p>
-                    <div className="flex justify-between items-center pt-3 border-t border-white/5">
-                      <div className="flex items-center gap-1.5">
-                        <Zap className="w-3 h-3 text-amber-500" />
-                        <span className="text-[10px] font-bold text-zinc-400">{item.calories || '---'} kcal</span>
+                    <div className="flex justify-between items-center pt-3 border-t border-white/5 group-hover:border-white/10 transition-colors">
+                      <span className="text-[9px] font-black text-violet-400 uppercase tracking-widest">{item.serving_size || 'Portion Guide'}</span>
+                      <div className="flex items-center gap-1 text-violet-400">
+                        <span className="text-[9px] font-black uppercase tracking-widest">Details</span>
                       </div>
-                      <span className="text-[9px] font-black text-violet-400 uppercase tracking-widest">Show Details</span>
                     </div>
                   </div>
                 </div>
@@ -1506,13 +1696,15 @@ function AgentReport({ step, onDishClick }: { step: AgentStep, onDishClick?: (di
                    </div>
 
                    <div className="grid grid-cols-2 gap-4">
-                      <div className="bg-fuchsia-950/10 p-5 border border-fuchsia-500/10 hover:bg-fuchsia-500/5 transition-colors rounded-2xl">
-                         <span className="text-[9px] font-bold text-fuchsia-400/60 uppercase block mb-1 font-mono">Cost Per Guest</span>
-                         <p className="text-xl font-black text-white font-mono">{data.cost_per_person || data.unit_cost}</p>
+                      <div className="bg-fuchsia-950/20 p-6 border border-fuchsia-500/20 hover:bg-fuchsia-500/10 transition-all rounded-3xl group">
+                         <span className="text-[9px] font-black text-fuchsia-400 uppercase block mb-1 font-mono tracking-widest">Total Event Cost</span>
+                         <p className="text-2xl font-black text-white font-mono group-hover:scale-105 transition-transform origin-left">{data.total_projected_cost || data.optimized_quote}</p>
+                         <span className="text-[8px] text-fuchsia-500/60 font-medium uppercase mt-1 block tracking-tighter">Budget Utilization: 100%</span>
                       </div>
-                      <div className="bg-fuchsia-950/10 p-5 border border-fuchsia-500/10 hover:bg-fuchsia-500/5 transition-colors rounded-2xl">
-                         <span className="text-[9px] font-bold text-fuchsia-400/60 uppercase block mb-1 font-mono">Profit Yield</span>
-                         <p className="text-xl font-black text-emerald-400 font-mono italic">{data.margin || data.profit_margin}</p>
+                      <div className="bg-fuchsia-950/10 p-6 border border-fuchsia-500/10 hover:bg-fuchsia-500/5 transition-all rounded-3xl group">
+                         <span className="text-[9px] font-bold text-fuchsia-400/60 uppercase block mb-1 font-mono tracking-widest">Cost Per Guest</span>
+                         <p className="text-2xl font-black text-white font-mono group-hover:scale-105 transition-transform origin-left">{data.cost_per_person || data.unit_cost}</p>
+                         <span className="text-[8px] text-fuchsia-500/60 font-medium uppercase mt-1 block tracking-tighter">Pro-rata Breakdown</span>
                       </div>
                    </div>
                 </div>
@@ -1559,41 +1751,38 @@ function AgentReport({ step, onDishClick }: { step: AgentStep, onDishClick?: (di
       case 'Logistics Planning Agent':
         return (
           <div className="space-y-6">
+            <div className="text-[9px] font-bold text-violet-500/40 uppercase tracking-widest font-mono">Mission Process Overview</div>
+            <div className="bg-violet-950/30 p-5 border border-violet-500/20 relative overflow-hidden group shadow-xl">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/5 blur-3xl rounded-full" />
+              <p className="text-sm text-zinc-200 leading-relaxed font-bold italic relative z-10">
+                {data.process_discussion}
+              </p>
+            </div>
+
+            <div className="text-[9px] font-bold text-violet-500/40 uppercase tracking-widest font-mono">Personnel Matrix (Total: {data.total_staff_count || 0})</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+              {data.staff_roles?.map((role: any, i: number) => (
+                <div key={i} className="bg-blue-500/5 p-4 border border-blue-500/20 rounded-2xl group hover:bg-blue-500/10 transition-all">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-xs font-black text-blue-400 uppercase tracking-widest font-mono">{role.role}</span>
+                    <span className="px-2 py-0.5 bg-blue-500 text-black text-xs font-black rounded">{role.count}</span>
+                  </div>
+                  <p className="text-[10px] text-zinc-500 italic leading-snug">{role.description}</p>
+                </div>
+              ))}
+            </div>
+
             <div className="text-[9px] font-bold text-violet-500/40 uppercase tracking-widest font-mono">Operational Timeline</div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {data.timeline?.map((t: any, i: number) => (
                 <div key={i} className="flex flex-col bg-violet-950/20 p-4 border border-violet-500/10 relative group hover:border-blue-500/40 transition-all hover:scale-[1.02]">
                   <div className="flex justify-between items-start mb-3">
                     <span className="text-xs font-black text-blue-400 font-mono tracking-tighter bg-blue-500/10 px-3 py-1 border border-blue-500/20 shadow-[0_0_15px_rgba(59,130,246,0.2)]">{t.time}</span>
-                    <span className="text-[9px] font-bold text-violet-500/60 font-mono uppercase tracking-widest px-2">{t.duration}</span>
                   </div>
                   <p className="text-base font-black text-white leading-tight uppercase tracking-tight italic line-clamp-2 drop-shadow-md">{t.activity}</p>
                   <div className="absolute top-0 right-0 w-20 h-20 bg-blue-500/5 blur-2xl rounded-full translate-x-1/2 -translate-y-1/2 group-hover:bg-blue-500/10 transition-colors" />
                 </div>
               ))}
-            </div>
-            
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-6 border-t border-violet-500/10">
-              <div className="bg-violet-950/40 p-6 border border-violet-500/30 relative overflow-hidden group min-h-[160px] shadow-xl">
-                <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/10 blur-3xl rounded-full" />
-                <div className="flex items-center gap-4 mb-5 relative z-10">
-                  <div className="w-2 h-8 bg-blue-500 shadow-[0_0_20px_rgba(59,130,246,1)]" />
-                  <span className="text-xs font-black text-blue-400 uppercase tracking-[0.25em] font-mono">Personnel Protocol</span>
-                </div>
-                <p className="text-sm text-violet-100 leading-relaxed font-bold italic relative z-10 pr-4">
-                  {data.staffing_needs}
-                </p>
-              </div>
-              <div className="bg-violet-950/40 p-6 border border-violet-500/30 relative overflow-hidden group min-h-[160px] shadow-xl">
-                <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 blur-3xl rounded-full" />
-                <div className="flex items-center gap-4 mb-5 relative z-10">
-                  <div className="w-2 h-8 bg-indigo-500 shadow-[0_0_20px_rgba(99,102,241,1)]" />
-                  <span className="text-xs font-black text-indigo-400 uppercase tracking-[0.25em] font-mono">Transport Logistics</span>
-                </div>
-                <p className="text-sm text-violet-100 leading-relaxed font-bold italic relative z-10 pr-4">
-                  {data.transport_plan}
-                </p>
-              </div>
             </div>
           </div>
         );
