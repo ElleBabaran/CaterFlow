@@ -10,6 +10,8 @@ export default defineConfig(({mode}) => {
     define: {
       // SECURITY: Do NOT expose API keys to browser
       // All API calls go through backend which has the keys
+      'process.env': {},
+      'process': { env: {} },
     },
     resolve: {
       alias: {

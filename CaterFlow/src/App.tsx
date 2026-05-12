@@ -277,6 +277,10 @@ export default function App() {
     }
   }, [messages, isProcessing, showSummary, eventData]);
   useEffect(() => {
+    if (!auth) {
+      setLoading(false);
+      return;
+    }
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
       if (u) {

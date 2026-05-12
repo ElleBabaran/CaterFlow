@@ -1,4 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
+console.log("[CaterFlow] Orchestrator Service Loading - Fix Applied 2026-05-12");
 import {
   buildSupplierContext,
   dietaryLabels,
@@ -12,7 +13,8 @@ import {
 } from "./knowledgeBase";
 import { parseBudgetDetails } from "./budget";
 
-export const apiKey = process.env.GEMINI_API_KEY || "";
+// @ts-ignore
+export const apiKey = (typeof process !== 'undefined' ? process.env.GEMINI_API_KEY : import.meta.env.VITE_GEMINI_API_KEY) || "";
 export const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 
 const AGENT_ORDER = [
@@ -44,7 +46,8 @@ const AGENT_DISPLAY_NAMES: Record<string, string> = {
 };
 
 export async function predictWeather(location: string, date: string) {
-  const openWeatherKey = process.env.OPENWEATHERMAP_API_KEY || "";
+  // @ts-ignore
+  const openWeatherKey = (typeof process !== 'undefined' ? process.env.OPENWEATHERMAP_API_KEY : import.meta.env.VITE_OPENWEATHERMAP_API_KEY) || "";
 
   if (openWeatherKey && location) {
     try {
