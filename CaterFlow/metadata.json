@@ -1,0 +1,6 @@
+{
+  "name": "CaterFlow AI",
+  "description": "Multi-agent AI catering management system for automated event planning and operations.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": []
+}
