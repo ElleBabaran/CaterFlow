@@ -63,7 +63,7 @@ export function rateLimit(req: Request, res: Response): boolean {
   
   if (!limitData || now > limitData.resetTime) {
     limitData = { count: 1, resetTime: now + RATE_LIMIT_WINDOW };
-    rateLimitMap.set(ip);
+    rateLimitMap.set(ip, limitData);
     return true;
   }
 
