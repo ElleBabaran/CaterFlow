@@ -49,7 +49,7 @@ import {
 } from 'recharts';
 import { auth, signInWithGoogle, logout, loginWithEmail, signupWithEmail, WorkspaceRole } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { processIntake, orchestrateCatering, validateUserResponse, getDishImage } from './services/orchestrator';
+import { processIntake, orchestrateCatering, validateUserResponse } from './services/orchestrator';
 import { mongoService } from './services/mongodb';
 import { hasCurrencyMarker } from './services/budget';
 import { GeoOpsLeafletMap } from './components/GeoOpsLeafletMap';
@@ -59,6 +59,14 @@ import { AdminShopSetup } from './components/admin/AdminShopSetup';
 import { AdminDashboard } from './components/dashboard/AdminDashboard';
 import { StaffTaskBoard } from './components/operations/StaffTaskBoard';
 import { DriverView } from './components/operations/DriverView';
+import { BlueprintSummary } from './components/plan/BlueprintSummary';
+import { ShopDiscovery } from './components/discovery/ShopDiscovery';
+import { ShopDetailsModal } from './components/discovery/ShopDetailsModal';
+import { MarketplaceChat } from './components/chat/MarketplaceChat';
+import { OrderQR } from './components/plan/OrderQR';
+import { PublicOrderView } from './components/plan/PublicOrderView';
+
+
 
 interface AgentStep {
   agent: string;
@@ -199,7 +207,7 @@ export default function App() {
   const [workspaceRole, setWorkspaceRole] = useState<WorkspaceRole>('customer');
   const [signupRole, setSignupRole] = useState<WorkspaceRole>('customer');
   const [reportView, setReportView] = useState<'all' | 'menu' | 'logistics' | 'finance'>('menu');
-  const [dashboardView, setDashboardView] = useState<'conversation' | 'summary' | 'operations' | 'finance' | 'admin-dashboard' | 'admin-inbox' | 'shop-setup' | 'inventory-planner' | 'menu-editor' | 'checkout' | 'staff-tasks' | 'delivery'>('conversation');
+  const [dashboardView, setDashboardView] = useState<'conversation' | 'blueprint' | 'discovery' | 'marketplace-chat' | 'qr' | 'summary' | 'operations' | 'finance' | 'admin-dashboard' | 'admin-inbox' | 'shop-setup' | 'inventory-planner' | 'menu-editor' | 'checkout' | 'staff-tasks' | 'delivery'>('conversation');
   const [activePhaseIndex, setActivePhaseIndex] = useState<number>(0);
   const [expandedStepIndex, setExpandedStepIndex] = useState<number | null>(0);
   const [showDetailedAgentView, setShowDetailedAgentView] = useState<boolean>(false);
@@ -218,6 +226,12 @@ export default function App() {
   const [showLogin, setShowLogin] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
+  const [selectedShop, setSelectedShop] = useState<any>(null);
+  const [publicOrderId, setPublicOrderId] = useState<string | null>(new URLSearchParams(window.location.search).get('orderId'));
+
+  const [showShopDetails, setShowShopDetails] = useState<string | null>(null);
+  const [isConversationSaved, setIsConversationSaved] = useState(false);
+
   const [isWaitingForWeather, setIsWaitingForWeather] = useState(false);
 
   const [localMenu, setLocalMenu] = useState<any[]>([]);
@@ -391,7 +405,12 @@ export default function App() {
       }
       setLoading(false);
     });
-    return () => unsubscribe();
+    
+  if (publicOrderId) {
+    return <PublicOrderView orderId={publicOrderId} />;
+  }
+
+  return () => unsubscribe();
   }, [messages.length]);
 
   const handleVoiceInput = () => {
@@ -847,6 +866,34 @@ export default function App() {
     setIsChatting(!item.steps?.length);
     setShowHistory(false);
     setCurrentStepIndex(item.steps?.length || -1);
+  };
+
+  
+  const handleSaveConversation = async () => {
+    if (!activeConversationId) return;
+    try {
+      await fetch(`/api/events/${activeConversationId}/save-prompt`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      setIsConversationSaved(true);
+      alert("Conversation saved to your history!");
+    } catch (err) {
+      console.error("Save failed:", err);
+    }
+  };
+
+  const handleRestartWithPrompt = () => {
+    if (!isConversationSaved && messages.length > 2) {
+      if (window.confirm("Do you want to save this conversation before clearing?")) {
+        handleSaveConversation().then(restartChat);
+        return;
+      }
+    }
+    restartChat();
   };
 
   const restartChat = () => {
@@ -1400,22 +1447,7 @@ export default function App() {
               <AnimatePresence mode="wait">
                 {dashboardView === 'admin-inbox' && (
                   <AdminInbox
-                    plans={[{
-                      _id: 'sample-1',
-                      eventId: 'evt-123',
-                      customerName: 'Aron Customer',
-                      customerEmail: 'aron@example.com',
-                      customerUid: 'cust-1',
-                      eventType: 'Wedding Reception',
-                      guests: 150,
-                      budget: '₱75,000',
-                      location: 'Taguig City',
-                      date: '2026-12-25',
-                      menuSummary: ['Lechon Pork', 'Chicken Inasal', 'Chopsuey'],
-                      quote: '₱75,000',
-                      sentAt: new Date().toISOString(),
-                      status: 'new'
-                    }]}
+                    plans={[]}
                     adminUid={user.uid}
                     adminName={user.displayName || 'Admin'}
                     onSendMessage={async (planId, text) => {
@@ -1441,6 +1473,44 @@ export default function App() {
                     pricing={pricingStep}
                   />
                 )}
+                
+                {dashboardView === 'discovery' && (
+                  <ShopDiscovery 
+                    eventData={eventData} 
+                    onSelectShop={(id) => setShowShopDetails(id)} 
+                  />
+                )}
+                {dashboardView === 'marketplace-chat' && selectedShop && (
+                  <div className="space-y-6">
+                    <MarketplaceChat 
+                      eventId={activeConversationId || ''} 
+                      shop={selectedShop} 
+                      currentUser={user}
+                      eventData={eventData}
+                      menuItems={localMenu}
+                    />
+                    <div className="flex justify-center">
+                      <button 
+                        onClick={() => setDashboardView('qr')}
+                        className="px-8 py-4 bg-white border border-slate-200 rounded-2xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-emerald-600 hover:border-emerald-200 transition-all shadow-sm flex items-center gap-2"
+                      >
+                        <QrCode className="w-4 h-4" />
+                        Generate Order QR Code
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {dashboardView === 'qr' && activeConversationId && (
+                  <div className="py-10">
+                    <OrderQR orderId={activeConversationId} orderData={{ menu: localMenu, event: eventData }} />
+                    <div className="mt-8 text-center">
+                      <button onClick={() => setDashboardView('marketplace-chat')} className="text-xs font-bold text-slate-400 hover:text-slate-600 uppercase tracking-widest">
+                        Back to Chat
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {dashboardView === 'summary' && (
                   <div className="relative min-h-[calc(100vh-80px)] w-full pb-16">
                     {/* Glassmorphism Background Blobs */}
@@ -1595,7 +1665,7 @@ export default function App() {
                       <Save className="h-3 w-3" />
                       Save
                     </button>
-                    <button onClick={restartChat} className="text-[9px] font-bold text-emerald-700 hover:text-emerald-900 uppercase tracking-widest bg-emerald-50 px-3 py-1.5 rounded-full border border-emerald-100">New</button>
+                    <button onClick={handleRestartWithPrompt} className="text-[9px] font-bold text-emerald-700 hover:text-emerald-900 uppercase tracking-widest bg-emerald-50 px-3 py-1.5 rounded-full border border-emerald-100">New</button>
                     {activeConversationId && (
                       <button onClick={() => deleteConversation()} className="inline-flex items-center gap-1 text-[9px] font-bold text-rose-700 hover:text-rose-900 uppercase tracking-widest bg-rose-50 px-3 py-1.5 rounded-full border border-rose-100">
                         <Trash2 className="h-3 w-3" />
@@ -2077,13 +2147,31 @@ export default function App() {
                         {/* Menu Items */}
                         {(menuStep.menu || []).length > 0 && (
                           <div>
-                            <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400 mb-3">Menu Items ({(menuStep.menu || []).length} dishes)</p>
-                            <div className="flex flex-wrap gap-2">
+                            <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400 mb-3">AI Recommendations ({(menuStep.menu || []).length})</p>
+                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                               {(menuStep.menu || []).map((item: any, i: number) => (
-                                <span key={i} className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-emerald-50 border border-emerald-100 text-sm font-semibold text-emerald-800">
-                                  <Utensils className="w-3 h-3 text-emerald-400" />
-                                  {item.dish}
-                                </span>
+                                <div key={`${item.dish}-${i}`} className="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-emerald-200 hover:shadow-xl hover:shadow-emerald-900/10">
+                                  <FoodImageFrame item={item} compact />
+                                  <div className="p-4 space-y-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <p className="text-sm font-black text-slate-950 leading-tight">{item.dish}</p>
+                                        <p className="mt-1 text-xs font-semibold text-slate-500 line-clamp-2">{item.description}</p>
+                                      </div>
+                                      {(item.price || item.portion_per_guest) && (
+                                        <span className="shrink-0 rounded-full bg-emerald-50 px-3 py-1 text-[10px] font-black text-emerald-700 border border-emerald-100">
+                                          {item.price || item.portion_per_guest}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                      {[(item.category || ''), ...(item.tags || [])].filter(Boolean).slice(0, 3).map((tag: string) => (
+                                        <span key={tag} className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[9px] font-black uppercase tracking-wider text-slate-500">{tag}</span>
+                                      ))}
+                                    </div>
+                                    {item.reasoning && <p className="text-xs leading-relaxed text-slate-600">{item.reasoning}</p>}
+                                  </div>
+                                </div>
                               ))}
                             </div>
                           </div>
@@ -2335,22 +2423,7 @@ export default function App() {
                   )}
                   {dashboardView === 'admin-inbox' && (
                     <AdminInbox
-                      plans={[{
-                        _id: 'sample-1',
-                        eventId: 'evt-123',
-                        customerName: 'Aron Customer',
-                        customerEmail: 'aron@example.com',
-                        customerUid: 'cust-1',
-                        eventType: 'Wedding Reception',
-                        guests: 150,
-                        budget: '₱75,000',
-                        location: 'Taguig City',
-                        date: '2026-12-25',
-                        menuSummary: ['Lechon Pork', 'Chicken Inasal', 'Chopsuey'],
-                        quote: '₱75,000',
-                        sentAt: new Date().toISOString(),
-                        status: 'new'
-                      }]}
+                      plans={[]}
                       adminUid={user.uid}
                       adminName={user.displayName || 'Admin'}
                       onSendMessage={async (planId, text) => {
@@ -3026,7 +3099,7 @@ function ProblemStatementFit({ stackStatus }: { stackStatus: any }) {
             ))}
           </div>
           <p className="mt-3 text-[9px] leading-4 text-slate-600 font-medium border-t border-amber-200/50 pt-3">
-            Agent Framework and Foundry path live in the Python backend; Azure AI Search powers RAG when credentials are set, otherwise local menus and suppliers keep the demo running.
+            Recommendations are generated by the configured Azure AI runtime. Missing credentials now surface as an error instead of demo content.
           </p>
         </div>
       </div>
@@ -3034,9 +3107,44 @@ function ProblemStatementFit({ stackStatus }: { stackStatus: any }) {
   );
 }
 
+function FoodImageFrame({ item, compact = false }: { item: any, compact?: boolean }) {
+  const height = compact ? "h-36" : "h-52";
+  if (item?.image_url) {
+    return (
+      <div className={`relative ${height} overflow-hidden bg-slate-100`}>
+        <img src={item.image_url} alt={item.dish} className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" />
+        <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
+      </div>
+    );
+  }
+
+  return (
+    <div className={`relative ${height} overflow-hidden bg-[radial-gradient(circle_at_20%_20%,#ecfdf5,transparent_36%),linear-gradient(135deg,#f8fafc,#dff7ea_55%,#fef3c7)]`}>
+      <div className="absolute inset-x-6 bottom-5 h-14 rounded-full bg-white/35 blur-xl" />
+      <div className="absolute inset-0 grid place-items-center">
+        <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-white/70 bg-white/55 text-emerald-700 shadow-lg backdrop-blur">
+          <Utensils className="h-7 w-7" />
+        </div>
+      
+      {showShopDetails && (
+        <ShopDetailsModal 
+          shopId={showShopDetails} 
+          onClose={() => setShowShopDetails(null)} 
+          onStartChat={(shop) => {
+            setSelectedShop(shop);
+            setShowShopDetails(null);
+            setDashboardView('marketplace-chat');
+          }}
+        />
+      )}
+</div>
+    </div>
+  );
+}
+
 function FoodDetailModal({ item, onClose }: { item: any, onClose: () => void }) {
   if (!item) return null;
-  const ingredients = item.allergens?.map((a: string) => a) || [];
+  const ingredients = Array.isArray(item.ingredients) ? item.ingredients : [];
   return (
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -3048,31 +3156,39 @@ function FoodDetailModal({ item, onClose }: { item: any, onClose: () => void }) 
         onClick={e => e.stopPropagation()}
         className="w-full max-w-md bg-white rounded-[2rem] overflow-hidden shadow-2xl"
       >
-        <div className="relative h-52 overflow-hidden">
-          <img src={item.image_url || getDishImage(item.dish)} alt={item.dish} className="w-full h-full object-cover"
-            onError={(e) => { (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&q=80&w=600&h=420'; }} />
+        <div className="relative overflow-hidden">
+          <FoodImageFrame item={item} />
           <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-transparent to-transparent" />
           <button onClick={onClose} className="absolute top-4 right-4 w-9 h-9 bg-white/20 backdrop-blur rounded-full flex items-center justify-center text-white hover:bg-white/30 transition"><X className="w-4 h-4" /></button>
           <div className="absolute bottom-4 left-5 right-5">
-            <p className="text-[10px] font-black uppercase tracking-widest text-emerald-300 mb-1">{item.tags?.includes('dessert') ? 'Dessert' : item.tags?.includes('drinks') ? 'Beverage' : 'Main Dish'}</p>
+            <p className="text-[10px] font-black uppercase tracking-widest text-emerald-300 mb-1">{item.category || item.tags?.[0] || 'AI Recommendation'}</p>
             <h3 className="text-xl font-black text-white leading-tight">{item.dish}</h3>
           </div>
         </div>
         <div className="p-6 space-y-4">
           <div>
             <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">About this dish</p>
-            <p className="text-sm text-slate-700 leading-relaxed font-medium">{item.description || 'A carefully crafted dish tailored to your event.'}</p>
+            <p className="text-sm text-slate-700 leading-relaxed font-medium">{item.description}</p>
           </div>
-          <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-100 rounded-2xl px-4 py-3">
-            <Utensils className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-            <div>
-              <p className="text-[9px] font-black uppercase tracking-widest text-emerald-600">Portion per Guest</p>
-              <p className="text-sm font-bold text-slate-800">{item.portion_per_guest || '1 serving'}</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-100 rounded-2xl px-4 py-3">
+              <Utensils className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+              <div>
+                <p className="text-[9px] font-black uppercase tracking-widest text-emerald-600">Portion</p>
+                <p className="text-sm font-bold text-slate-800">{item.portion_per_guest || '--'}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 bg-sky-50 border border-sky-100 rounded-2xl px-4 py-3">
+              <DollarSign className="w-4 h-4 text-sky-600 flex-shrink-0" />
+              <div>
+                <p className="text-[9px] font-black uppercase tracking-widest text-sky-600">Price</p>
+                <p className="text-sm font-bold text-slate-800">{item.price || '--'}</p>
+              </div>
             </div>
           </div>
           {ingredients.length > 0 && (
             <div>
-              <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Allergens / Key Ingredients</p>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Ingredients</p>
               <div className="flex flex-wrap gap-2">
                 {ingredients.map((ing: string, i: number) => (
                   <span key={i} className="px-3 py-1 rounded-full bg-amber-50 border border-amber-100 text-xs font-semibold text-amber-800">{ing}</span>
@@ -3166,29 +3282,23 @@ function AgentReport({ step, isExpanded, onToggle }: { step: AgentStep, isExpand
                   onClick={() => setSelectedFood(item)}
                   className="text-left bg-white border border-slate-200 rounded-3xl overflow-hidden flex flex-col group transition-all hover:border-emerald-300 hover:shadow-lg shadow-sm cursor-pointer"
                 >
-                  <div className="h-40 w-full relative overflow-hidden">
-                    <img
-                      src={item.image_url || getDishImage(item.dish)}
-                      alt={item.dish}
-                      className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
-                      onError={(e) => { (e.target as HTMLImageElement).src = getDishImage(item.dish); }}
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-slate-950/75 via-transparent to-transparent" />
+                  <div className="relative overflow-hidden">
+                    <FoodImageFrame item={item} compact />
                     <div className="absolute top-3 right-3">
                       <span className="text-[8px] font-black uppercase tracking-widest bg-white/20 backdrop-blur text-white px-2 py-1 rounded-full border border-white/30">Tap for details</span>
                     </div>
                     <div className="absolute bottom-3 left-4 right-4">
                       <p className="text-[9px] font-black uppercase tracking-widest text-emerald-300 mb-0.5">
-                        {item.tags?.includes('dessert') ? 'Dessert' : item.tags?.includes('drinks') ? 'Beverage' : 'Main Dish'}
+                        {item.category || item.tags?.[0] || 'AI Recommendation'}
                       </p>
                       <span className="text-base font-black text-white tracking-tight line-clamp-1">{item.dish}</span>
                     </div>
                   </div>
                   <div className="p-4 flex-1 flex flex-col">
                     <p className="text-xs text-slate-600 leading-relaxed line-clamp-2 font-medium flex-1">{item.description}</p>
-                    <div className="mt-3 flex justify-between items-center pt-3 border-t border-slate-100">
-                      <span className="text-[9px] text-slate-400 font-black uppercase tracking-widest">Per guest</span>
-                      <span className="text-xs text-emerald-700 font-bold bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100">{item.portion_per_guest}</span>
+                    <div className="mt-3 grid grid-cols-2 gap-2 pt-3 border-t border-slate-100">
+                      <span className="text-xs text-emerald-700 font-bold bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100 truncate">{item.portion_per_guest || '--'}</span>
+                      <span className="text-xs text-sky-700 font-bold bg-sky-50 px-3 py-1 rounded-full border border-sky-100 truncate">{item.price || '--'}</span>
                     </div>
                   </div>
                 </button>
@@ -3604,4 +3714,5 @@ function CheckoutPortal({ shop, event, blueprint, status, onAccept, onFinalize }
     </motion.div>
   );
 }
+
 

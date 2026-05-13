@@ -253,6 +253,199 @@ async function startServer() {
     });
   });
 
+  function parseAiJson(text: string) {
+    const cleaned = String(text || "").replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
+    try {
+      return JSON.parse(cleaned);
+    } catch {
+      const start = cleaned.indexOf("{");
+      const end = cleaned.lastIndexOf("}");
+      if (start >= 0 && end > start) return JSON.parse(cleaned.slice(start, end + 1));
+      throw new Error("AI response was not valid JSON");
+    }
+  }
+
+  function normalizeMenuPlan(plan: any) {
+    const menu = Array.isArray(plan?.menu) ? plan.menu : [];
+    if (!menu.length) throw new Error("AI returned no menu recommendations");
+
+    return {
+      customer: plan.customer || {},
+      knowledge: plan.knowledge || { mode: "ai_only" },
+      dietary: plan.dietary || {},
+      weather: plan.weather || {},
+      menu: {
+        dietary_compliance: plan.menu_summary?.dietary_compliance || plan.dietary?.summary || "",
+        cultural_adaptation: plan.menu_summary?.cultural_adaptation || "",
+        nutrition_summary: plan.menu_summary?.nutrition_summary || {},
+        menu: menu.map((item: any, index: number) => ({
+          id: item.id || `ai-item-${index + 1}`,
+          dish: String(item.dish || item.name || "").trim(),
+          description: String(item.description || "").trim(),
+          category: String(item.category || item.type || "Chef recommendation").trim(),
+          price: String(item.price || item.estimated_price || "").trim(),
+          portion_per_guest: String(item.portion_per_guest || item.portion || "").trim(),
+          ingredients: Array.isArray(item.ingredients) ? item.ingredients.map(String) : [],
+          reasoning: String(item.reasoning || item.reason || "").trim(),
+          tags: Array.isArray(item.tags) ? item.tags.map(String) : [],
+          allergens: Array.isArray(item.allergens) ? item.allergens.map(String) : [],
+          dietary_compliance: String(item.dietary_compliance || "").trim(),
+          image_url: String(item.image_url || "").trim(),
+        })).filter((item: any) => item.dish),
+      },
+      inventory: plan.inventory || { procurement_list: [] },
+      suppliers: plan.suppliers || { supplier_matches: [], catering_shop_recommendations: [] },
+      logistics: plan.logistics || {},
+      pricing: plan.pricing || {},
+      monitoring: plan.monitoring || {},
+    };
+  }
+
+  app.post("/api/ai/orchestrate", rateLimit(60_000, 12), async (req, res) => {
+    const { prompt = "" } = req.body || {};
+    if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 6000) {
+      return res.status(400).json({ error: "Invalid planning prompt" });
+    }
+
+    const endpoint = (process.env.AZURE_OPENAI_ENDPOINT || process.env.FOUNDRY_PROJECT_ENDPOINT || "").trim().replace(/^"|"$/g, '');
+    const deployment = (process.env.AZURE_OPENAI_DEPLOYMENT_NAME || process.env.FOUNDRY_MODEL || "").trim().replace(/^"|"$/g, '');
+    const apiVersion = (process.env.AZURE_OPENAI_API_VERSION || process.env.FOUNDRY_API_VERSION || "2024-10-21").trim().replace(/^"|"$/g, '');
+    const apiKey = (process.env.AZURE_OPENAI_API_KEY || process.env.FOUNDRY_API_KEY || process.env.FOUNDRY_API || "").trim().replace(/^"|"$/g, '');
+
+    console.log("[DEBUG] AI Config Check:", { 
+      endpoint: !!endpoint, 
+      deployment: !!deployment, 
+      apiKey: !!apiKey,
+      raw_foundry_api: !!process.env.FOUNDRY_API 
+    });
+
+    if (!endpoint || !deployment || !apiKey) {
+      return res.status(503).json({
+        error: "Azure AI Foundry/OpenAI is not configured",
+        details: {
+          endpointConfigured: Boolean(endpoint),
+          deploymentConfigured: Boolean(deployment),
+          apiVersion,
+          apiKeyConfigured: Boolean(apiKey),
+        },
+      });
+    }
+
+    const url = `${endpoint.replace(/\/$/, "")}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions?api-version=${encodeURIComponent(apiVersion)}`;
+    const systemPrompt = [
+      "You are CaterFlow's production food recommendation engine.",
+      "Generate original, contextual catering recommendations from the user's brief only.",
+      "Do not use fixed examples, fallback menus, mock data, repeated canned dishes, or placeholder food names.",
+      "Return JSON only. Include unique menu cards with dish, category (must be 'meal', 'beverage', or 'dessert'), price, ingredients, reasoning, tags, allergens, portion_per_guest, and optional image_url.",
+      "Ensure a balanced mix of meals, beverages, and desserts suitable for the theme.",
+      "If the brief is incomplete, make reasonable AI assumptions and disclose them in monitoring.assumptions.",
+    ].join(" ");
+
+    try {
+      const aiResponse = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "api-key": apiKey,
+        },
+        body: JSON.stringify({
+          messages: [
+            { role: "system", content: systemPrompt },
+            {
+              role: "user",
+              content: `Create a complete catering plan for this brief: ${prompt}
+
+JSON shape:
+{
+  "customer": {"event_type":"","guests":0,"budget":"","location":"","date":"","cuisine_preference":"","service_style":""},
+  "knowledge": {"mode":"azure_openai_ai_only","notes":[]},
+  "dietary": {"allergens_to_avoid":[],"recommended_labels":[],"safety_controls":[],"summary":""},
+  "weather": {"summary":"","risk_level":"","recommendations":[]},
+  "menu_summary": {"dietary_compliance":"","cultural_adaptation":"","nutrition_summary":{}},
+  "menu": [{"dish":"","description":"","category":"","price":"","portion_per_guest":"","ingredients":[],"reasoning":"","tags":[],"allergens":[],"dietary_compliance":"","image_url":""}],
+  "inventory": {"procurement_list":[{"item":"","qty":"","source_category":""}],"procurement_weight_kg":0,"potential_shortages":[],"food_safety_notes":[]},
+  "suppliers": {"supplier_matches":[],"catering_shop_recommendations":[],"optimization_strategy":""},
+  "logistics": {"timeline":[{"time":"","activity":""}],"staffing_needs":"","equipment_list":[],"transport_plan":""},
+  "pricing": {"optimized_quote":"","cost_breakdown":[],"margin_strategy":"","menu_item_counts":{}},
+  "monitoring": {"execution_readiness":0,"quality_checks":[],"assumptions":[],"final_summary":""}
+}`,
+            },
+          ],
+          temperature: 0.9,
+          top_p: 0.95,
+          response_format: { type: "json_object" },
+        }),
+      });
+
+      const raw = await aiResponse.text();
+      console.log("--------------------------------------------------");
+      console.log("[Azure AI Foundry RAW Payload Received]");
+      console.log(raw);
+      console.log("--------------------------------------------------");
+
+      if (!aiResponse.ok) {
+        return res.status(502).json({ error: "Azure AI request failed", details: raw });
+      }
+
+      const envelope = JSON.parse(raw);
+      const content = envelope?.choices?.[0]?.message?.content;
+      const plan = normalizeMenuPlan(parseAiJson(content));
+      res.json({
+        success: true,
+        provider: "azure_openai",
+        deployment,
+        apiVersion,
+        data: plan,
+      });
+    } catch (err: any) {
+      console.error("[Azure AI Orchestration Error]", err?.message || err);
+      res.status(502).json({ error: "Failed to generate AI recommendations", details: err?.message || String(err) });
+    }
+  });
+
+  // ── Single Item Regeneration Endpoint ──────────────────────────────────
+  app.post("/api/ai/regenerate-item", rateLimit(60_000, 20), async (req, res) => {
+    try {
+      const { currentItem, context } = req.body || {};
+      
+      const endpoint = (process.env.AZURE_OPENAI_ENDPOINT || process.env.FOUNDRY_PROJECT_ENDPOINT || "").trim().replace(/^"|"$/g, '');
+      const deployment = (process.env.AZURE_OPENAI_DEPLOYMENT_NAME || process.env.FOUNDRY_MODEL || "").trim().replace(/^"|"$/g, '');
+      const apiKey = (process.env.AZURE_OPENAI_API_KEY || process.env.FOUNDRY_API_KEY || process.env.FOUNDRY_API || "").trim().replace(/^"|"$/g, '');
+
+      if (!endpoint || !deployment || !apiKey) {
+        return res.status(503).json({ error: "AI service not configured" });
+      }
+
+      const url = `${endpoint.replace(/\/$/, "")}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions?api-version=2024-10-21`;
+      
+      const prompt = `System: You are an expert catering chef. 
+      Context: The user is planning a ${context?.theme || 'General'} event for ${context?.guests || 10} guests in ${context?.location || 'Manila'}.
+      Current Item to replace: ${JSON.stringify(currentItem)}
+      Task: Provide ONE alternative dish that fits the same category (${currentItem?.category || 'meal'}) but is different and better.
+      Return ONE JSON object matching the menu card schema: dish, category, price, ingredients, reasoning, tags, allergens, portion_per_guest, image_url.
+      No markdown, no preamble.`;
+
+      const aiResponse = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "api-key": apiKey },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.8,
+          response_format: { type: "json_object" }
+        })
+      });
+
+      const result = await aiResponse.json();
+      const content = result.choices?.[0]?.message?.content;
+      const newItem = JSON.parse(content || "{}");
+      
+      res.json({ success: true, newItem });
+    } catch (err) {
+      console.error("Regeneration failed:", err);
+      res.status(500).json({ error: "Failed to regenerate item" });
+    }
+  });
+
   app.get("/api/events/user/:userId", requireAuth, requireOwnerOrAdmin((req) => req.params.userId), async (req, res) => {
     try {
       const userId = req.params.userId;
@@ -398,6 +591,108 @@ async function startServer() {
   });
 
   // Shop Inventory endpoints
+  
+  // Enhanced Shop Discovery
+  app.get("/api/shops/discovery", async (req, res) => {
+    try {
+      const { location, budget, guests } = req.query;
+      let query: any = { isActive: true };
+      
+      // Basic location filtering if location string is provided
+      if (location) {
+        query.location = { $regex: location, $options: 'i' };
+      }
+      
+      // In a real app, we'd use GeoJSON for distance, but here we filter by city/name
+      const shops = await Shop.find(query).limit(10);
+      res.json(shops);
+    } catch (err) {
+      res.status(500).json({ error: "Discovery failed" });
+    }
+  });
+
+  app.get("/api/shops/:id", async (req, res) => {
+    try {
+      const shop = await Shop.findById(req.params.id);
+      if (!shop) return res.status(404).json({ error: "Shop not found" });
+      res.json(shop);
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch shop details" });
+    }
+  });
+
+  // Real-time Marketplace Chat
+  app.get("/api/chat/:eventId", requireAuth, async (req, res) => {
+    try {
+      const auth = (req as any).auth;
+      const chat = await Chat.findOne({ 
+        eventId: req.params.eventId,
+        participants: auth.uid 
+      });
+      res.json(chat || { messages: [] });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch chat" });
+    }
+  });
+
+  app.post("/api/chat/send", requireAuth, async (req, res) => {
+    try {
+      const auth = (req as any).auth;
+      const { eventId, text, type, attachment, shopId } = req.body;
+      
+      let chat = await Chat.findOne({ eventId });
+      
+      if (!chat) {
+        // Create new chat if it doesn't exist
+        const participants = [auth.uid];
+        if (shopId) {
+          const shop = await Shop.findById(shopId);
+          if (shop) participants.push(shop.adminId);
+        }
+        
+        chat = new Chat({
+          eventId,
+          customerId: auth.uid,
+          shopId,
+          participants,
+          messages: []
+        });
+      }
+
+      const newMessage = {
+        senderId: auth.uid,
+        role: auth.role,
+        text,
+        type: type || 'text',
+        attachment: attachment || null,
+        timestamp: new Date()
+      };
+
+      chat.messages.push(newMessage);
+      chat.updatedAt = new Date();
+      await chat.save();
+      
+      res.json(chat);
+    } catch (err) {
+      console.error("Chat error:", err);
+      res.status(500).json({ error: "Failed to send message" });
+    }
+  });
+
+  app.post("/api/events/:id/save-prompt", requireAuth, async (req, res) => {
+    try {
+      const event = await Event.findById(req.params.id);
+      if (!event) return res.status(404).json({ error: "Event not found" });
+      
+      // Logic to permanently lock or tag the event as 'saved'
+      event.type = 'saved_plan';
+      await event.save();
+      res.json({ success: true, event });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to save conversation" });
+    }
+  });
+
   app.get("/api/shops/my/inventory", requireAuth, async (req, res) => {
     try {
       const shop = await Shop.findOne({ adminId: (req as any).auth.uid });
@@ -572,12 +867,12 @@ async function startServer() {
           purpose: "FoundryChatClient path for running the Microsoft Agent Framework workflow.",
         },
         azureAiSearch: {
-          status: process.env.AZURE_AI_SEARCH_ENDPOINT && process.env.AZURE_AI_SEARCH_KEY ? "configured" : "local_fallback",
+          status: process.env.AZURE_AI_SEARCH_ENDPOINT && process.env.AZURE_AI_SEARCH_KEY ? "configured" : "credential_required",
           indexes: process.env.AZURE_AI_SEARCH_INDEX ? [process.env.AZURE_AI_SEARCH_INDEX] : ["menus", "suppliers"],
           purpose: "RAG retrieval for menu playbooks and supplier/catering-shop context.",
         },
       },
-      activeRuntime: process.env.GEMINI_API_KEY ? "Cloud AI Runtime Configured" : "Local Deterministic Fallback",
+      activeRuntime: process.env.AZURE_OPENAI_API_KEY || process.env.FOUNDRY_API_KEY ? "Azure AI Runtime Configured" : "Azure AI Credentials Required",
     });
   });
 
@@ -588,9 +883,9 @@ async function startServer() {
     const apiKey = process.env.AZURE_AI_SEARCH_KEY;
 
     if (!endpoint || !apiKey) {
-      res.json({
-        mode: "local_fallback",
-        message: "Azure AI Search is not configured. The React demo uses the local menus and suppliers knowledge base.",
+      res.status(503).json({
+        mode: "azure_ai_search_unconfigured",
+        message: "Azure AI Search is not configured.",
         query,
       });
       return;

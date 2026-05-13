@@ -156,8 +156,8 @@ export function DriverView({ event, logistics }: { event: any, logistics: any })
             <div className="space-y-4">
               {[
                 'Entrance: Loading Dock 3 (Behind South Wing)',
-                'Point of Contact: Ms. Karen (+63 917 123 4567)',
-                'Special Handling: Fragile Lechon platter',
+                'Point of Contact: Event coordinator',
+                'Special Handling: Fragile AI-recommended platter',
               ].map((note, i) => (
                 <div key={i} className="flex gap-3 items-start">
                   <div className="w-1.5 h-1.5 rounded-full bg-[var(--accent-color)] mt-1.5 flex-shrink-0" />

@@ -123,7 +123,7 @@ export function AdminInventory({ shopId, initialItems, onSave }: {
                       <input
                         value={item.name}
                         onChange={e => updateItem(item.id, 'name', e.target.value)}
-                        placeholder="e.g. Chicken Inasal Skewers"
+                        placeholder="AI-generated menu item name"
                         className="w-full admin-input"
                       />
                     </div>

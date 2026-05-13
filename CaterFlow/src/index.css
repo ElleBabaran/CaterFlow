@@ -201,19 +201,19 @@
   80% { transform: translate(2px, -2px); }
   100% { transform: translate(0); }
 }
-.glass-card {
+@utility glass-card {
   background: rgba(255, 255, 255, 0.7);
   backdrop-filter: blur(16px) saturate(180%);
   border: 1px solid rgba(255, 255, 255, 0.3);
   @apply rounded-[2.5rem] shadow-2xl;
 }
 
-.bongga-gradient {
+@utility bongga-gradient {
   background: linear-gradient(135deg, #166534 0%, #065f46 50%, #064e3b 100%);
   @apply text-white shadow-xl shadow-emerald-900/20;
 }
 
-.premium-stat-card {
+@utility premium-stat-card {
   @apply bg-white border border-slate-200 rounded-[2rem] p-6 shadow-sm hover:shadow-xl transition-all duration-500 hover:-translate-y-1;
 }
 
@@ -237,7 +237,7 @@
   --input-bg: rgba(255, 255, 255, 0.5);
 }
 
-.admin-card {
+@utility admin-card {
   background-color: var(--card-bg);
   border: 1px solid var(--border-color);
   color: var(--text-color);
@@ -291,8 +291,92 @@
   @apply rounded-2xl px-6 py-3 text-xs font-black uppercase tracking-widest hover:opacity-90 transition-all shadow-lg shadow-[var(--accent-color)]/20 active:scale-95;
 }
 
+
 .customer-theme {
   --accent-color: var(--primary-emerald);
   --bg-color: #fbf7ee;
+}
+
+/* Premium UI Overhaul Additions */
+@utility premium-card {
+  @apply bg-white border border-slate-200/60 rounded-[3rem] p-8 shadow-sm hover:shadow-2xl hover:shadow-emerald-900/5 transition-all duration-500 hover:-translate-y-2 overflow-hidden relative;
+}
+
+@utility premium-gradient-bg {
+  @apply bg-gradient-to-br from-slate-900 via-slate-800 to-emerald-950 text-white;
+}
+
+@utility premium-tag {
+  @apply text-[10px] font-black text-emerald-700 bg-emerald-50 px-4 py-2 rounded-xl border border-emerald-100 uppercase tracking-widest shadow-sm;
+}
+
+@utility premium-input {
+  @apply w-full px-6 py-4 bg-white rounded-2xl border border-slate-200 text-sm font-bold text-slate-800 outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/5 transition-all shadow-sm;
+}
+
+@utility premium-button {
+  @apply px-10 py-5 rounded-[1.5rem] text-[11px] font-black uppercase tracking-[0.2em] transition-all duration-500 shadow-2xl active:scale-95 flex items-center justify-center gap-3;
+}
+
+.premium-button-primary {
+  @apply bg-slate-900 text-white hover:bg-emerald-700 shadow-slate-900/20;
+}
+
+/* Loading Skeletons */
+@keyframes shimmer {
+  0% { background-position: -1000px 0; }
+  100% { background-position: 1000px 0; }
+}
+
+@utility skeleton {
+  background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+  background-size: 1000px 100%;
+  animation: shimmer 2s infinite linear;
+  @apply rounded-xl;
+}
+
+@utility skeleton-card {
+  @apply premium-card border-slate-100;
+}
+
+@utility skeleton-text {
+  @apply h-4 w-full skeleton mb-2;
+}
+
+@utility skeleton-title {
+  @apply h-8 w-3/4 skeleton mb-4;
+}
+
+@utility skeleton-avatar {
+  @apply w-12 h-12 skeleton rounded-2xl;
+}
+
+/* Chat Styles */
+@utility chat-bubble-user {
+  @apply bg-slate-900 text-white rounded-[2rem] rounded-tr-none px-6 py-4 shadow-xl shadow-slate-900/10 max-w-[85%] self-end font-medium leading-relaxed;
+}
+
+@utility chat-bubble-ai {
+  @apply bg-white border border-slate-200/60 rounded-[2rem] rounded-tl-none px-6 py-4 shadow-sm max-w-[85%] self-start font-medium leading-relaxed text-slate-800;
+}
+
+
+.chat-container-gradient {
+  background: 
+    radial-gradient(circle at 0% 0%, rgba(16, 185, 129, 0.05) 0%, transparent 50%),
+    radial-gradient(circle at 100% 100%, rgba(242, 184, 75, 0.05) 0%, transparent 50%);
+}
+
+/* Premium Slider */
+@utility premium-slider {
+  @apply w-full h-2 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-emerald-600;
+}
+
+.premium-slider::-webkit-slider-thumb {
+  @apply appearance-none w-6 h-6 bg-slate-900 border-4 border-white rounded-full shadow-xl transition-all duration-300;
+}
+
+.premium-slider::-webkit-slider-thumb:hover {
+  @apply scale-125 bg-emerald-600;
 }
 

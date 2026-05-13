@@ -69,7 +69,7 @@ export function StaffTaskBoard({ tasks, onToggle }: { tasks: StaffTask[], onTogg
           <div className="staff-card p-6 bg-[var(--accent-color)] text-white shadow-xl shadow-[var(--accent-color)]/20">
             <h3 className="text-[10px] font-black uppercase tracking-widest opacity-70 mb-2">Urgent Notification</h3>
             <p className="text-lg font-black leading-tight uppercase tracking-tight italic">
-              "Customer requested extra napkins and chili oil for the Lechon portion."
+              "Customer requested extra service items for one AI-recommended course."
             </p>
           </div>
         </div>
