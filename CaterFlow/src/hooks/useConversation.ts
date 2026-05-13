@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import { Message } from '../types';
 import { QUESTIONS, getQuestionText, detectFoodChoiceMode } from '../services/questions';
-import { validateUserResponse, generateConversationalPrompt, predictWeather } from '../services/orchestrator';
+import { validateUserResponse, generateConversationalPrompt, prefetchWeather, predictWeather } from '../services/orchestrator';
 import { hasCurrencyMarker } from '../services/budget';
 
 export function useConversation() {
@@ -40,19 +40,27 @@ export function useConversation() {
 
     const newEventData = { ...eventData, [currentQuestion.key]: refinedAmount };
 
-    // Weather check (Priority 3 fix: use newEventData)
+    // ── Pre-fetch weather the moment location is answered (fire-and-forget) ──
+    // By the time the user answers the date question, weather is already cached.
+    if (currentQuestion.key === 'event_location' && userText.length > 2) {
+      prefetchWeather(userText, newEventData.event_date || 'TBD', newEventData.preferred_language || 'english');
+    }
+
+    // ── Show weather when date is answered (cache hit = near-instant) ────────
     if (currentQuestion.key === 'event_date' && newEventData.event_location) {
-      predictWeather(newEventData.event_location, userText).then(weather => {
+      predictWeather(newEventData.event_location, userText, newEventData.preferred_language || 'english').then(weather => {
+        if (!weather) return;
+        const recs = (weather.recommendations || []).filter(Boolean).join('\n');
         setMessages(prev => [...prev, {
           id: `bot-weather-${Date.now()}`,
           role: 'bot',
-          content: `🌤️ **Weather Forecast for ${newEventData.event_location}:** ${weather.summary}\n\n${weather.recommendations[0]}`,
+          content: `🌤️ **Weather Forecast for ${newEventData.event_location}:** ${weather.summary}${recs ? '\n' + recs : ''}`,
           timestamp: new Date()
         }]);
       });
     }
 
-    // Currency prompt if missing
+    // ── Currency prompt if missing ────────────────────────────────────────────
     if (currentQuestion.key === 'budget') {
       const hasCurrency = hasCurrencyMarker(refinedAmount);
       if (!hasCurrency && /^\d+$/.test(refinedAmount.replace(/[,. ]/g, ''))) {
@@ -72,7 +80,13 @@ export function useConversation() {
     if (qIndex < QUESTIONS.length - 1) {
       setIsProcessing(true);
 
-      const validation = await validateUserResponse(currentQuestion.text, userText, newEventData.preferred_language);
+      // ── Validation (fast — skips AI for confident deterministic answers) ───
+      const validation = await validateUserResponse(
+        currentQuestion.key,
+        currentQuestion.text,
+        userText,
+        newEventData.preferred_language
+      );
       if (!validation.valid) {
         setMessages(prev => [...prev, { 
           id: `bot-err-${Date.now()}`,
@@ -86,17 +100,17 @@ export function useConversation() {
 
       let nextIdx = qIndex + 1;
       
-      // Branching logic for food choice (Priority 3 fix: detectFoodChoiceMode)
+      // ── Skip specific_food_items if user chose "suggest" mode ────────────
       if (currentQuestion.key === 'food_choice_mode') {
         const mode = detectFoodChoiceMode(userText);
         newEventData.food_choice_mode = mode;
-        
         if (mode === 'suggest') {
           const skipIdx = QUESTIONS.findIndex(q => q.key === 'specific_food_items');
           if (skipIdx !== -1 && nextIdx === skipIdx) nextIdx++;
         }
       }
 
+      // ── Generate conversational reply with next question baked in ─────────
       const nextQuestion = getQuestionText(nextIdx, newEventData.preferred_language);
       const conversationalReply = await generateConversationalPrompt(
         currentQuestion.key,
@@ -107,33 +121,32 @@ export function useConversation() {
       );
       const botMessage = conversationalReply.reply || nextQuestion;
 
-      setTimeout(() => {
-        setQIndex(nextIdx);
-        setMessages(prev => [...prev, {
-          id: `bot-q-${Date.now()}`,
-          role: 'bot', 
-          content: botMessage, 
-          timestamp: new Date() 
-        }]);
-        setIsProcessing(false);
-      }, 800);
+      // ── No artificial delay — respond immediately ─────────────────────────
+      setQIndex(nextIdx);
+      setMessages(prev => [...prev, {
+        id: `bot-q-${Date.now()}`,
+        role: 'bot', 
+        content: botMessage, 
+        timestamp: new Date() 
+      }]);
+      setIsProcessing(false);
+
     } else {
+      // ── End of questions — show summary ───────────────────────────────────
       if (isConfirming || showSummary) {
         const updatedSpecial = `${newEventData.special_requests || ""}\nAdditional info: ${userText}`.trim();
         const finalEventData = { ...newEventData, special_requests: updatedSpecial };
         setEventData(finalEventData);
         setIsProcessing(true);
-        setTimeout(() => {
-          setIsConfirming(true);
-          setShowSummary(true);
-          setMessages(prev => [...prev, { 
-            id: `sys-review-update-${Date.now()}`,
-            role: 'bot', 
-            content: "Got it! I've added that to your request. Here is the updated summary:", 
-            timestamp: new Date() 
-          }]);
-          setIsProcessing(false);
-        }, 800);
+        setIsConfirming(true);
+        setShowSummary(true);
+        setMessages(prev => [...prev, { 
+          id: `sys-review-update-${Date.now()}`,
+          role: 'bot', 
+          content: "Got it! I've added that to your request. Here is the updated summary:", 
+          timestamp: new Date() 
+        }]);
+        setIsProcessing(false);
         return;
       }
 

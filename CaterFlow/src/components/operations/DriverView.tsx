@@ -1,98 +1,186 @@
 import React, { useState } from 'react';
-import { motion } from 'motion/react';
-import { Truck, MapPin, Send, Users } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { 
+  Navigation, 
+  Truck, 
+  MapPin, 
+  Utensils, 
+  CheckCircle2, 
+  Clock, 
+  ChefHat, 
+  Package,
+  Calendar,
+  DollarSign,
+  ShieldCheck,
+  ChevronRight,
+  Send, 
+  Users 
+} from 'lucide-react';
+import { MapContainer, Marker, Popup, TileLayer } from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
+import L from 'leaflet';
+
+// Custom tomato pin for the driver
+const tomatoIcon = new L.Icon({
+  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-orange.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41],
+});
 
 export function DriverView({ event, logistics }: { event: any, logistics: any }) {
-  const [driverMsg, setDriverMsg] = useState('');
-  const [chat, setChat] = useState<any[]>([
-    { sender: 'driver', text: "Just arrived at the kitchen. Loading the packages now.", time: '10:05 AM' }
-  ]);
+  const [status, setStatus] = useState<'prep' | 'transit' | 'arrived' | 'setup' | 'completed'>('prep');
 
-  const send = () => {
-    if (!driverMsg.trim()) return;
-    setChat([...chat, { sender: 'staff', text: driverMsg, time: '10:12 AM' }]);
-    setDriverMsg('');
-  };
+  const steps = [
+    { id: 'prep', label: 'Preparation', icon: ChefHat },
+    { id: 'transit', label: 'In Transit', icon: Truck },
+    { id: 'arrived', label: 'Arrived', icon: MapPin },
+    { id: 'setup', label: 'Setting Up', icon: Utensils },
+    { id: 'completed', label: 'Event Live', icon: CheckCircle2 },
+  ];
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-[calc(100vh-140px)] grid grid-cols-1 lg:grid-cols-3 gap-6 p-6">
-      <div className="lg:col-span-2 flex flex-col gap-6">
-         <div className="bg-white border border-slate-200 rounded-[2rem] p-6 shadow-sm flex-1 relative overflow-hidden">
-            <div className="absolute inset-0 bg-[#f0f9f1] cyber-grid opacity-30" />
-            <div className="relative h-full flex flex-col">
-               <div className="flex items-center justify-between mb-4 flex-shrink-0">
-                  <div>
-                    <h2 className="text-xl font-black text-slate-900 flex items-center gap-2">
-                      <Truck className="w-5 h-5 text-emerald-600" />
-                      Live Logistics Route
-                    </h2>
-                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">Plate to Venue Delivery</p>
-                  </div>
-                  <div className="bg-emerald-700 text-white px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-[0.2em] shadow-lg shadow-emerald-900/20">
-                    IN TRANSIT
-                  </div>
-               </div>
-               <div className="flex-1 bg-slate-200 rounded-3xl relative overflow-hidden border border-slate-300">
-                  <img src="https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?auto=format&fit=crop&q=80&w=1200" className="w-full h-full object-cover opacity-40" alt="Map mockup" />
-                  <div className="absolute inset-0 bg-emerald-900/10" />
-                  <div className="absolute top-[30%] left-[20%] w-32 h-32 border-4 border-dashed border-emerald-500/50 rounded-full animate-pulse" />
-                  <motion.div 
-                    animate={{ x: [0, 100, 200, 300], y: [0, -20, 10, 0] }}
-                    transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
-                    className="absolute top-1/2 left-[10%] w-10 h-10 bg-white rounded-2xl shadow-2xl grid place-items-center border-2 border-emerald-600 z-10"
-                  >
-                    <Truck className="w-6 h-6 text-emerald-700" />
-                  </motion.div>
-                  <div className="absolute top-[40%] right-[10%] w-12 h-12 bg-emerald-700 rounded-2xl shadow-2xl grid place-items-center text-white z-10 border-2 border-white">
-                    <MapPin className="w-6 h-6" />
-                  </div>
-               </div>
-            </div>
-         </div>
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="p-6 space-y-8 max-w-6xl mx-auto">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-[var(--accent-color)]/10 border border-[var(--accent-color)]/20 flex items-center justify-center">
+            <Navigation className="w-6 h-6 text-[var(--accent-color)]" />
+          </div>
+          <div>
+            <h2 className="text-xl font-black text-slate-900 uppercase tracking-widest">Delivery Command</h2>
+            <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Real-time logistics & route management</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 bg-white/50 backdrop-blur px-4 py-2 rounded-2xl border border-slate-200">
+          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+          <span className="text-[10px] font-black uppercase tracking-widest text-slate-600">GPS Uplink Active</span>
+        </div>
       </div>
 
-      <div className="flex flex-col gap-6 overflow-hidden">
-        <div className="bg-white border border-slate-200 rounded-[2rem] p-6 shadow-sm flex flex-col flex-1 overflow-hidden">
-           <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-6 flex items-center gap-2">
-             <Users className="w-4 h-4" />
-             Chat with Driver
-           </h3>
-           <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
-              {chat.map((m, i) => (
-                <div key={i} className={`flex ${m.sender === 'staff' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[85%] p-4 rounded-3xl text-xs font-bold ${m.sender === 'staff' ? 'bg-emerald-700 text-white rounded-tr-none' : 'bg-slate-100 text-slate-800 rounded-tl-none'}`}>
-                    <p>{m.text}</p>
-                    <span className="text-[7px] mt-1 block opacity-60 uppercase">{m.time}</span>
-                  </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div className="lg:col-span-2 space-y-6">
+          {/* Map Preview */}
+          <div className="staff-card h-[450px] overflow-hidden relative group">
+            <MapContainer center={[14.5547, 121.0509]} zoom={13} style={{ height: '100%', width: '100%' }}>
+              <TileLayer
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
+              <Marker position={[14.5547, 121.0509]} icon={tomatoIcon}>
+                <Popup>
+                  <strong>Delivery Destination</strong><br />
+                  {event.event_location || 'Taguig City'}
+                </Popup>
+              </Marker>
+            </MapContainer>
+            <div className="absolute bottom-6 left-6 right-6 z-[1000]">
+              <div className="bg-white/90 backdrop-blur p-5 rounded-2xl shadow-xl border border-slate-100 flex items-center justify-between">
+                <div>
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Destination</p>
+                  <p className="text-xs font-black text-slate-800 uppercase">{event.event_location || 'High Street, BGC, Taguig'}</p>
                 </div>
-              ))}
-           </div>
-           <div className="mt-4 flex gap-2">
-             <input 
-              value={driverMsg} onChange={e => setDriverMsg(e.target.value)}
-              onKeyPress={e => e.key === 'Enter' && send()}
-              placeholder="Send message to driver..."
-              className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs outline-none focus:border-emerald-500 font-bold"
-             />
-             <button onClick={send} className="w-11 h-11 bg-emerald-700 text-white rounded-xl grid place-items-center hover:bg-emerald-800 transition-all shadow-lg">
-               <Send className="w-4 h-4" />
-             </button>
-           </div>
+                <button className="bg-slate-900 text-white rounded-xl px-5 py-2.5 text-[10px] font-black uppercase tracking-widest hover:bg-slate-800 transition-all flex items-center gap-2">
+                  <MapPin className="w-3.5 h-3.5" /> Launch Navigation
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Timeline Controls */}
+          <div className="staff-card p-8">
+            <div className="flex items-center justify-between mb-10">
+              <h3 className="text-xs font-black uppercase tracking-widest text-slate-400">Journey Progression</h3>
+              <span className="text-[10px] font-black text-white bg-slate-900 px-4 py-1.5 rounded-full uppercase tracking-[0.2em]">Step {steps.findIndex(s => s.id === status) + 1} of 5</span>
+            </div>
+            <div className="relative flex justify-between items-center px-4">
+              <div className="absolute left-8 right-8 h-0.5 bg-slate-100 top-1/2 -translate-y-1/2 -z-10" />
+              <div 
+                className="absolute left-8 h-0.5 bg-[var(--accent-color)] top-1/2 -translate-y-1/2 -z-10 transition-all duration-700" 
+                style={{ width: `${(steps.findIndex(s => s.id === status) / (steps.length - 1)) * 100}%` }}
+              />
+              
+              {steps.map((step, idx) => {
+                const Icon = step.icon;
+                const isCompleted = steps.findIndex(s => s.id === status) >= idx;
+                const isActive = status === step.id;
+                
+                return (
+                  <button
+                    key={step.id}
+                    onClick={() => setStatus(step.id as any)}
+                    className="flex flex-col items-center gap-4 group"
+                  >
+                    <div className={`
+                      w-12 h-12 rounded-2xl flex items-center justify-center transition-all border-2
+                      ${isCompleted ? 'bg-[var(--accent-color)] border-[var(--accent-color)] text-white shadow-lg shadow-[var(--accent-color)]/20' : 'bg-white border-slate-100 text-slate-300 group-hover:border-[var(--accent-color)]/30'}
+                      ${isActive ? 'ring-4 ring-[var(--accent-color)]/10 scale-110' : ''}
+                    `}>
+                      <Icon className="w-5 h-5" />
+                    </div>
+                    <span className={`text-[9px] font-black uppercase tracking-widest ${isCompleted ? 'text-slate-800' : 'text-slate-300'}`}>
+                      {step.label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
 
-        <div className="bg-slate-900 rounded-[2rem] p-6 shadow-sm text-white overflow-y-auto custom-scrollbar h-64">
-           <h3 className="text-[9px] font-black uppercase tracking-[0.25em] text-emerald-400 mb-6">Delivery Checklist</h3>
-           <div className="space-y-4">
-              {logistics?.timeline?.map((t: any, i: number) => (
-                <div key={i} className="flex gap-4 items-start group">
-                   <div className="w-5 h-5 rounded-lg border-2 border-emerald-500/30 group-hover:bg-emerald-500/20 transition-all flex-shrink-0 mt-0.5" />
-                   <div>
-                      <p className="text-[10px] font-black text-emerald-400 font-mono mb-1">{t.time}</p>
-                      <p className="text-xs font-medium text-slate-300 leading-relaxed">{t.activity}</p>
-                   </div>
+        <div className="space-y-6">
+          <div className="staff-card p-6 bg-[var(--accent-color)] text-white shadow-xl shadow-[var(--accent-color)]/20">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="p-2 bg-white/20 rounded-xl">
+                <Clock className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-widest opacity-70">ETA to Venue</p>
+                <p className="text-xl font-black italic uppercase tracking-tighter">14 Minutes</p>
+              </div>
+            </div>
+            <div className="space-y-4">
+              <div className="bg-white/10 rounded-2xl p-4 border border-white/10">
+                <p className="text-[9px] font-black uppercase tracking-widest opacity-60 mb-1">Current Traffic</p>
+                <p className="text-sm font-bold">Moderate Condition (EDSA)</p>
+              </div>
+              <button className="w-full bg-white text-[var(--accent-color)] rounded-2xl py-4 text-xs font-black uppercase tracking-widest shadow-xl hover:bg-slate-50 transition-all active:scale-95">
+                Update Status
+              </button>
+            </div>
+          </div>
+
+          <div className="staff-card p-6 border-dashed bg-white/30 backdrop-blur">
+            <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 mb-5">Venue Logistics</h3>
+            <div className="space-y-4">
+              {[
+                'Entrance: Loading Dock 3 (Behind South Wing)',
+                'Point of Contact: Ms. Karen (+63 917 123 4567)',
+                'Special Handling: Fragile Lechon platter',
+              ].map((note, i) => (
+                <div key={i} className="flex gap-3 items-start">
+                  <div className="w-1.5 h-1.5 rounded-full bg-[var(--accent-color)] mt-1.5 flex-shrink-0" />
+                  <p className="text-xs font-medium text-slate-600 leading-relaxed uppercase tracking-tight">{note}</p>
                 </div>
               ))}
-           </div>
+            </div>
+          </div>
+
+          <div className="staff-card p-6">
+             <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-4">Operations Feed</h3>
+             <div className="space-y-4">
+                {logistics?.timeline?.slice(0, 3).map((t: any, i: number) => (
+                  <div key={i} className="flex gap-3 items-start">
+                     <div className="w-1 h-8 rounded-full bg-slate-100 flex-shrink-0" />
+                     <div>
+                        <p className="text-[10px] font-black text-[var(--accent-color)] mb-0.5">{t.time}</p>
+                        <p className="text-[11px] font-bold text-slate-700 leading-tight">{t.activity}</p>
+                     </div>
+                  </div>
+                ))}
+             </div>
+          </div>
         </div>
       </div>
     </motion.div>

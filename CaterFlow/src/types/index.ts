@@ -9,6 +9,7 @@ export interface Message {
   content: string;
   agent?: string;
   qKey?: string;
+  isWeatherChoice?: boolean;
   timestamp: Date;
 }
 

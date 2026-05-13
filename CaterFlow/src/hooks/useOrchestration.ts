@@ -25,7 +25,7 @@ export function useOrchestration() {
           type: 'plan',
           rawInput: fullPrompt,
           eventData: eventData,
-          steps: result.data.steps, // Assuming result.data contains all steps
+          steps: (result.data as any).steps || [], // Assuming result.data contains all steps
           updatedAt: new Date().toISOString(),
           createdAt: new Date().toISOString()
         };

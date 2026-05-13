@@ -36,7 +36,7 @@ async function startServer() {
     .then(() => console.log("✓ Connected to MongoDB"))
     .catch(err => {
       console.error("✗ MongoDB connection error:", err.message);
-      process.exit(1);
+      console.warn("⚠️  Server continuing without MongoDB — data persistence will be unavailable.");
     });
 
   // Handle connection events
@@ -223,17 +223,19 @@ async function startServer() {
         return res.status(400).json({ error: "Name too long" });
       }
       
-      const finalRole = auth.role === 'admin' && role ? role : 'customer';
+      const update: any = { 
+        email, 
+        name, 
+        photoURL,
+        updatedAt: new Date()
+      };
       
+      // During development/signup, allow setting the role if provided
+      if (role) update.role = role;
+
       const user = await UserProfile.findOneAndUpdate(
         { uid },
-        { 
-          email, 
-          name, 
-          photoURL,
-          $setOnInsert: { role: finalRole },
-          updatedAt: new Date()
-        },
+        { $set: update },
         { upsert: true, new: true }
       );
       res.json(user);
@@ -394,6 +396,116 @@ async function startServer() {
       res.status(500).json({ error: "Failed to save shop" });
     }
   });
+
+  // Shop Inventory endpoints
+  app.get("/api/shops/my/inventory", requireAuth, async (req, res) => {
+    try {
+      const shop = await Shop.findOne({ adminId: (req as any).auth.uid });
+      if (!shop) return res.json({ inventory: [] });
+      res.json({ inventory: (shop as any).inventory || [] });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch inventory" });
+    }
+  });
+
+  app.post("/api/shops/my/inventory", requireAuth, async (req, res) => {
+    try {
+      const { items } = req.body;
+      if (!Array.isArray(items)) return res.status(400).json({ error: "items must be an array" });
+      const shop = await Shop.findOneAndUpdate(
+        { adminId: (req as any).auth.uid },
+        { inventory: items, adminId: (req as any).auth.uid },
+        { upsert: true, new: true }
+      );
+      res.json({ inventory: (shop as any).inventory || [] });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to save inventory" });
+    }
+  });
+
+  // Plans sent to a shop (Admin Inbox)
+  const SentPlanSchema = new mongoose.Schema({
+    shopId: String,
+    adminId: String,
+    customerUid: String,
+    customerName: String,
+    customerEmail: String,
+    eventId: String,
+    eventType: String,
+    guests: Number,
+    budget: String,
+    location: String,
+    date: String,
+    menuSummary: [String],
+    quote: String,
+    status: { type: String, default: 'new' }, // new | viewed | accepted | declined
+    sentAt: { type: Date, default: Date.now },
+  });
+  const SentPlan: any = mongoose.models.SentPlan || mongoose.model("SentPlan", SentPlanSchema);
+
+  // Customer sends their plan to a shop
+  app.post("/api/plans/send", requireAuth, async (req, res) => {
+    try {
+      const auth = (req as any).auth;
+      const { shopId, eventId, customerName, customerEmail, eventType, guests, budget, location, date, menuSummary, quote } = req.body;
+      if (!shopId) return res.status(400).json({ error: "shopId is required" });
+
+      const shop = await Shop.findById(shopId);
+      if (!shop) return res.status(404).json({ error: "Shop not found" });
+
+      const plan = await SentPlan.create({
+        shopId,
+        adminId: (shop as any).adminId,
+        customerUid: auth.uid,
+        customerName: customerName || auth.uid,
+        customerEmail: customerEmail || '',
+        eventId,
+        eventType: eventType || 'Event',
+        guests: guests || 0,
+        budget: budget || '',
+        location: location || '',
+        date: date || '',
+        menuSummary: menuSummary || [],
+        quote: quote || '',
+        status: 'new',
+        sentAt: new Date(),
+      });
+      res.json(plan);
+    } catch (err) {
+      console.error("Error sending plan:", err);
+      res.status(500).json({ error: "Failed to send plan to shop" });
+    }
+  });
+
+  // Admin fetches their inbox (plans sent to their shop)
+  app.get("/api/plans/inbox", requireAuth, async (req, res) => {
+    try {
+      const plans = await SentPlan.find({ adminId: (req as any).auth.uid }).sort({ sentAt: -1 });
+      res.json(plans);
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch inbox" });
+    }
+  });
+
+  // Update plan status (accept / decline / viewed)
+  app.patch("/api/plans/:planId/status", requireAuth, async (req, res) => {
+    try {
+      const { status } = req.body;
+      if (!['new','viewed','accepted','declined'].includes(status)) {
+        return res.status(400).json({ error: "Invalid status" });
+      }
+      const plan = await SentPlan.findById(req.params.planId);
+      if (!plan) return res.status(404).json({ error: "Plan not found" });
+      if ((plan as any).adminId !== (req as any).auth.uid) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      const updated = await SentPlan.findByIdAndUpdate(req.params.planId, { status }, { new: true });
+      res.json(updated);
+    } catch (err) {
+      res.status(500).json({ error: "Failed to update plan status" });
+    }
+  });
+
 
   app.get("/api/chats/:eventId", requireAuth, async (req, res) => {
     try {

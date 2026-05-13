@@ -4,6 +4,7 @@ import { Pencil } from 'lucide-react';
 import { Message } from '../../types';
 
 interface MessageBubbleProps {
+  key?: React.Key;
   msg: Message;
   isEditing: boolean;
   editingText: string;
@@ -11,6 +12,7 @@ interface MessageBubbleProps {
   onUpdateText: (text: string) => void;
   onCommitEdit: () => void;
   onCancelEdit: () => void;
+  onWeatherChoice?: (choice: boolean) => void;
 }
 
 export function MessageBubble({
@@ -20,7 +22,8 @@ export function MessageBubble({
   onStartEdit,
   onUpdateText,
   onCommitEdit,
-  onCancelEdit
+  onCancelEdit,
+  onWeatherChoice
 }: MessageBubbleProps) {
   return (
     <motion.div
@@ -52,7 +55,24 @@ export function MessageBubble({
           </div>
         ) : (
           <>
-            {msg.content}
+            <span className="whitespace-pre-wrap">{msg.content}</span>
+            {msg.isWeatherChoice && (
+              <div className="mt-4 flex gap-2">
+                <button 
+                  onClick={() => onWeatherChoice?.(true)}
+                  className="px-6 py-2 bg-emerald-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-md flex items-center gap-2"
+                >
+                  <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
+                  Yes
+                </button>
+                <button 
+                  onClick={() => onWeatherChoice?.(false)}
+                  className="px-6 py-2 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all"
+                >
+                  No
+                </button>
+              </div>
+            )}
             {msg.role === 'user' && (
               <button
                 type="button"

@@ -28,6 +28,7 @@ interface ChatContainerProps {
   onSave: () => void;
   onRestart: () => void;
   onDelete: () => void;
+  onWeatherChoice?: (choice: boolean) => void;
   activeConversationId: string | null;
 }
 
@@ -54,6 +55,7 @@ export function ChatContainer({
   onSave,
   onRestart,
   onDelete,
+  onWeatherChoice,
   activeConversationId
 }: ChatContainerProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -100,6 +102,7 @@ export function ChatContainer({
                 onUpdateText={onUpdateEditingText}
                 onCommitEdit={onCommitEdit}
                 onCancelEdit={onCancelEdit}
+                onWeatherChoice={onWeatherChoice}
               />
             ))}
             

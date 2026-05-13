@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  Send, 
-  ChefHat, 
-  Package, 
-  Truck, 
-  DollarSign, 
-  Users, 
+import {
+  Send,
+  ChefHat,
+  Package,
+  Truck,
+  DollarSign,
+  Users,
   ArrowRight,
+  ArrowLeft,
   CheckCircle2,
   Loader2,
   Calendar,
@@ -29,27 +30,35 @@ import {
   PieChart as PieIcon,
   BarChart3,
   ClipboardList,
-  Edit3
+  Edit3,
+  Store,
+  Inbox,
+  ShoppingBag
 } from 'lucide-react';
-import { 
-  ResponsiveContainer, 
-  PieChart, 
-  Pie, 
-  Cell, 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  Tooltip, 
-  Legend 
+import {
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  Legend
 } from 'recharts';
-import { auth, signInWithGoogle, logout, db, loginWithEmail, signupWithEmail, WorkspaceRole } from './lib/firebase';
+import { auth, signInWithGoogle, logout, loginWithEmail, signupWithEmail, WorkspaceRole } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { collection, addDoc, query, where, getDocs, orderBy, Timestamp, doc, getDoc, setDoc, serverTimestamp, updateDoc, deleteDoc } from 'firebase/firestore';
-import { generateConversationalPrompt, orchestrateCatering, validateUserResponse } from './services/orchestrator';
+import { processIntake, orchestrateCatering, validateUserResponse, getDishImage } from './services/orchestrator';
 import { mongoService } from './services/mongodb';
 import { hasCurrencyMarker } from './services/budget';
 import { GeoOpsLeafletMap } from './components/GeoOpsLeafletMap';
+import { CustomerPlanner } from './components/plan/CustomerPlanner';
+import { AdminInbox } from './components/admin/AdminInbox';
+import { AdminShopSetup } from './components/admin/AdminShopSetup';
+import { AdminDashboard } from './components/dashboard/AdminDashboard';
+import { StaffTaskBoard } from './components/operations/StaffTaskBoard';
+import { DriverView } from './components/operations/DriverView';
 
 interface AgentStep {
   agent: string;
@@ -63,6 +72,10 @@ interface Message {
   agent?: string;
   qKey?: string;
   timestamp: Date;
+  isWeatherChoice?: boolean;
+  isMenuCompositionChoice?: boolean;
+  isFoodChoiceMode?: boolean;
+  isPortionControlMode?: boolean;
 }
 
 const QUESTIONS = [
@@ -71,15 +84,17 @@ const QUESTIONS = [
   { key: "guest_count", text: "👥 How many guests are you expecting?" },
   { key: "event_location", text: "📍 Where will the event be held? (City or venue name)" },
   { key: "event_date", text: "📅 What is the event date?" },
+  { key: "budget", text: "💰 What is your total budget? (Please include the currency, e.g. $5000, ₱50000, 1000€)" },
   { key: "food_choice_mode", text: "🍽️ Do you have specific food items in mind that you'd like to add, or would you like our Head Chef to suggest a menu for you? (e.g., 'I have specific food' or 'Suggest for me')" },
   { key: "specific_food_items", text: "🍲 What specific food items or dishes do you have in mind? Please list them here." },
-  { key: "budget", text: "💰 What is your total budget? (Please include the currency, e.g. $5000, ₱50000, 1000€)" },
-  { key: "cuisine_preference", text: "🍱 Any cuisine preference? (e.g. Filipino, Italian, Japanese, BBQ)" },
+  { key: "portion_control_mode", text: "⚖️ Regarding the serving sizes, would you like to specify the portion per guest for each dish (e.g., '200g per person'), or would you like our system to automatically calculate the optimal portions based on your budget and guest count?" },
+  { key: "cuisine_preference", text: "🍱 Any cuisine preference? (e.g. Filipino, Italian, Japanese, Chinese, Mediterranean)" },
+  { key: "food_style_preference", text: "🔥 What cooking styles do you prefer? (e.g. Grilled, Fried, Steamed, Soups, Veggies, Roasted, Raw/Salads)" },
   { key: "dietary_needs", text: "🥗 Any dietary needs or restrictions? (e.g. None, Vegetarian, Allergies)" },
-  { key: "dessert_preference", text: "🍰 Would you like to include desserts in the menu? (Yes/No, or specific types)" },
-  { key: "drink_preference", text: "🥤 What are your preferences for drinks? (e.g. Soft drinks, Juices, Cocktails, Coffee)" },
+  { key: "menu_composition", text: "🍽️ How would you like to set up your menu? You can specify counts like: '4 main dishes, 2 desserts, 2 drinks' — or just say 'system decide' and we'll auto-plan everything within your budget. You can also mix: e.g. '3 main dishes, system decide drinks and desserts'." },
   { key: "nearby_suggestions", text: "🏢 Do you want me to look for suggested catering nearby or not? (Yes/No)" },
 ];
+
 
 const QUESTION_TRANSLATIONS: Record<string, Record<string, string>> = {
   tagalog: {
@@ -89,11 +104,12 @@ const QUESTION_TRANSLATIONS: Record<string, Record<string, string>> = {
     event_date: "Kailan ang event date? Che-check ko rin ang weather para sa iyo!",
     food_choice_mode: "Mayroon ka bang specific na pagkain na gustong idagdag, o gusto mo bang ang aming Head Chef ang mag-suggest ng menu? (hal. 'May specific food ako' o 'Mag-suggest kayo')",
     specific_food_items: "Anong mga pagkain o putahe ang nasa isip mo? Pakilista mo rito.",
+    portion_control_mode: "⚖️ Tungkol sa serving sizes, gusto mo bang ikaw ang mag-specify ng portion per guest (hal. '200g kada tao'), o gusto mo bang ang aming system na ang mag-calculate ng tamang sukat base sa iyong budget at bilang ng guests?",
     budget: "Magkano ang total budget mo? Pakilagay ang currency, hal. PHP 50000.",
-    cuisine_preference: "May gusto ka bang cuisine? (hal. Filipino, Italian, Japanese, BBQ)",
+    cuisine_preference: "May gusto ka bang cuisine? (hal. Filipino, Italian, Japanese, Chinese, Mediterranean)",
+    food_style_preference: "🔥 Anong cooking style ang gusto mo? (hal. Inihaw/Grilled, Prito/Fried, Nilaga/Soup, Gulay/Veggies, Steamed, Roasted)",
     dietary_needs: "May dietary needs ba o restrictions? (hal. vegetarian, halal, allergies)",
-    dessert_preference: "Gusto mo bang may desserts? (Yes/No o specific dessert)",
-    drink_preference: "Anong drinks ang gusto mo? (soft drinks, juices, cocktails, coffee)",
+    menu_composition: "🍽️ Ilang klase ng pagkain ang gusto mo sa menu? Pwede kang mag-specify tulad ng: '4 na ulam, 2 desserts, 2 drinks' — o sabihing 'system na bahala' at aayusin namin lahat base sa budget mo. Pwede rin i-mix: hal. '3 ulam, system na bahala sa drinks at desserts'.",
     nearby_suggestions: "Gusto mo bang maghanap din ako ng suggested catering shops na malapit sa venue? (Oo/Hindi)",
   },
   spanish: {
@@ -102,10 +118,10 @@ const QUESTION_TRANSLATIONS: Record<string, Record<string, string>> = {
     event_location: "Donde sera el evento? (ciudad o nombre del venue)",
     event_date: "Cual es la fecha del evento?",
     budget: "Cual es tu presupuesto total? Incluye la moneda, por ejemplo PHP 50000.",
-    cuisine_preference: "Tienes alguna preferencia de cocina? (Filipina, Italiana, Japonesa, BBQ)",
+    cuisine_preference: "Tienes alguna preferencia de cocina? (Filipina, Italiana, Japonesa, China, Mediterranea)",
+    food_style_preference: "🔥 Que estilos de cocina prefieres? (Asado/Grilled, Frito/Fried, Sopas, Verduras, Al vapor, Horneado)",
     dietary_needs: "Hay necesidades dieteticas o restricciones? (vegetariano, halal, alergias)",
-    dessert_preference: "Quieres incluir postres? (Si/No o tipos especificos)",
-    drink_preference: "Que bebidas prefieres? (refrescos, jugos, cocteles, cafe)",
+    menu_composition: "🍽️ Cuantos platos quieres en el menu? Puedes especificar: '4 platos, 2 postres, 2 bebidas' — o di 'el sistema decide' y planificaremos todo segun tu presupuesto.",
     nearby_suggestions: "Quieres que busque sugerencias de catering cercanas o no? (Si/No)",
   },
   japanese: {
@@ -114,20 +130,34 @@ const QUESTION_TRANSLATIONS: Record<string, Record<string, string>> = {
     event_location: "開催場所はどちらですか？（市区町村または会場名）",
     event_date: "開催日はいつですか？",
     budget: "総予算はいくらですか？通貨も含めてください（例：PHP 50000、50000円）。",
-    cuisine_preference: "料理のご希望はありますか？（例：フィリピン料理、イタリアン、和食、BBQ）",
+    cuisine_preference: "料理のご希望はありますか？（例：フィリピン料理、イタリアン、和食、中華、地中海料理）",
+    food_style_preference: "🔥 調理スタイルの好みは？（例：グリル、揚げ物、スープ、野菜料理、蒸し料理、ロースト）",
     dietary_needs: "食事制限やアレルギーはありますか？（例：なし、ベジタリアン、ハラール、アレルギー）",
-    dessert_preference: "メニューにデザートを含めますか？（はい/いいえ、または具体的な種類）",
-    drink_preference: "飲み物のご希望は何ですか？（例：ソフトドリンク、ジュース、カクテル、コーヒー）",
+    menu_composition: "🍽️ メニューの構成はどうしますか？例：'メイン4品、デザート2品、飲み物2品' と指定するか、'システムにお任せ' で予算内で自動設定します。",
     nearby_suggestions: "近くのケータリングショップを提案したほうがいいですか？ (はい/いいえ)",
   },
+  chinese: {
+    event_type: "您正在计划什么类型的活动？（例如：婚礼、生日、公司活动）",
+    guest_count: "您预计有多少位客人？",
+    event_location: "活动将在哪里举行？（城市或场馆名称）",
+    event_date: "活动日期是什么时候？",
+    budget: "您的总预算是多少？请包括币种（例如：PHP 50000，5000元）。",
+    cuisine_preference: "您有偏好的菜系吗？（例如：菲律宾菜、意大利菜、日本料理、中餐、地中海料理）",
+    food_style_preference: "🔥 您偏好哪种烹饪方式？（例如：烧烤/Grilled、油炸/Fried、汤品/Soup、蔬菜/Veggies、蒸食/Steamed）",
+    dietary_needs: "是否有饮食需求或限制？（例如：无、素食、清真、过敏）",
+    menu_composition: "🍽️ 您想要菜单中有多少道菜？可以指定：'4道主菜，2道甜点，2种饮料' — 或者说'系统决定'，我们将在预算内自动规划。",
+    nearby_suggestions: "您想让我寻找附近的餐饮建议吗？ (是/否)",
+  },
 };
+
 
 function normalizeLanguage(value = "") {
   const text = value.toLowerCase();
   if (/tagalog|filipino|tl|pilipino/.test(text)) return "tagalog";
   if (/spanish|espanol|español/.test(text)) return "spanish";
   if (/japanese|nihongo|jp|日本語/.test(text)) return "japanese";
-  return "english";
+  if (/chinese|mandarin|cantonese|zh|中文|华语/.test(text)) return "chinese";
+  return value.trim() || "english";
 }
 
 function getQuestionText(index: number, language?: string) {
@@ -144,14 +174,16 @@ const SUMMARY_FIELDS = [
   { key: "event_date", label: "Date", compact: true },
   { key: "food_choice_mode", label: "Food Selection" },
   { key: "specific_food_items", label: "Specific Dishes" },
+  { key: "portion_control_mode", label: "Portion Mode" },
   { key: "budget", label: "Budget", compact: true },
   { key: "cuisine_preference", label: "Cuisine" },
+  { key: "food_style_preference", label: "Cooking Style" },
   { key: "dietary_needs", label: "Dietary needs" },
-  { key: "dessert_preference", label: "Desserts" },
-  { key: "drink_preference", label: "Drinks" },
+  { key: "menu_composition", label: "Menu Composition" },
   { key: "nearby_suggestions", label: "Nearby catering suggestions" },
   { key: "special_requests", label: "Added notes" },
 ];
+
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -167,10 +199,13 @@ export default function App() {
   const [workspaceRole, setWorkspaceRole] = useState<WorkspaceRole>('customer');
   const [signupRole, setSignupRole] = useState<WorkspaceRole>('customer');
   const [reportView, setReportView] = useState<'all' | 'menu' | 'logistics' | 'finance'>('menu');
-  const [dashboardView, setDashboardView] = useState<'conversation' | 'summary' | 'operations' | 'finance'>('conversation');
+  const [dashboardView, setDashboardView] = useState<'conversation' | 'summary' | 'operations' | 'finance' | 'admin-dashboard' | 'admin-inbox' | 'shop-setup' | 'inventory-planner' | 'menu-editor' | 'checkout' | 'staff-tasks' | 'delivery'>('conversation');
+  const [activePhaseIndex, setActivePhaseIndex] = useState<number>(0);
   const [expandedStepIndex, setExpandedStepIndex] = useState<number | null>(0);
-  const [useFoundry, setUseFoundry] = useState(true);
+  const [showDetailedAgentView, setShowDetailedAgentView] = useState<boolean>(false);
+  const [useFoundry, setUseFoundry] = useState(false);
   const [stackStatus, setStackStatus] = useState<any>(null);
+  const [skipRoleLoad, setSkipRoleLoad] = useState(false);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -183,7 +218,8 @@ export default function App() {
   const [showLogin, setShowLogin] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
-  
+  const [isWaitingForWeather, setIsWaitingForWeather] = useState(false);
+
   const [localMenu, setLocalMenu] = useState<any[]>([]);
   const [localInventory, setLocalInventory] = useState<any[]>([]);
   const [localTimeline, setLocalTimeline] = useState<any[]>([]);
@@ -198,6 +234,8 @@ export default function App() {
   const [agreementStatus, setAgreementStatus] = useState<'none' | 'suggested' | 'accepted' | 'finalized'>('none');
   const [chatMessages, setChatMessages] = useState<any[]>([]);
   const [showCheckout, setShowCheckout] = useState(false);
+  const [showRolePicker, setShowRolePicker] = useState(false);
+  const [pendingGoogleUser, setPendingGoogleUser] = useState<any>(null);
 
   const sanitizeForFirestore = (data: any): any => {
     if (Array.isArray(data)) {
@@ -223,27 +261,85 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
 
+  const handleWeatherChoice = (choice: boolean) => {
+    setIsWaitingForWeather(false);
+    setEventData(prev => ({ ...prev, base_on_weather: choice }));
+
+    // Remove buttons and add user message
+    setMessages(prev => {
+      const filtered = prev.map(m => m.isWeatherChoice ? { ...m, isWeatherChoice: false } : m);
+      return [...filtered, {
+        id: `user-weather-${Date.now()}`,
+        role: 'user',
+        content: choice
+          ? (eventData.preferred_language === 'tagalog' ? "Oo, sige." : "Yes, please.")
+          : (eventData.preferred_language === 'tagalog' ? "Hindi na, okay na." : "No, thank you."),
+        timestamp: new Date()
+      }];
+    });
+
+    // Advance
+    const nextIdx = qIndex + 1;
+    if (nextIdx < QUESTIONS.length) {
+      setTimeout(() => {
+        setQIndex(nextIdx);
+        setMessages(prev => [...prev, {
+          id: `bot-q-${Date.now()}`,
+          role: 'bot',
+          content: getQuestionText(nextIdx, eventData.preferred_language),
+          isMenuCompositionChoice: QUESTIONS[nextIdx].key === 'menu_composition',
+          isFoodChoiceMode: QUESTIONS[nextIdx].key === 'food_choice_mode',
+          isPortionControlMode: QUESTIONS[nextIdx].key === 'portion_control_mode',
+          timestamp: new Date()
+        }]);
+        saveConversation();
+      }, 500);
+    }
+  };
+
   const loadUserRole = async (activeUser: User) => {
     try {
       const profile = await mongoService.fetchUser(activeUser.uid);
-      
+
       if (profile && profile.role) {
+        // Existing user — restore their saved role
         setWorkspaceRole(profile.role);
         setSignupRole(profile.role);
+        if (profile.role === 'admin') setDashboardView('admin-inbox');
+        else if (profile.role === 'staff') setDashboardView('staff-tasks');
+        else setDashboardView('conversation');
         return;
       }
 
-      const newProfile = await mongoService.saveUser({
-        uid: activeUser.uid,
-        email: activeUser.email,
-        name: activeUser.displayName || name || activeUser.email || 'CaterFlow User',
-        photoURL: activeUser.photoURL,
-        role: signupRole
-      });
-      
-      setWorkspaceRole(newProfile.role || 'customer');
+      // New Google user — prompt for role selection before saving
+      setPendingGoogleUser(activeUser);
+      setShowRolePicker(true);
     } catch (err) {
       console.error("Error loading user role from MongoDB:", err);
+      // On error, still allow access as customer
+      setWorkspaceRole('customer');
+      setDashboardView('conversation');
+    }
+  };
+
+  const handleGoogleRoleConfirm = async () => {
+    if (!pendingGoogleUser) return;
+    try {
+      const newProfile = await mongoService.saveUser({
+        uid: pendingGoogleUser.uid,
+        email: pendingGoogleUser.email,
+        name: pendingGoogleUser.displayName || pendingGoogleUser.email || 'CaterFlow User',
+        photoURL: pendingGoogleUser.photoURL,
+        role: signupRole,
+      });
+      const finalRole = newProfile.role || signupRole;
+      setWorkspaceRole(finalRole);
+      if (finalRole === 'admin') setDashboardView('admin-inbox');
+      else if (finalRole === 'staff') setDashboardView('staff-tasks');
+      else setDashboardView('conversation');
+    } finally {
+      setShowRolePicker(false);
+      setPendingGoogleUser(null);
     }
   };
 
@@ -284,8 +380,11 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
       if (u) {
-        loadUserRole(u);
-        fetchHistory(u.uid);
+        // Only load role if we're not in the middle of a signup/role-selection flow
+        if (!showRolePicker && !loading && !skipRoleLoad) {
+          loadUserRole(u);
+          fetchHistory(u.uid);
+        }
         if (messages.length === 0) {
           setMessages([{ id: 'bot-start', role: 'bot', content: getQuestionText(0), timestamp: new Date() }]);
         }
@@ -320,41 +419,28 @@ export default function App() {
     }
   };
 
-  const handleChatSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || isProcessing) return;
+  const handleChatSubmit = async (e?: React.FormEvent, directInput?: string) => {
+    if (e) e.preventDefault();
+    const textToSubmit = directInput !== undefined ? directInput : input;
+    if (!textToSubmit.trim() || isProcessing) return;
 
-    const userText = input.trim();
+    const userText = textToSubmit.trim();
     const currentQuestion = QUESTIONS[qIndex];
-    
-    const newMessages: Message[] = [...messages, { 
+
+    const newMessages: Message[] = [...messages.map(m => (m.isMenuCompositionChoice || m.isFoodChoiceMode || m.isPortionControlMode) ? { ...m, isMenuCompositionChoice: false, isFoodChoiceMode: false, isPortionControlMode: false } : m), {
       id: `user-${Date.now()}`,
-      role: 'user', 
-      content: userText, 
+      role: 'user',
+      content: userText,
       qKey: currentQuestion.key,
-      timestamp: new Date() 
+      timestamp: new Date()
     }];
     setMessages(newMessages);
-    setInput("");
+    if (directInput === undefined) setInput("");
 
-    // Special handling for weather if date is provided
-    if (currentQuestion.key === 'event_date' && eventData.event_location) {
-      setIsProcessing(true);
-      import('./services/orchestrator').then(async (m) => {
-        const weather = await m.predictWeather(eventData.event_location, userText);
-        setMessages(prev => [...prev, {
-          id: `bot-weather-${Date.now()}`,
-          role: 'bot',
-          content: `🌤️ **Weather Forecast for ${eventData.event_location} on ${userText}:** ${weather.summary}\n\n${weather.recommendations[0]}`,
-          timestamp: new Date()
-        }]);
-        setIsProcessing(false);
-      });
-    }
 
     let refinedAmount = userText;
     const currencyRegex = /[\$\£\€\¥\₱\₹]|(USD|PHP|EUR|GBP|AED|CAD|AUD|JPY|CNY|PESO|PESOS)/i;
-    
+
     if (currentQuestion.key === 'budget' && eventData.budget && !hasCurrencyMarker(eventData.budget)) {
       if (currencyRegex.test(userText) || /^\w{3}$/.test(userText)) {
         refinedAmount = `${eventData.budget} ${userText}`;
@@ -366,11 +452,13 @@ export default function App() {
     if (currentQuestion.key === 'budget') {
       const hasCurrency = hasCurrencyMarker(refinedAmount);
       if (!hasCurrency && /^\d+$/.test(refinedAmount.replace(/[,. ]/g, ''))) {
-        setMessages([...newMessages, { 
+        // Save the numeric budget before asking for currency so next answer can combine them
+        setEventData(newEventData);
+        setMessages([...newMessages, {
           id: `bot-currency-${Date.now()}`,
-          role: 'bot', 
-          content: "I've noted the amount! Just to be precise, which currency are you using? (e.g., $, ₱, USD, PHP, Pesos)", 
-          timestamp: new Date() 
+          role: 'bot',
+          content: "I've noted the amount! Just to be precise, which currency are you using? (e.g., $, ₱, USD, PHP, Pesos)",
+          timestamp: new Date()
         }]);
         return;
       }
@@ -381,56 +469,231 @@ export default function App() {
     if (qIndex < QUESTIONS.length - 1) {
       setIsProcessing(true);
 
-      const validation = await validateUserResponse(currentQuestion.text, userText, newEventData.preferred_language);
-      if (!validation.valid) {
-        setMessages(prev => [...prev, { 
-          id: `bot-err-${Date.now()}`,
-          role: 'bot', 
-          content: validation.message || "Please provide a more specific answer.", 
-          timestamp: new Date() 
-        }]);
-        setIsProcessing(false);
-        return; 
+      // Pre-fetch weather as soon as location is known (fire-and-forget, will be cached)
+      if (currentQuestion.key === 'event_location' && userText.length > 2) {
+        import('./services/orchestrator').then(m => {
+          m.prefetchWeather(userText, newEventData.event_date || 'TBD', newEventData.preferred_language || 'english');
+        });
       }
 
       let nextIdx = qIndex + 1;
-      
-      // Branching logic for food choice
-      if (currentQuestion.key === 'food_choice_mode') {
-        const isSuggest = /suggest|chef|mag-suggest|kayo/i.test(userText);
-        const isSpecific = /specific|ako|meron|mayroon/i.test(userText);
-        
-        if (isSuggest && !isSpecific) {
-          // Skip the specific_food_items question if they want suggestions
-          const specificIdx = QUESTIONS.findIndex(q => q.key === 'specific_food_items');
-          if (specificIdx !== -1 && nextIdx === specificIdx) {
-            nextIdx++;
-          }
+      const tempNextQuestionText = getQuestionText(nextIdx, newEventData.preferred_language);
+
+      // 1. Process Intake — fast-path skips AI for simple/short answers
+      const intakeResult = await processIntake(userText, currentQuestion.key, currentQuestion.text, newEventData.preferred_language);
+
+      const intent = intakeResult.intent;
+      const validation = intakeResult.validation;
+      const reaction = intakeResult.reaction?.text;
+
+      // 1.5 Handle text-based weather choice if waiting
+      if (isWaitingForWeather) {
+        const isYes = /yes|oo|sige|yup|sure|game|okay|ok/i.test(userText);
+        const isNo = /no|hindi|ayoko|huwag|don't|stop/i.test(userText);
+        if (isYes || isNo) {
+          handleWeatherChoice(isYes);
+          return;
         }
       }
 
-      const nextQuestion = getQuestionText(nextIdx, newEventData.preferred_language);
-      const conversationalReply = await generateConversationalPrompt(
-        currentQuestion.key,
-        currentQuestion.text,
-        userText,
-        nextQuestion,
-        newEventData.preferred_language,
-      );
-      const botMessage = conversationalReply.reply || nextQuestion;
+      // 2. Multi-item collection for specific food items
+      if (currentQuestion.key === 'specific_food_items' && intent.type === 'ANSWER') {
+        const existing = eventData.specific_food_items || "";
+        const updatedFood = existing ? `${existing}, ${userText}` : userText;
+        setEventData(prev => ({ ...prev, specific_food_items: updatedFood }));
+
+        setIsProcessing(false);
+        setMessages(prev => [...prev, {
+          id: `bot-more-food-${Date.now()}`,
+          role: 'bot',
+          content: reaction ? `${reaction}\n\nAnything else?` : "Got it. Anything else?",
+          timestamp: new Date()
+        }]);
+        saveConversation();
+        return;
+      }
+
+      // 2b. Multi-item collection for food style preference (grilled, fried, etc.)
+      if (currentQuestion.key === 'food_style_preference' && intent.type === 'ANSWER') {
+        const existing = eventData.food_style_preference || "";
+        const updated = existing ? `${existing}, ${userText}` : userText;
+        setEventData(prev => ({ ...prev, food_style_preference: updated }));
+
+        const lang = newEventData.preferred_language;
+        const followUp = lang === 'tagalog'
+          ? "Noted! May iba pa bang cooking style na gusto mo? (o sabihing 'tapos na')"
+          : lang === 'spanish'
+          ? "Anotado! Algún otro estilo de cocina? (o di 'listo')"
+          : "Got it! Any other cooking styles you'd like? (or say 'done')";
+
+        setIsProcessing(false);
+        setMessages(prev => [...prev, {
+          id: `bot-style-more-${Date.now()}`,
+          role: 'bot',
+          content: reaction ? `${reaction}\n\n${followUp}` : followUp,
+          timestamp: new Date()
+        }]);
+        saveConversation();
+        return;
+      }
+
+
+      // If user says "DONE" at the food step, we advance
+      if (currentQuestion.key === 'specific_food_items' && intent.type === 'DONE') {
+        nextIdx = qIndex + 1;
+      } else if (intent.type === 'DONE') {
+        nextIdx = qIndex + 1;
+      }
+
+      if (currentQuestion.key === 'food_choice_mode') {
+        const isSuggest = /suggest|chef|mag-suggest|kayo/i.test(userText);
+        const isSpecific = /specific|ako|meron|mayroon/i.test(userText);
+        if (isSuggest && !isSpecific) {
+          const specificIdx = QUESTIONS.findIndex(q => q.key === 'specific_food_items');
+          if (specificIdx !== -1 && nextIdx === specificIdx) nextIdx++;
+        }
+      }
+
+      // 3. Handle weather (Blocking now)
+      const isDateStep = currentQuestion.key === 'event_date' && eventData.event_location && !isWaitingForWeather;
+      if (isDateStep && validation.valid) {
+        setIsProcessing(true);
+        setIsWaitingForWeather(true);
+        import('./services/orchestrator').then(async m => {
+          const weather = await m.predictWeather(eventData.event_location, userText, newEventData.preferred_language);
+          if (weather) {
+            // 1. Show the bot's analytical reaction first
+            if (reaction) {
+              setMessages(prev => [...prev, {
+                id: `bot-react-${Date.now()}`,
+                role: 'bot',
+                content: reaction,
+                timestamp: new Date()
+              }]);
+            }
+
+            // 2. Show weather forecast
+            const weatherMsg = `🌤️ **Weather Forecast:** ${weather.summary}\n${(weather.recommendations || []).join("\n")}`;
+            setMessages(prev => [...prev, {
+              id: `bot-weather-${Date.now()}`,
+              role: 'bot',
+              content: weatherMsg,
+              timestamp: new Date()
+            }]);
+
+            // 3. Ask the special question with buttons
+            setMessages(prev => [...prev, {
+              id: `bot-weather-choice-${Date.now()}`,
+              role: 'bot',
+              content: eventData.preferred_language === 'tagalog'
+                ? "Iba-base ba natin yung mga food suggestion sa forecast na ito?"
+                : "Should we base the food suggestions on this weather forecast?",
+              isWeatherChoice: true,
+              timestamp: new Date()
+            }]);
+            saveConversation();
+          }
+          setIsProcessing(false);
+        });
+        return; // STOP normal progression
+      }
+
+      if (intent.type === 'LANGUAGE_CHANGE') {
+        const newLang = normalizeLanguage(intent.value || 'english');
+        setEventData(prev => ({ ...prev, preferred_language: newLang }));
+
+        let prefix = "Sure, I'll speak in English! ";
+        if (newLang === 'tagalog') prefix = "Sige po, magta-Tagalog na ako. ";
+        else if (newLang === 'spanish') prefix = "¡Claro! Hablaré en español. ";
+        else if (newLang === 'japanese') prefix = "承知いたしました。日本語でお話しします。 ";
+        else if (newLang === 'chinese') prefix = "好的，我会用中文跟您交流！ ";
+
+        if (currentQuestion.key === 'preferred_language') {
+          // If they are answering the first question, advance to the next question instead of repeating it
+          setTimeout(() => {
+            const nextIdxVal = qIndex + 1;
+            setQIndex(nextIdxVal);
+            setMessages(prev => [...prev, {
+              id: `bot-lang-${Date.now()}`,
+              role: 'bot',
+              content: `${prefix}\n\n${getQuestionText(nextIdxVal, newLang)}`,
+              isMenuCompositionChoice: QUESTIONS[nextIdxVal].key === 'menu_composition',
+              isFoodChoiceMode: QUESTIONS[nextIdxVal].key === 'food_choice_mode',
+              isPortionControlMode: QUESTIONS[nextIdxVal].key === 'portion_control_mode',
+              timestamp: new Date()
+            }]);
+            setIsProcessing(false);
+            saveConversation();
+          }, 300);
+          return;
+        }
+
+        const repeatedQuestion = getQuestionText(qIndex, newLang);
+        setMessages(prev => [...prev, {
+          id: `bot-lang-${Date.now()}`,
+          role: 'bot',
+          content: `${prefix}${repeatedQuestion}`,
+          isMenuCompositionChoice: currentQuestion.key === 'menu_composition',
+          isFoodChoiceMode: currentQuestion.key === 'food_choice_mode',
+          isPortionControlMode: currentQuestion.key === 'portion_control_mode',
+          timestamp: new Date()
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      if (intent.type === 'GENERAL_REQUEST') {
+        const cmd = (intent.value || "").toLowerCase();
+        if (cmd.includes('restart') || cmd.includes('reset') || cmd.includes('ulitin')) {
+          deleteConversation();
+          setIsProcessing(false);
+          return;
+        }
+
+        const fallbackMsg = eventData.preferred_language === 'tagalog'
+          ? "Pasensya na, kaya ko lang tumulong sa catering planning sa ngayon."
+          : "I'm sorry, I can only help with catering planning right now.";
+
+        setMessages(prev => [...prev, {
+          id: `bot-gen-${Date.now()}`,
+          role: 'bot',
+          content: reaction ? `${reaction}\n\n${currentQuestion.text}` : `${fallbackMsg}\n\n${currentQuestion.text}`,
+          timestamp: new Date()
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      if (!validation.valid) {
+        setMessages(prev => [...prev, {
+          id: `bot-err-${Date.now()}`,
+          role: 'bot',
+          content: `${validation.message || "Please provide a more specific answer."}\n\n${currentQuestion.text}`,
+          timestamp: new Date()
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      const actualNextQuestionText = getQuestionText(nextIdx, newEventData.preferred_language);
+      const botMessage = reaction ? `${reaction}\n\n${actualNextQuestionText}` : actualNextQuestionText;
 
       setTimeout(() => {
         setQIndex(nextIdx);
         setMessages(prev => [...prev, {
           id: `bot-q-${Date.now()}`,
-          role: 'bot', 
-          content: botMessage, 
-          timestamp: new Date() 
+          role: 'bot',
+          content: botMessage,
+          isMenuCompositionChoice: QUESTIONS[nextIdx].key === 'menu_composition',
+          isFoodChoiceMode: QUESTIONS[nextIdx].key === 'food_choice_mode',
+          isPortionControlMode: QUESTIONS[nextIdx].key === 'portion_control_mode',
+          timestamp: new Date()
         }]);
         setIsProcessing(false);
-      }, 800);
+        // Auto-save progress
+        saveConversation();
+      }, 200);
     } else {
-      // If we're already at the end and they're adding more
       if (isConfirming || showSummary) {
         const updatedSpecial = `${newEventData.special_requests || ""}\nAdditional info: ${userText}`.trim();
         const finalEventData = { ...newEventData, special_requests: updatedSpecial };
@@ -439,24 +702,34 @@ export default function App() {
         setTimeout(() => {
           setIsConfirming(true);
           setShowSummary(true);
-          setMessages(prev => [...prev, { 
+          setMessages(prev => [...prev, {
             id: `sys-review-update-${Date.now()}`,
-            role: 'bot', 
-            content: "Got it! I've added that to your request. Here is the updated summary:", 
-            timestamp: new Date() 
+            role: 'bot',
+            content: "Got it! I've added that to your request. Here is the updated summary:",
+            timestamp: new Date()
           }]);
           setIsProcessing(false);
-        }, 800);
+        }, 200);
         return;
+      }
+
+      // If results are already showing (history loaded or previous plan) and user types
+      // something that isn't about refining the plan, offer to start a new plan
+      if (!isChatting || steps.length > 0) {
+        const isNewPlanRequest = /new|restart|ulit|bago|start|another|fresh/i.test(userText);
+        if (isNewPlanRequest || (!isConfirming && !showSummary)) {
+          restartChat();
+          return;
+        }
       }
 
       setIsConfirming(true);
       setShowSummary(true);
-      setMessages(prev => [...prev, { 
+      setMessages(prev => [...prev, {
         id: `sys-review-${Date.now()}`,
-        role: 'bot', 
-        content: "I've gathered all the details! Please review the summary below. Is everything correct, or would you like to add anything else?", 
-        timestamp: new Date() 
+        role: 'bot',
+        content: "I've gathered all the details! Please review the summary below. Is everything correct, or would you like to add anything else?",
+        timestamp: new Date()
       }]);
     }
   };
@@ -468,23 +741,23 @@ export default function App() {
     setIsProcessing(true);
     setSteps([]);
     setCurrentStepIndex(-1);
-    
+
     const fullPrompt = Object.entries(eventData)
       .map(([k, v]) => `${k.replace('_', ' ')}: ${v}`)
       .join(', ');
 
-    setMessages(prev => [...prev, { 
+    setMessages(prev => [...prev, {
       id: `sys-proc-${Date.now()}`,
-      role: 'system', 
-      content: "🤖 Activating all AI agents. Collaboration in progress...", 
-      timestamp: new Date() 
+      role: 'system',
+      content: "🤖 Activating all AI agents. Collaboration in progress...",
+      timestamp: new Date()
     }]);
 
     try {
       const result = await orchestrateCatering(fullPrompt, (step) => {
         setSteps(prev => [...prev, step]);
         setCurrentStepIndex(prev => prev + 1);
-        
+
         if (step.agent.includes('Head Chef') && step.data.menu) {
           setLocalMenu(step.data.menu);
         }
@@ -536,24 +809,24 @@ export default function App() {
         }
       }
     } catch (error: any) {
-        console.error("Orchestration error:", error);
-        let errorMsg = error?.message || "Critical error in AI Orchestration. Connection severed.";
-        
-        if (errorMsg.includes("429") || errorMsg.includes("quota")) {
-          errorMsg = "AI planning service is busy. Please try again in 60 seconds.";
-        } else if (errorMsg.includes("503") || errorMsg.includes("high demand")) {
-          errorMsg = "AI Models under heavy load. Please retry in a few moments.";
-        }
-        
-        setMessages(prev => [...prev, { 
-          id: `bot-err-${Date.now()}`,
-          role: 'bot', 
-          content: `⚠️ ALERT: ${errorMsg}`, 
-          timestamp: new Date() 
-        }]);
-      } finally {
-        setIsProcessing(false);
+      console.error("Orchestration error:", error);
+      let errorMsg = error?.message || "Critical error in AI Orchestration. Connection severed.";
+
+      if (errorMsg.includes("429") || errorMsg.includes("quota")) {
+        errorMsg = "AI planning service is busy. Please try again in 60 seconds.";
+      } else if (errorMsg.includes("503") || errorMsg.includes("high demand")) {
+        errorMsg = "AI Models under heavy load. Please retry in a few moments.";
       }
+
+      setMessages(prev => [...prev, {
+        id: `bot-err-${Date.now()}`,
+        role: 'bot',
+        content: `⚠️ ALERT: ${errorMsg}`,
+        timestamp: new Date()
+      }]);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const updateEventDataField = (key: string, value: string) => {
@@ -575,7 +848,7 @@ export default function App() {
     setShowHistory(false);
     setCurrentStepIndex(item.steps?.length || -1);
   };
-  
+
   const restartChat = () => {
     setActiveConversationId(null);
     setEditingMessageId(null);
@@ -611,7 +884,6 @@ export default function App() {
         await mongoService.updateEvent(activeConversationId, payload);
       } else {
         const saved = await mongoService.saveEvent(payload);
-        
         setActiveConversationId(saved._id || saved.id);
       }
       fetchHistory(user.uid);
@@ -639,56 +911,72 @@ export default function App() {
 
   const commitEditMessage = async () => {
     if (!editingMessageId || !editingText.trim()) return;
-    
+
     const editedMsg = messages.find(m => m.id === editingMessageId);
     const newText = editingText.trim();
 
     if (editedMsg && editedMsg.qKey) {
       const q = QUESTIONS.find(q => q.key === editedMsg.qKey);
-      if (q) {
-        setIsProcessing(true);
-        const tempEventData = { ...eventData, [editedMsg.qKey!]: newText };
-        const validation = await validateUserResponse(q.text, newText, tempEventData.preferred_language);
+      setIsProcessing(true);
 
-        if (!validation.valid) {
-          setMessages(prev => [...prev, { 
-            id: `bot-edit-err-${Date.now()}`,
-            role: 'bot', 
-            content: `⚠️ I noticed your update to "${q.key.replace('_', ' ')}": ${validation.message}`, 
-            timestamp: new Date() 
-          }]);
-        } else {
-          
-          const newEventData = { ...eventData, [editedMsg.qKey!]: newText };
-          const lang = newEventData.preferred_language;
-          
-          let ack = `Got it! I've updated the ${q.key.replace('_', ' ')} to: "${newText}". This change is now synchronized with the AI agents.`;
-          
-          if (editedMsg.qKey === 'preferred_language') {
-            const normalized = normalizeLanguage(newText);
-            if (normalized === 'tagalog') ack = `Sige po! In-update ko na ang iyong preferred language sa Tagalog. Gagamitin ko na ito sa mga susunod nating pag-uusap.`;
-            else if (normalized === 'spanish') ack = `¡Entendido! He actualizado tu idioma preferido a español. Usaré este idioma a partir de ahora.`;
-            else if (normalized === 'japanese') ack = `了解いたしました。優先言語を日本語に更新しました。これからは日本語で対応させていただきます。`;
-          }
+      const currentNextQ = getQuestionText(qIndex, eventData.preferred_language);
+      const intake = await processIntake(newText, q?.key || "", q?.text || "", eventData.preferred_language);
 
-          setMessages(prev => [...prev, { 
-            id: `bot-edit-ok-${Date.now()}`,
-            role: 'bot', 
-            content: ack, 
-            timestamp: new Date() 
-          }]);
-          
-          setEventData(newEventData);
-        }
+      const intent = intake.intent;
+      const validation = intake.validation;
+      const reaction = intake.reaction?.text || "";
+
+      if (intent.type === 'LANGUAGE_CHANGE') {
+        const newLang = normalizeLanguage(intent.value || 'english');
+        setEventData(prev => ({ ...prev, preferred_language: newLang }));
+        const repeatedQuestion = getQuestionText(qIndex, newLang);
+
+        let prefix = "Sure, I'll speak in English from now on! ";
+        if (newLang === 'tagalog') prefix = "Sige po, magta-Tagalog na ako simula ngayon. ";
+        else if (newLang === 'spanish') prefix = "¡Claro! Hablaré en español desde ahora. ";
+        else if (newLang === 'japanese') prefix = "承知いたしました。これからは日本語でお話しします。 ";
+        else if (newLang === 'chinese') prefix = "好的，从现在开始我会用中文跟您交流！ ";
+
+        setMessages(prev => [...prev.map(m => m.id === editingMessageId ? { ...m, content: newText } : m), {
+          id: `bot-edit-lang-${Date.now()}`,
+          role: 'bot',
+          content: `${prefix}${repeatedQuestion}`,
+          timestamp: new Date()
+        }]);
+
         setIsProcessing(false);
-      } else {
-        setEventData(prev => ({ ...prev, [editedMsg.qKey!]: newText }));
+        setEditingMessageId(null);
+        setEditingText("");
+        saveConversation();
+        return;
       }
+
+      if (!validation.valid) {
+        setMessages(prev => [...prev, {
+          id: `bot-edit-err-${Date.now()}`,
+          role: 'bot',
+          content: `⚠️ ${validation.message}`,
+          timestamp: new Date()
+        }]);
+      } else {
+        const newEventData = { ...eventData, [editedMsg.qKey!]: newText };
+        setMessages(prev => [...prev.map(m => m.id === editingMessageId ? { ...m, content: newText } : m), {
+          id: `bot-edit-ok-${Date.now()}`,
+          role: 'bot',
+          content: reaction || (eventData.preferred_language === 'tagalog' ? "Sige po, na-update ko na." : "Got it! I've updated that for you."),
+          timestamp: new Date()
+        }]);
+        setEventData(newEventData);
+      }
+      setIsProcessing(false);
     }
 
     setMessages(prev => prev.map(msg => msg.id === editingMessageId ? { ...msg, content: newText } : msg));
     setEditingMessageId(null);
     setEditingText("");
+
+    // Persist changes to database immediately
+    saveConversation();
   };
 
   const filteredHistory = (Array.isArray(history) ? history : []).filter((item) => {
@@ -730,19 +1018,16 @@ export default function App() {
     const inventory = steps.find(s => s.agent.includes('Inventory'))?.data || {};
     const suppliers = steps.find(s => s.agent.includes('Supplier'))?.data || {};
     const logistics = steps.find(s => s.agent.includes('Logistics'))?.data || {};
-    const pricing = steps.find(s => s.agent.includes('Accountant'))?.data || {};
     const monitoring = steps.find(s => s.agent.includes('Monitoring'))?.data || {};
     return [
       ['Event Type', customer.event_type || '--'],
       ['Guests', customer.guests || '--'],
-      ['Budget', customer.budget || '--'],
-      ['Location', customer.location || '--'],
+      ['Budget', customer.budget || eventData.budget || '--'],
+      ['Location', customer.location || eventData.event_location || '--'],
       ['Menu Items', (menu.menu || []).map((item: any) => item.dish).join('; ') || '--'],
       ['Procurement Weight', inventory.procurement_weight_kg ? `${inventory.procurement_weight_kg} kg` : '--'],
       ['Recommended Catering Shops', (suppliers.catering_shop_recommendations || []).slice(0, 3).map((shop: any) => `${shop.name} (${shop.match_score})`).join('; ') || '--'],
       ['Staffing', logistics.staffing_needs || '--'],
-      ['Quote', pricing.optimized_quote || '--'],
-      ['Margin', pricing.profit_margin || '--'],
       ['Readiness', monitoring.execution_readiness ? `${monitoring.execution_readiness}%` : '--'],
       ['Status', monitoring.overall_status || '--'],
     ];
@@ -795,8 +1080,21 @@ export default function App() {
         await loginWithEmail(email, password);
       } else {
         if (!name.trim()) throw new Error("Name is required");
-        await signupWithEmail(email, password, name, signupRole);
+        setSkipRoleLoad(true);
+        const userCredential = await signupWithEmail(email, password, name, signupRole);
+
+        // Explicitly sync to MongoDB backend
+        await mongoService.saveUser({
+          uid: userCredential.user.uid,
+          email: userCredential.user.email,
+          name,
+          role: signupRole
+        });
+
         setWorkspaceRole(signupRole);
+        if (signupRole === 'admin') setDashboardView('admin-inbox');
+        else if (signupRole === 'staff') setDashboardView('operations');
+        setSkipRoleLoad(false);
       }
     } catch (err: any) {
       setAuthError(err.message || "Authentication failed");
@@ -809,6 +1107,53 @@ export default function App() {
     return (
       <div className="h-screen w-full flex items-center justify-center transition-colors duration-300">
         <Loader2 className="w-8 h-8 animate-spin text-emerald-500 shadow-[0_0_15px_rgba(139,92,246,0.5)]" />
+      </div>
+    );
+  }
+
+  // Google sign-in role picker — shown for new Google users only
+  if (showRolePicker) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-gradient-to-br from-slate-50 to-emerald-50 p-4">
+        <div className="bg-white rounded-3xl shadow-2xl border border-slate-100 p-8 w-full max-w-md space-y-6">
+          <div className="text-center space-y-2">
+            <div className="w-14 h-14 rounded-2xl bg-emerald-50 border border-emerald-100 flex items-center justify-center mx-auto">
+              <Users className="w-7 h-7 text-emerald-600" />
+            </div>
+            <h2 className="text-lg font-black text-slate-900 uppercase tracking-widest">Choose Your Role</h2>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Welcome, <span className="font-bold text-slate-700">{pendingGoogleUser?.displayName || pendingGoogleUser?.email}</span>!<br />
+              Select how you'll use CaterFlow.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 gap-3">
+            {([
+              ['customer', 'Customer', 'Submit event briefs, review menus, track your plan'],
+              ['admin', 'Admin / Owner', 'Owner dashboard, pricing controls, supplier decisions'],
+              ['staff', 'Staff', 'Prep board, dispatch coordination, execution tasks'],
+            ] as const).map(([role, title, copy]) => (
+              <button
+                key={role}
+                type="button"
+                onClick={() => setSignupRole(role as WorkspaceRole)}
+                className={`rounded-2xl border p-4 text-left transition ${signupRole === role
+                    ? 'border-emerald-600 bg-emerald-50 shadow-sm'
+                    : 'border-slate-200 bg-white hover:border-emerald-200'
+                  }`}
+              >
+                <p className={`text-xs font-black uppercase tracking-[0.18em] ${signupRole === role ? 'text-emerald-800' : 'text-slate-700'
+                  }`}>{title}</p>
+                <p className="mt-1 text-[10px] leading-4 text-slate-500">{copy}</p>
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={handleGoogleRoleConfirm}
+            className="w-full min-h-12 bg-emerald-700 hover:bg-emerald-800 text-white font-black transition-all active:scale-[0.98] shadow-xl shadow-emerald-800/20 uppercase text-xs tracking-[0.18em] rounded-2xl"
+          >
+            Continue as {signupRole.charAt(0).toUpperCase() + signupRole.slice(1)}
+          </button>
+        </div>
       </div>
     );
   }
@@ -831,7 +1176,7 @@ export default function App() {
             Back
           </button>
         </div>
-        <motion.div 
+        <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           className="relative z-10 mx-auto grid max-w-6xl overflow-hidden rounded-[2rem] border border-white/70 bg-white/82 shadow-2xl shadow-slate-950/15 backdrop-blur-xl lg:grid-cols-[1.08fr_0.92fr]"
@@ -886,957 +1231,1356 @@ export default function App() {
               </div>
             </div>
 
-          <div className="space-y-6">
-          <form onSubmit={handleEmailAuth} className="space-y-4">
-            {authMode === 'signup' && (
-              <>
+            <div className="space-y-6">
+              <form onSubmit={handleEmailAuth} className="space-y-4">
+                {authMode === 'signup' && (
+                  <>
+                    <div className="space-y-1">
+                      <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Full Name</label>
+                      <input
+                        type="text"
+                        placeholder="EX: JOHN DOE"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none shadow-sm"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Workspace Role</label>
+                      <div className="grid grid-cols-2 gap-3">
+                        {[
+                          ['customer', 'Customer', 'Submit event brief, review menu, track plan'],
+                          ['admin', 'Admin', 'Owner dashboard, pricing, supplier decisions'],
+                          ['staff', 'Staff', 'Prep board, dispatch, execution tasks'],
+                        ].map(([role, title, copy]) => (
+                          <button
+                            key={role}
+                            type="button"
+                            onClick={() => setSignupRole(role as WorkspaceRole)}
+                            className={`rounded-2xl border p-4 text-left transition ${signupRole === role ? 'border-emerald-600 bg-emerald-50 shadow-sm' : 'border-slate-200 bg-white hover:border-emerald-200'}`}
+                          >
+                            <p className={`text-xs font-black uppercase tracking-[0.18em] ${signupRole === role ? 'text-emerald-800' : 'text-slate-700'}`}>{title}</p>
+                            <p className="mt-2 text-[10px] leading-4 text-slate-500">{copy}</p>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
                 <div className="space-y-1">
-                  <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Full Name</label>
+                  <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Email Address</label>
                   <input
-                    type="text"
-                    placeholder="EX: JOHN DOE"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
+                    type="email"
+                    placeholder="USER@DOMAIN.COM"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
                     className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none shadow-sm"
                     required
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Workspace Role</label>
-                  <div className="grid grid-cols-2 gap-3">
-                    {[
-                      ['customer', 'Customer', 'Submit event brief, review menu, track plan'],
-                      ['admin', 'Admin', 'Owner dashboard, pricing, supplier decisions'],
-                      ['staff', 'Staff', 'Prep board, dispatch, execution tasks'],
-                    ].map(([role, title, copy]) => (
-                      <button
-                        key={role}
-                        type="button"
-                        onClick={() => setSignupRole(role as WorkspaceRole)}
-                        className={`rounded-2xl border p-4 text-left transition ${signupRole === role ? 'border-emerald-600 bg-emerald-50 shadow-sm' : 'border-slate-200 bg-white hover:border-emerald-200'}`}
-                      >
-                        <p className={`text-xs font-black uppercase tracking-[0.18em] ${signupRole === role ? 'text-emerald-800' : 'text-slate-700'}`}>{title}</p>
-                        <p className="mt-2 text-[10px] leading-4 text-slate-500">{copy}</p>
-                      </button>
-                    ))}
-                  </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Password</label>
+                  <input
+                    type="password"
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none shadow-sm"
+                    required
+                  />
                 </div>
-              </>
-            )}
-            <div className="space-y-1">
-              <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Email Address</label>
-              <input
-                type="email"
-                placeholder="USER@DOMAIN.COM"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none shadow-sm"
-                required
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Password</label>
-              <input
-                type="password"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none shadow-sm"
-                required
-              />
-            </div>
-            
-            {authError && (
-              <div className="bg-pink-500/10 p-4 border border-pink-500/30 mb-4 animate-shake">
-                <p className="text-[11px] text-pink-400 font-mono font-bold uppercase">{authError}</p>
-                {authError.includes('operation-not-allowed') && (
-                  <p className="text-[10px] text-pink-400/80 mt-2 lowercase font-mono leading-relaxed">
-                    CRITICAL: Email/Password login is locked. Enable it in Firebase Console (Auth &gt; Sign-in Method) or use Google Access.
-                  </p>
+
+                {authError && (
+                  <div className="bg-pink-500/10 p-4 border border-pink-500/30 mb-4 animate-shake">
+                    <p className="text-[11px] text-pink-400 font-mono font-bold uppercase">{authError}</p>
+                    {authError.includes('operation-not-allowed') && (
+                      <p className="text-[10px] text-pink-400/80 mt-2 lowercase font-mono leading-relaxed">
+                        CRITICAL: Email/Password login is locked. Enable it in Firebase Console (Auth &gt; Sign-in Method) or use Google Access.
+                      </p>
+                    )}
+                  </div>
                 )}
+
+                <button
+                  type="submit"
+                  className="w-full min-h-14 bg-emerald-700 hover:bg-emerald-800 text-white font-black transition-all active:scale-[0.98] shadow-xl shadow-emerald-800/20 uppercase text-xs tracking-[0.18em] rounded-2xl"
+                >
+                  {authMode === 'login' ? 'Secure Login' : 'Create Account'}
+                </button>
+              </form>
+
+              <div className="relative py-1">
+                <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-200"></div></div>
+                <div className="relative flex justify-center text-[8px] uppercase tracking-[0.3em]"><span className="bg-white px-3 text-slate-400 font-bold">or continue with</span></div>
               </div>
-            )}
 
-            <button
-              type="submit"
-              className="w-full min-h-14 bg-emerald-700 hover:bg-emerald-800 text-white font-black transition-all active:scale-[0.98] shadow-xl shadow-emerald-800/20 uppercase text-xs tracking-[0.18em] rounded-2xl"
-            >
-              {authMode === 'login' ? 'Secure Login' : 'Create Account'}
-            </button>
-          </form>
+              <button
+                onClick={signInWithGoogle}
+                className="w-full min-h-14 bg-white border border-slate-200 text-slate-700 rounded-2xl font-black flex items-center justify-center gap-3 hover:bg-slate-50 transition-all active:scale-[0.98] text-xs uppercase tracking-[0.18em] shadow-sm"
+              >
+                <img src="https://www.google.com/favicon.ico" className="w-3 h-3" alt="Google" />
+                Continue with Google
+              </button>
 
-          <div className="relative py-1">
-            <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-200"></div></div>
-            <div className="relative flex justify-center text-[8px] uppercase tracking-[0.3em]"><span className="bg-white px-3 text-slate-400 font-bold">or continue with</span></div>
-          </div>
-
-          <button
-            onClick={signInWithGoogle}
-            className="w-full min-h-14 bg-white border border-slate-200 text-slate-700 rounded-2xl font-black flex items-center justify-center gap-3 hover:bg-slate-50 transition-all active:scale-[0.98] text-xs uppercase tracking-[0.18em] shadow-sm"
-          >
-            <img src="https://www.google.com/favicon.ico" className="w-3 h-3" alt="Google" />
-            Continue with Google
-          </button>
-
-          <p className="text-center text-[10px] text-slate-500 uppercase tracking-widest font-bold pt-1">
-            {authMode === 'login' ? "New operator?" : "Already registered?"}{" "}
-            <button 
-              onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
-              className="text-emerald-700 font-bold hover:text-emerald-900 transition-colors underline decoration-emerald-500/30"
-            >
-              {authMode === 'login' ? 'Sign Up' : 'Return to Login'}
-            </button>
-          </p>
-          </div>
+              <p className="text-center text-[10px] text-slate-500 uppercase tracking-widest font-bold pt-1">
+                {authMode === 'login' ? "New operator?" : "Already registered?"}{" "}
+                <button
+                  onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
+                  className="text-emerald-700 font-bold hover:text-emerald-900 transition-colors underline decoration-emerald-500/30"
+                >
+                  {authMode === 'login' ? 'Sign Up' : 'Return to Login'}
+                </button>
+              </p>
+            </div>
           </section>
         </motion.div>
       </div>
     );
   }
 
+
   const showConversation = dashboardView === 'conversation' || dashboardView === 'summary';
   const showOperations = dashboardView === 'operations' || dashboardView === 'summary';
   const showFinance = dashboardView === 'finance' || dashboardView === 'summary';
 
   return (
-    <div className={`app-shell flex flex-col h-screen w-full font-sans overflow-hidden transition-colors duration-300 ${highContrast ? 'high-contrast' : ''}`}>
-      {}
-      <header className="h-14 bg-white/90 backdrop-blur-md flex items-center justify-between px-6 border-b border-slate-200 flex-shrink-0 z-20">
-        <div className="flex items-center space-x-3">
-          <div className="w-8 h-8 bg-emerald-600 rounded-xl flex items-center justify-center font-bold text-lg text-white">C</div>
-          <h1 className="text-sm font-bold tracking-[0.08em] text-slate-950">CaterFlow <span className="text-slate-400 font-normal text-[10px] ml-2 uppercase tracking-[0.18em] hidden sm:inline">Smart Catering Operations</span></h1>
-        </div>
-          <div className="flex items-center space-x-4">
-          <div className="hidden md:flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-4 py-2">
-            <span className="text-[8px] font-black uppercase tracking-[0.2em] text-slate-400">Role</span>
-            <span className="text-[9px] font-black uppercase tracking-widest text-emerald-700">{workspaceRole}</span>
-          </div>
-          <button 
-            onClick={() => setShowAccessibilityPanel(true)}
-            className="p-2 rounded-xl hover:bg-emerald-50 text-slate-500 transition-all"
-            title="Accessibility Settings"
-          >
-            <ShieldCheck className="w-5 h-5" />
-          </button>
-          <button 
-            onClick={() => setShowHistory(!showHistory)}
-            className={`p-2 rounded-xl transition-all ${showHistory ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20' : 'hover:bg-emerald-50 text-slate-500'}`}
-          >
-            <History className="w-5 h-5" />
-          </button>
-          <div className="flex items-center space-x-2 bg-slate-50 border border-slate-200 px-3 py-1 rounded-full">
-            <span className={`w-2 h-2 rounded-full ${isProcessing ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></span>
-            <span className="text-[9px] font-mono uppercase tracking-tighter text-slate-500">Agents {isProcessing ? 'Planning' : 'Ready'}</span>
-          </div>
-          <div className="flex items-center gap-3 pl-4 border-l border-slate-200">
-            <img src={user.photoURL || null} className="w-6 h-6 rounded-full border border-slate-200" alt="User" />
-            <button onClick={logout} className="text-slate-400 hover:text-rose-500 transition-colors">
-              <LogOut className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      </header>
+    <div className={`app-shell flex flex-col h-screen w-full font-sans overflow-hidden transition-all duration-500 ${highContrast ? 'high-contrast' : ''
+      } ${workspaceRole === 'admin' ? 'admin-theme bg-[var(--bg-color)]' : workspaceRole === 'staff' ? 'staff-theme bg-[#fffbeb]' : 'customer-theme bg-[#fbf7ee]'}`}>
 
-      <main className="flex-1 grid grid-cols-12 gap-5 p-5 overflow-hidden relative">
-        <div className="col-span-12 flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-2">
-          <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Dashboard Views</p>
-          <div className="flex gap-2">
-            {[
-              ...(workspaceRole === 'customer' ? [['conversation', 'Brief'], ['summary', 'Plan'], ['menu-editor', 'Edit Menu'], ['checkout', 'Checkout']] : []),
-              ...(workspaceRole === 'admin' ? [['summary', 'Plan'], ['admin-dashboard', 'Owner Dashboard'], ['shop-setup', 'My Shop'], ['finance', 'Finance']] : []),
-              ...(workspaceRole === 'staff' ? [['operations', 'Ops'], ['staff-tasks', 'Tasks'], ['delivery', 'Delivery']] : []),
-            ].map(([key, label]) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setDashboardView(key as any)}
-                className={`rounded-full px-3 py-1 text-[9px] font-black uppercase tracking-widest ${
-                  dashboardView === key ? 'bg-emerald-700 text-white' : 'bg-slate-100 text-slate-600'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-        {}
-        <AnimatePresence>
-          {showHistory && (
-            <motion.div
-              initial={{ opacity: 0, x: -100 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -100 }}
-              className="absolute inset-y-4 left-4 w-80 bg-white/95 backdrop-blur-xl rounded-3xl z-30 border border-slate-200 overflow-hidden flex flex-col shadow-2xl shadow-slate-950/15"
-            >
-              <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-[#fffaf0]">
-                <h3 className="font-bold text-[10px] uppercase tracking-[0.2em] text-emerald-800">Saved Conversations</h3>
-                <button onClick={() => setShowHistory(false)} className="text-slate-400 hover:text-emerald-700 transition-all">
-                  <ArrowRight className="w-4 h-4 rotate-180" />
+      {workspaceRole === 'admin' ? (
+        <div className="flex-1 flex flex-col overflow-hidden bg-[var(--bg-color)]">
+          {/* Admin Header */}
+          <header className="h-14 bg-[var(--header-bg)] flex items-center justify-between px-6 flex-shrink-0 z-30 border-b border-[var(--border-color)]">
+            <div className="flex items-center space-x-3">
+              <div className="w-8 h-8 bg-[var(--accent-color)] rounded-xl flex items-center justify-center font-bold text-lg text-white">C</div>
+              <h1 className="text-sm font-bold tracking-[0.08em] text-[var(--text-color)]">CaterFlow <span className="text-slate-500 font-normal text-[10px] ml-2 uppercase tracking-[0.18em]">Admin Portal</span></h1>
+            </div>
+            <div className="flex items-center space-x-4">
+              <div className="flex items-center gap-3 pl-4 border-l border-[var(--border-color)]">
+                <img src={user.photoURL || undefined} className="w-6 h-6 rounded-full border border-[var(--border-color)]" alt="User" />
+                <button onClick={() => auth.signOut()} className="text-slate-500 hover:text-rose-500 transition-colors">
+                  <LogOut className="w-4 h-4" />
                 </button>
-              </div>
-              <div className="border-b border-slate-100 bg-white p-3">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-                  <input
-                    value={historySearch}
-                    onChange={(e) => setHistorySearch(e.target.value)}
-                    placeholder="Search conversations"
-                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-xs outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
-                  />
-                </div>
-              </div>
-              <div className="flex-1 overflow-y-auto p-2 space-y-2">
-                {filteredHistory.map((item) => (
-                  <div key={item.id} className="group rounded-2xl border border-slate-100 bg-white p-3 transition-all hover:border-emerald-200 hover:bg-emerald-50">
-                    <button onClick={() => loadFromHistory(item)} className="w-full text-left">
-                      <p className="text-[10px] font-bold text-slate-700 truncate mb-1 group-hover:text-emerald-800 transition-colors uppercase">{item.rawInput}</p>
-                      <div className="flex justify-between items-center">
-                        <p className="text-[8px] text-emerald-500/60 uppercase font-bold tracking-tighter">
-                          {item.createdAt?.seconds ? new Date(item.createdAt.seconds * 1000).toLocaleDateString() : 'Saved draft'}
-                        </p>
-                        <span className="text-[8px] px-1 bg-emerald-500/20 text-emerald-600 font-mono italic">{item.type || 'plan'} #{item.steps?.length || 0}A</span>
-                      </div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => deleteConversation(item.id)}
-                      className="mt-2 inline-flex items-center gap-1 rounded-full bg-rose-50 px-2 py-1 text-[8px] font-black uppercase tracking-widest text-rose-600 transition hover:bg-rose-100"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                      Delete
-                    </button>
-                  </div>
-                ))}
-                {filteredHistory.length === 0 && (
-                  <div className="p-6 text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">No saved conversation found</div>
-                )}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {}
-        {showConversation && <section className="col-span-12 lg:col-span-4 flex flex-col space-y-4 overflow-hidden">
-          <div className="high-density-card flex flex-col min-h-[520px]">
-            <div className="high-density-header flex justify-between items-center">
-              <div>
-                <h2 className="high-density-label">Event Brief</h2>
-                <p className="text-[11px] text-slate-500 mt-1">Answer a few questions. The agents handle the rest.</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button onClick={saveConversation} className="inline-flex items-center gap-1 text-[9px] font-bold text-sky-800 hover:text-sky-900 uppercase tracking-widest bg-sky-50 px-3 py-1.5 rounded-full border border-sky-100">
-                  <Save className="h-3 w-3" />
-                  Save
-                </button>
-                <button onClick={restartChat} className="text-[9px] font-bold text-emerald-700 hover:text-emerald-900 uppercase tracking-widest bg-emerald-50 px-3 py-1.5 rounded-full border border-emerald-100">New</button>
-                {activeConversationId && (
-                  <button onClick={() => deleteConversation()} className="inline-flex items-center gap-1 text-[9px] font-bold text-rose-700 hover:text-rose-900 uppercase tracking-widest bg-rose-50 px-3 py-1.5 rounded-full border border-rose-100">
-                    <Trash2 className="h-3 w-3" />
-                    Delete
-                  </button>
-                )}
               </div>
             </div>
-            
-            {}
-            <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-[#fffaf0]" ref={chatScrollRef}>
-              <AnimatePresence initial={false}>
-                {messages.map((msg) => (
-                  <motion.div
-                    key={msg.id}
-                    initial={{ opacity: 0, x: msg.role === 'user' ? 20 : -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                  >
-                    <div className={`
-                      max-w-[88%] px-4 py-3 text-[13px] leading-relaxed relative rounded-3xl shadow-sm
-                      ${msg.role === 'user' ? 'bg-emerald-700 text-white rounded-br-md' : 
-                        msg.role === 'system' ? 'bg-amber-50 text-amber-800 w-full text-center border border-amber-100 rounded-2xl text-[11px] font-semibold' :
-                        'bg-white text-slate-800 border border-slate-100 rounded-bl-md'}
-                    `}>
-                      {editingMessageId === msg.id ? (
-                        <div className="space-y-2">
-                          <textarea
-                            value={editingText}
-                            onChange={(e) => setEditingText(e.target.value)}
-                            className="min-h-20 w-full rounded-2xl border border-emerald-200 bg-white p-3 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-emerald-100"
-                          />
-                          <div className="flex justify-end gap-2">
-                            <button type="button" onClick={() => { setEditingMessageId(null); setEditingText(""); }} className="rounded-full bg-slate-100 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-slate-600">
-                              Cancel
-                            </button>
-                            <button type="button" onClick={commitEditMessage} className="rounded-full bg-emerald-700 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-white">
-                              Update
-                            </button>
-                          </div>
+          </header>
+
+          <div className="flex-1 flex overflow-hidden">
+            {/* Admin Sidebar */}
+            <aside className="w-64 bg-[var(--header-bg)] border-r border-[var(--border-color)] flex flex-col p-4 space-y-2">
+              {[
+                ['admin-inbox', 'Inbox / Chats', Inbox],
+                ['shop-setup', 'My Catering Shop', Store],
+                ['summary', 'Planning Hub', ClipboardList],
+                ['admin-dashboard', 'Business Analytics', BarChart3],
+                ['finance', 'Financials', DollarSign],
+              ].map(([key, label, Icon]: any) => (
+                <button
+                  key={key}
+                  onClick={() => setDashboardView(key as any)}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all ${dashboardView === key ? 'bg-[var(--accent-color)] text-slate-950 shadow-lg shadow-[var(--accent-color)]/20' : 'text-slate-400 hover:bg-white/5'
+                    }`}
+                >
+                  <Icon className="w-4 h-4" />
+                  {label}
+                </button>
+              ))}
+
+              <div className="mt-auto pt-4 border-t border-[var(--border-color)]">
+                <div className="p-4 bg-[var(--accent-color)]/5 border border-[var(--accent-color)]/10 rounded-2xl">
+                  <p className="text-[10px] font-black text-[var(--accent-color)] uppercase tracking-widest mb-1">Owner Mode</p>
+                  <p className="text-[9px] text-slate-500 leading-relaxed font-medium">You are managing your catering business operations.</p>
+                </div>
+              </div>
+            </aside>
+
+            {/* Admin Content */}
+            <main className="flex-1 bg-[var(--bg-color)] overflow-y-auto p-8">
+              <AnimatePresence mode="wait">
+                {dashboardView === 'admin-inbox' && (
+                  <AdminInbox
+                    plans={[{
+                      _id: 'sample-1',
+                      eventId: 'evt-123',
+                      customerName: 'Aron Customer',
+                      customerEmail: 'aron@example.com',
+                      customerUid: 'cust-1',
+                      eventType: 'Wedding Reception',
+                      guests: 150,
+                      budget: '₱75,000',
+                      location: 'Taguig City',
+                      date: '2026-12-25',
+                      menuSummary: ['Lechon Pork', 'Chicken Inasal', 'Chopsuey'],
+                      quote: '₱75,000',
+                      sentAt: new Date().toISOString(),
+                      status: 'new'
+                    }]}
+                    adminUid={user.uid}
+                    adminName={user.displayName || 'Admin'}
+                    onSendMessage={async (planId, text) => {
+                      console.log(`Sending to ${planId}: ${text}`);
+                    }}
+                    onUpdateStatus={(id, status) => {
+                      console.log(`Status of ${id} changed to ${status}`);
+                    }}
+                  />
+                )}
+                {dashboardView === 'shop-setup' && (
+                  <AdminShopSetup
+                    profile={shopProfile}
+                    onSave={async (data) => {
+                      const saved = await mongoService.saveShop(data);
+                      setShopProfile(saved);
+                    }}
+                  />
+                )}
+                {dashboardView === 'admin-dashboard' && (
+                  <AdminDashboard
+                    inventory={localInventory}
+                    pricing={pricingStep}
+                  />
+                )}
+                {dashboardView === 'summary' && (
+                  <div className="relative min-h-[calc(100vh-80px)] w-full pb-16">
+                    {/* Glassmorphism Background Blobs */}
+                    <div className="absolute top-10 left-10 w-96 h-96 bg-emerald-300/30 rounded-full mix-blend-multiply filter blur-3xl opacity-70 pointer-events-none"></div>
+                    <div className="absolute top-40 right-20 w-96 h-96 bg-sky-300/30 rounded-full mix-blend-multiply filter blur-3xl opacity-70 pointer-events-none"></div>
+                    <div className="absolute bottom-20 left-1/3 w-96 h-96 bg-amber-200/30 rounded-full mix-blend-multiply filter blur-3xl opacity-70 pointer-events-none"></div>
+
+                    <div className="relative max-w-5xl mx-auto space-y-8 z-10">
+                      <div className="flex items-center justify-between p-8 backdrop-blur-xl bg-white/40 border border-white/60 rounded-[2.5rem] shadow-[0_8px_30px_rgb(0,0,0,0.04)] mb-8">
+                        <div>
+                          <h2 className="text-2xl font-black text-slate-800 tracking-tight uppercase tracking-[0.1em] drop-shadow-sm">Active Event Planning</h2>
+                          <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">Reviewing AI-generated blueprints and logistics</p>
                         </div>
-                      ) : (
-                        <>
-                          {msg.content}
-                          {msg.role === 'user' && (
-                            <button
-                              type="button"
-                              onClick={() => startEditMessage(msg)}
-                              className="ml-2 inline-flex align-middle text-white/70 transition hover:text-white"
-                              title="Edit message"
-                            >
-                              <Pencil className="h-3 w-3" />
-                            </button>
-                          )}
-                        </>
-                      )}
-                      <div className={`text-[9px] mt-2 opacity-45 ${msg.role === 'user' ? 'text-right text-white' : 'text-left text-slate-500'}`}>
-                        {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}
+                        <button onClick={exportSummaryTable} className="px-6 py-3 bg-white/60 border border-white/80 hover:bg-white text-[10px] font-black uppercase tracking-widest text-slate-700 rounded-2xl shadow-sm transition-all hover:shadow-md">Export CSV</button>
+                      </div>
+                      <div className="grid grid-cols-12 gap-6">
+                        <div className="col-span-12 lg:col-span-8">
+                          {visibleSteps
+                            .filter(s => !s.agent.includes('Knowledge Base') && !s.agent.includes('Monitoring') && !s.agent.includes('Shared Memory'))
+                            .map((step, idx) => (
+                            <AgentReport key={idx} step={step} isExpanded={expandedStepIndex === idx} onToggle={() => setExpandedStepIndex(idx)} />
+                          ))}
+                        </div>
+                        <div className="col-span-12 lg:col-span-4">
+                          <ProblemStatementFit stackStatus={stackStatus} />
+                        </div>
                       </div>
                     </div>
-                  </motion.div>
-                ))}
-                {showSummary && (
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className="overflow-hidden rounded-3xl border border-emerald-200 bg-white shadow-xl shadow-emerald-900/10"
-                  >
-                    <div className="p-5 space-y-4">
-                      <div className="flex items-start gap-3 border-b border-slate-100 pb-4">
-                        <div className="p-2 bg-emerald-50 rounded-xl text-emerald-700">
-                          <CheckCircle2 className="w-5 h-5" />
-                        </div>
-                        <div className="min-w-0">
-                          <h3 className="text-sm font-black text-slate-950 uppercase tracking-[0.12em]">Review Event Details</h3>
-                          <p className="mt-1 text-[11px] leading-5 text-slate-500">Please check the details below. You can edit servings, food preferences, budget, or notes before the agents create the full plan.</p>
-                        </div>
-                      </div>
-                      
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        {SUMMARY_FIELDS.filter((field) => field.key !== "special_requests" || eventData[field.key]).map((field) => (
-                          <div
-                            key={field.key}
-                            className={`rounded-2xl border p-3 ${field.important ? 'border-emerald-200 bg-emerald-50' : 'border-slate-100 bg-slate-50'}`}
-                          >
-                            <label className="mb-2 block text-[9px] font-black uppercase tracking-[0.16em] text-slate-500">
-                              {field.label}
-                            </label>
-                            {field.compact ? (
-                              <input
-                                value={String(eventData[field.key] || "")}
-                                onChange={(e) => updateEventDataField(field.key, e.target.value)}
-                                placeholder="Not provided"
-                                className="w-full rounded-xl border border-white bg-white px-3 py-2 text-[12px] font-bold text-slate-800 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100"
-                              />
-                            ) : (
-                              <textarea
-                                value={String(eventData[field.key] || "")}
-                                onChange={(e) => updateEventDataField(field.key, e.target.value)}
-                                placeholder="Not provided"
-                                rows={2}
-                                className="w-full resize-none rounded-xl border border-white bg-white px-3 py-2 text-[12px] font-semibold leading-5 text-slate-800 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100"
-                              />
-                            )}
-                          </div>
-                        ))}
-                      </div>
-
-                      <div className="rounded-2xl border border-amber-100 bg-amber-50 p-3">
-                        <p className="text-[10px] font-bold leading-5 text-amber-800">
-                          Is this correct? If the serving count or any food detail changed, edit it above before confirming.
-                        </p>
-                      </div>
-
-                      <div className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-2">
-                        <button
-                          onClick={handleConfirmOrder}
-                          className="flex-1 py-3 bg-emerald-700 text-white rounded-2xl text-[11px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-lg shadow-emerald-800/15"
-                        >
-                          Confirm & Plan
-                        </button>
-                        <button
-                          onClick={() => {
-                            setIsConfirming(false);
-                            setShowSummary(false);
-                            setMessages(prev => [...prev, {
-                              id: `bot-retry-${Date.now()}`,
-                              role: 'bot',
-                              content: "No problem! What else would you like to add or change?",
-                              timestamp: new Date()
-                            }]);
-                          }}
-                          className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[11px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all"
-                        >
-                          Add More
-                        </button>
-                      </div>
-                    </div>
-                  </motion.div>
+                  </div>
                 )}
               </AnimatePresence>
-              {isProcessing && isChatting && (
-                <div className="flex justify-start">
-                  <div className="bg-white border border-slate-100 px-4 py-3 rounded-2xl shadow-sm">
-                    <div className="flex space-x-1">
-                      <div className="w-1.5 h-1.5 bg-emerald-600 rounded-full animate-bounce"></div>
-                      <div className="w-1.5 h-1.5 bg-emerald-600 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
-                      <div className="w-1.5 h-1.5 bg-emerald-600 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+            </main>
+          </div>
+        </div>
+      ) : (
+        <>
+          <header className="h-14 bg-white/90 backdrop-blur-md flex items-center justify-between px-6 border-b border-slate-200 flex-shrink-0 z-20">
+            <div className="flex items-center space-x-3">
+              <div className="w-8 h-8 bg-[var(--accent-color)] rounded-xl flex items-center justify-center font-bold text-lg text-white">C</div>
+              <h1 className="text-sm font-bold tracking-[0.08em] text-slate-950">
+                CaterFlow
+                <span className="text-slate-400 font-normal text-[10px] ml-2 uppercase tracking-[0.18em]">
+                  {workspaceRole === 'staff' ? 'Staff Portal' : 'Customer Planner'}
+                </span>
+              </h1>
+            </div>
+            <div className="flex items-center space-x-4">
+              <div className="flex items-center gap-3 pl-4 border-l border-slate-200">
+                <button
+                  onClick={() => setShowHistory(true)}
+                  className="p-2 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-xl transition-all"
+                  title="Saved Conversations"
+                >
+                  <History className="w-5 h-5" />
+                </button>
+                <img src={user.photoURL || null} className="w-6 h-6 rounded-full border border-slate-200" alt="User" />
+                <button onClick={logout} className="text-slate-400 hover:text-rose-500 transition-colors">
+                  <LogOut className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </header>
+
+          <main className="flex-1 grid grid-cols-12 gap-5 p-5 overflow-hidden relative bg-[var(--bg-color)]">
+            <div className="col-span-12 flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-2 h-12">
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                {workspaceRole === 'staff' ? 'Operational Tasks' : 'My Planning Journey'}
+              </p>
+              <div className="flex gap-2">
+                {(workspaceRole === 'staff'
+                  ? [['staff-tasks', 'Duty Roster'], ['delivery', 'Logistics']]
+                  : [['conversation', 'Brief'], ['summary', 'Plan'], ['inventory-planner', 'Inventory Plan'], ['menu-editor', 'Edit Menu'], ['checkout', 'Checkout']]
+                ).map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => setDashboardView(key as any)}
+                    className={`rounded-full px-3 py-1 text-[9px] font-black uppercase tracking-widest transition-all ${dashboardView === key
+                        ? 'bg-[var(--accent-color)] text-white'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <AnimatePresence>
+              {showHistory && (
+                <motion.div
+                  initial={{ opacity: 0, x: -100 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -100 }}
+                  className="absolute inset-y-4 left-4 w-80 bg-white/95 backdrop-blur-xl rounded-3xl z-30 border border-slate-200 overflow-hidden flex flex-col shadow-2xl shadow-slate-950/15"
+                >
+                  <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-[#fffaf0]">
+                    <h3 className="font-bold text-[10px] uppercase tracking-[0.2em] text-emerald-800">Saved Conversations</h3>
+                    <button onClick={() => setShowHistory(false)} className="text-slate-400 hover:text-emerald-700 transition-all">
+                      <ArrowRight className="w-4 h-4 rotate-180" />
+                    </button>
+                  </div>
+                  <div className="border-b border-slate-100 bg-white p-3">
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                      <input
+                        value={historySearch}
+                        onChange={(e) => setHistorySearch(e.target.value)}
+                        placeholder="Search conversations"
+                        className="w-full rounded-2xl border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-xs outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                      />
                     </div>
                   </div>
-                </div>
+                  <div className="flex-1 overflow-y-auto p-2 space-y-2">
+                    {filteredHistory.map((item) => (
+                      <div key={item.id} className="group rounded-2xl border border-slate-100 bg-white p-3 transition-all hover:border-emerald-200 hover:bg-emerald-50">
+                        <button onClick={() => loadFromHistory(item)} className="w-full text-left">
+                          <p className="text-[10px] font-bold text-slate-700 truncate mb-1 group-hover:text-emerald-800 transition-colors uppercase">{item.rawInput}</p>
+                          <div className="flex justify-between items-center">
+                            <p className="text-[8px] text-emerald-500/60 uppercase font-bold tracking-tighter">
+                              {item.createdAt?.seconds ? new Date(item.createdAt.seconds * 1000).toLocaleDateString() : 'Saved draft'}
+                            </p>
+                            <span className="text-[8px] px-1 bg-emerald-500/20 text-emerald-600 font-mono italic">{item.type || 'plan'} #{item.steps?.length || 0}A</span>
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteConversation(item.id)}
+                          className="mt-2 inline-flex items-center gap-1 rounded-full bg-rose-50 px-2 py-1 text-[8px] font-black uppercase tracking-widest text-rose-600 transition hover:bg-rose-100"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                          Delete
+                        </button>
+                      </div>
+                    ))}
+                    {filteredHistory.length === 0 && (
+                      <div className="p-6 text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">No saved conversation found</div>
+                    )}
+                  </div>
+                </motion.div>
               )}
-            </div>
+            </AnimatePresence>
 
-            <div className="p-4 border-t border-slate-100 bg-white">
-              <form onSubmit={handleChatSubmit} className="flex flex-col space-y-3">
-                <div className="relative flex flex-col group">
-                  <textarea
-                    autoFocus
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        handleChatSubmit(e as any);
-                      }
-                    }}
-                    placeholder={isProcessing ? "Planning..." : "Type your answer here"}
-                    disabled={isProcessing || !isChatting}
-                    className="w-full p-4 pr-24 bg-slate-50 text-slate-800 rounded-3xl text-sm leading-relaxed border border-slate-200 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 resize-none min-h-[96px] placeholder:text-slate-400 transition-all outline-none"
-                    required
-                  />
-                  <div className="absolute bottom-3 right-3 flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleVoiceInput}
-                      className={`p-2.5 rounded-full transition-all ${isListening ? 'bg-rose-600 text-white animate-pulse shadow-lg shadow-rose-600/20' : 'bg-white text-slate-500 border border-slate-200 hover:bg-emerald-50 hover:text-emerald-700'}`}
-                    >
-                      {isListening ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
+            { }
+            {showConversation && <section className={`col-span-12 ${Object.keys(monitoringStep).length > 0 ? 'hidden' : 'lg:col-span-4'} flex flex-col space-y-4 overflow-hidden h-[calc(100vh-190px)]`}>
+              <div className="high-density-card flex flex-col min-h-[520px]">
+                <div className="high-density-header flex justify-between items-center">
+                  <div>
+                    <h2 className="high-density-label">Event Brief</h2>
+                    <p className="text-[11px] text-slate-500 mt-1">Answer a few questions. The agents handle the rest.</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button onClick={saveConversation} className="inline-flex items-center gap-1 text-[9px] font-bold text-sky-800 hover:text-sky-900 uppercase tracking-widest bg-sky-50 px-3 py-1.5 rounded-full border border-sky-100">
+                      <Save className="h-3 w-3" />
+                      Save
                     </button>
-                    <button
-                      type="submit"
-                      disabled={isProcessing || !isChatting}
-                      className="p-2.5 bg-emerald-700 text-white rounded-full hover:bg-emerald-800 disabled:bg-slate-300 transition-all shadow-lg shadow-emerald-800/15"
-                    >
-                      <Send className="w-3 h-3" />
-                    </button>
+                    <button onClick={restartChat} className="text-[9px] font-bold text-emerald-700 hover:text-emerald-900 uppercase tracking-widest bg-emerald-50 px-3 py-1.5 rounded-full border border-emerald-100">New</button>
+                    {activeConversationId && (
+                      <button onClick={() => deleteConversation()} className="inline-flex items-center gap-1 text-[9px] font-bold text-rose-700 hover:text-rose-900 uppercase tracking-widest bg-rose-50 px-3 py-1.5 rounded-full border border-rose-100">
+                        <Trash2 className="h-3 w-3" />
+                        Delete
+                      </button>
+                    )}
                   </div>
                 </div>
-              </form>
-            </div>
-          </div>
 
-          {}
-          {steps.length > 0 && <div className="high-density-card flex flex-col max-h-72">
-            <div className="high-density-header">
-              <h2 className="high-density-label">Agent Progress</h2>
-            </div>
-            <div className="p-3 grid grid-cols-2 gap-2 overflow-y-auto">
-              {[
-                { name: 'Knowledge Base & RAG', desc: 'Playbook Retrieval' },
-                { name: 'CustomerAgent', desc: 'Requirement Extraction' },
-                { name: 'DietaryAgent', desc: 'Allergen Safety' },
-                { name: 'MenuAgent', desc: 'Menu + Nutrition' },
-                { name: 'InventoryAgent', desc: 'Procurement Weights' },
-                { name: 'SupplierAgent', desc: 'Market + Distance' },
-                { name: 'WeatherAgent', desc: 'Live Risk' },
-                { name: 'LogisticsAgent', desc: 'Traffic Timeline' },
-                { name: 'PricingAgent', desc: 'Margin Audit' },
-                { name: 'MonitoringAgent', desc: 'Readiness QA' },
-                { name: 'Shared Memory', desc: 'Agent Handoffs' }
-              ].map((agent, i) => {
-                const isActive = currentStepIndex === i;
-                const isCompleted = currentStepIndex > i;
-                
-                return (
-                  <div key={agent.name} className={`flex items-center gap-2 p-2 rounded-2xl border transition-all ${isActive ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-100'}`}>
-                    <div className={`
+                { }
+                <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-[#fffaf0]" ref={chatScrollRef}>
+                  <AnimatePresence initial={false}>
+                    {messages.map((msg) => (
+                      <motion.div
+                        key={msg.id}
+                        initial={{ opacity: 0, x: msg.role === 'user' ? 20 : -20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                      >
+                        <div className={`
+                      max-w-[88%] px-4 py-3 text-[13px] leading-relaxed relative rounded-3xl shadow-sm
+                      ${msg.role === 'user' ? 'bg-emerald-700 text-white rounded-br-md' :
+                            msg.role === 'system' ? 'bg-amber-50 text-amber-800 w-full text-center border border-amber-100 rounded-2xl text-[11px] font-semibold' :
+                              'bg-white text-slate-800 border border-slate-100 rounded-bl-md'}
+                    `}>
+                          {editingMessageId === msg.id ? (
+                            <div className="space-y-2">
+                              <textarea
+                                value={editingText}
+                                onChange={(e) => setEditingText(e.target.value)}
+                                className="min-h-20 w-full rounded-2xl border border-emerald-200 bg-white p-3 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-emerald-100"
+                              />
+                              <div className="flex justify-end gap-2">
+                                <button type="button" onClick={() => { setEditingMessageId(null); setEditingText(""); }} className="rounded-full bg-slate-100 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-slate-600">
+                                  {eventData.preferred_language === 'tagalog' ? 'I-cancel' : 'Cancel'}
+                                </button>
+                                <button type="button" onClick={commitEditMessage} className="rounded-full bg-emerald-700 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-white">
+                                  {eventData.preferred_language === 'tagalog' ? 'I-update' : 'Update'}
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              {msg.content}
+                              {msg.isWeatherChoice && (
+                                <div className="mt-4 flex gap-2">
+                                  <button
+                                    onClick={() => handleWeatherChoice(true)}
+                                    className="px-6 py-2 bg-emerald-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-md flex items-center gap-2"
+                                  >
+                                    <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
+                                    Yes
+                                  </button>
+                                  <button
+                                    onClick={() => handleWeatherChoice(false)}
+                                    className="px-6 py-2 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all"
+                                  >
+                                    No
+                                  </button>
+                                </div>
+                              )}
+                              {msg.isMenuCompositionChoice && (
+                                <div className="mt-4 flex flex-col gap-2">
+                                  <button
+                                    onClick={() => handleChatSubmit(undefined, "System decide best mix to maximize my budget")}
+                                    className="px-4 py-3 bg-emerald-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-md text-left flex justify-between items-center"
+                                  >
+                                    <span>🤖 Auto-plan (Maximize my budget)</span>
+                                    <ArrowRight className="w-3 h-3 opacity-50" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleChatSubmit(undefined, "1-2 main dishes only, keep it simple for my budget")}
+                                    className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all text-left flex justify-between items-center"
+                                  >
+                                    <span>🍱 Keep it simple (1-2 dishes only)</span>
+                                    <ArrowRight className="w-3 h-3 opacity-50" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleChatSubmit(undefined, "System decide mains only, no desserts and no drinks")}
+                                    className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all text-left flex justify-between items-center"
+                                  >
+                                    <span>🥩 Mains Only (No Desserts / Drinks)</span>
+                                    <ArrowRight className="w-3 h-3 opacity-50" />
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, isMenuCompositionChoice: false } : m));
+                                      setInput("");
+                                      setTimeout(() => document.querySelector('textarea')?.focus(), 0);
+                                    }}
+                                    className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all text-left flex justify-between items-center"
+                                  >
+                                    <span>✍️ I'll type my custom counts</span>
+                                    <ArrowRight className="w-3 h-3 opacity-50" />
+                                  </button>
+                                </div>
+                              )}
+                              {msg.isFoodChoiceMode && (
+                                <div className="mt-4 flex flex-col gap-2">
+                                  <button
+                                    onClick={() => handleChatSubmit(undefined, "Suggest for me")}
+                                    className="px-4 py-3 bg-emerald-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-md text-left flex justify-between items-center"
+                                  >
+                                    <span>🤖 Suggest for me</span>
+                                    <ArrowRight className="w-3 h-3 opacity-50" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleChatSubmit(undefined, "I have specific food")}
+                                    className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all text-left flex justify-between items-center"
+                                  >
+                                    <span>📝 I have specific food</span>
+                                    <ArrowRight className="w-3 h-3 opacity-50" />
+                                  </button>
+                                </div>
+                              )}
+                              {msg.isPortionControlMode && (
+                                <div className="mt-4 flex flex-col gap-2">
+                                  <button
+                                    onClick={() => handleChatSubmit(undefined, "System automatically calculate")}
+                                    className="px-4 py-3 bg-emerald-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-md text-left flex justify-between items-center"
+                                  >
+                                    <span>🤖 Auto-calculate optimal portions</span>
+                                    <ArrowRight className="w-3 h-3 opacity-50" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleChatSubmit(undefined, "I will specify portions")}
+                                    className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all text-left flex justify-between items-center"
+                                  >
+                                    <span>⚖️ I will specify portions</span>
+                                    <ArrowRight className="w-3 h-3 opacity-50" />
+                                  </button>
+                                </div>
+                              )}
+                              {msg.role === 'user' && (
+                                <button
+                                  type="button"
+                                  onClick={() => startEditMessage(msg)}
+                                  className="ml-2 inline-flex align-middle text-white/70 transition hover:text-white"
+                                  title="Edit message"
+                                >
+                                  <Pencil className="h-3 w-3" />
+                                </button>
+                              )}
+                            </>
+                          )}
+                          <div className={`text-[9px] mt-2 opacity-45 ${msg.role === 'user' ? 'text-right text-white' : 'text-left text-slate-500'}`}>
+                            {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}
+                          </div>
+                        </div>
+                      </motion.div>
+                    ))}
+                    {showSummary && (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="overflow-hidden rounded-3xl border border-emerald-200 bg-white shadow-xl shadow-emerald-900/10"
+                      >
+                        <div className="p-5 space-y-4">
+                          <div className="flex items-start gap-3 border-b border-slate-100 pb-4">
+                            <div className="p-2 bg-emerald-50 rounded-xl text-emerald-700">
+                              <CheckCircle2 className="w-5 h-5" />
+                            </div>
+                            <div className="min-w-0">
+                              <h3 className="text-sm font-black text-slate-950 uppercase tracking-[0.12em]">Review Event Details</h3>
+                              <p className="mt-1 text-[11px] leading-5 text-slate-500">Please check the details below. You can edit servings, food preferences, budget, or notes before the agents create the full plan.</p>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            {SUMMARY_FIELDS.filter((field) => field.key !== "special_requests" || eventData[field.key]).map((field) => (
+                              <div
+                                key={field.key}
+                                className={`rounded-2xl border p-3 ${field.important ? 'border-emerald-200 bg-emerald-50' : 'border-slate-100 bg-slate-50'}`}
+                              >
+                                <label className="mb-2 block text-[9px] font-black uppercase tracking-[0.16em] text-slate-500">
+                                  {field.label}
+                                </label>
+                                {field.compact ? (
+                                  <input
+                                    value={String(eventData[field.key] || "")}
+                                    onChange={(e) => updateEventDataField(field.key, e.target.value)}
+                                    placeholder="Not provided"
+                                    className="w-full rounded-xl border border-white bg-white px-3 py-2 text-[12px] font-bold text-slate-800 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100"
+                                  />
+                                ) : (
+                                  <textarea
+                                    value={String(eventData[field.key] || "")}
+                                    onChange={(e) => updateEventDataField(field.key, e.target.value)}
+                                    placeholder="Not provided"
+                                    rows={2}
+                                    className="w-full resize-none rounded-xl border border-white bg-white px-3 py-2 text-[12px] font-semibold leading-5 text-slate-800 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100"
+                                  />
+                                )}
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="rounded-2xl border border-amber-100 bg-amber-50 p-3">
+                            <p className="text-[10px] font-bold leading-5 text-amber-800">
+                              Is this correct? If the serving count or any food detail changed, edit it above before confirming.
+                            </p>
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-2">
+                            <button
+                              onClick={handleConfirmOrder}
+                              className="flex-1 py-3 bg-emerald-700 text-white rounded-2xl text-[11px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-lg shadow-emerald-800/15"
+                            >
+                              Confirm & Plan
+                            </button>
+                            <button
+                              onClick={() => {
+                                setIsConfirming(false);
+                                setShowSummary(false);
+                                setMessages(prev => [...prev, {
+                                  id: `bot-retry-${Date.now()}`,
+                                  role: 'bot',
+                                  content: "No problem! What else would you like to add or change?",
+                                  timestamp: new Date()
+                                }]);
+                              }}
+                              className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[11px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all"
+                            >
+                              Add More
+                            </button>
+                          </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                  {isProcessing && isChatting && (
+                    <div className="flex justify-start">
+                      <div className="bg-white border border-slate-100 px-4 py-3 rounded-2xl shadow-sm">
+                        <div className="flex space-x-1">
+                          <div className="w-1.5 h-1.5 bg-emerald-600 rounded-full animate-bounce"></div>
+                          <div className="w-1.5 h-1.5 bg-emerald-600 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
+                          <div className="w-1.5 h-1.5 bg-emerald-600 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-4 border-t border-slate-100 bg-white">
+                  <form onSubmit={handleChatSubmit} className="flex flex-col space-y-3">
+                    <div className="relative flex flex-col group">
+                      <textarea
+                        autoFocus
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            handleChatSubmit(e as any);
+                          }
+                        }}
+                        placeholder={isProcessing ? "Planning..." : "Type your answer here"}
+                        disabled={isProcessing || !isChatting}
+                        className="w-full p-4 pr-24 bg-slate-50 text-slate-800 rounded-3xl text-sm leading-relaxed border border-slate-200 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 resize-none min-h-[96px] placeholder:text-slate-400 transition-all outline-none"
+                        required
+                      />
+                      <div className="absolute bottom-3 right-3 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleVoiceInput}
+                          className={`p-2.5 rounded-full transition-all ${isListening ? 'bg-rose-600 text-white animate-pulse shadow-lg shadow-rose-600/20' : 'bg-white text-slate-500 border border-slate-200 hover:bg-emerald-50 hover:text-emerald-700'}`}
+                        >
+                          {isListening ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={isProcessing || !isChatting}
+                          className="p-2.5 bg-emerald-700 text-white rounded-full hover:bg-emerald-800 disabled:bg-slate-300 transition-all shadow-lg shadow-emerald-800/15"
+                        >
+                          <Send className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+                  </form>
+                </div>
+              </div>
+
+              { }
+              {steps.length > 0 && <div className="high-density-card flex flex-col max-h-72">
+                <div className="high-density-header">
+                  <h2 className="high-density-label">Agent Progress</h2>
+                </div>
+                <div className="p-3 grid grid-cols-2 gap-2 overflow-y-auto">
+                  {[
+                    { name: 'Knowledge Base & RAG', desc: 'Playbook Retrieval' },
+                    { name: 'CustomerAgent', desc: 'Requirement Extraction' },
+                    { name: 'DietaryAgent', desc: 'Allergen Safety' },
+                    { name: 'MenuAgent', desc: 'Menu + Nutrition' },
+                    { name: 'InventoryAgent', desc: 'Procurement Weights' },
+                    { name: 'SupplierAgent', desc: 'Market + Distance' },
+                    { name: 'WeatherAgent', desc: 'Live Risk' },
+                    { name: 'LogisticsAgent', desc: 'Traffic Timeline' },
+                    { name: 'PricingAgent', desc: 'Margin Audit' },
+                    { name: 'MonitoringAgent', desc: 'Readiness QA' },
+                    { name: 'Shared Memory', desc: 'Agent Handoffs' }
+                  ].map((agent, i) => {
+                    const isActive = currentStepIndex === i;
+                    const isCompleted = currentStepIndex > i;
+
+                    return (
+                      <div key={agent.name} className={`flex items-center gap-2 p-2 rounded-2xl border transition-all ${isActive ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-100'}`}>
+                        <div className={`
                       w-5 h-5 text-[8px] flex items-center justify-center flex-shrink-0 font-mono rounded-full
                       ${isActive ? 'bg-emerald-700 text-white animate-pulse' : ''}
                       ${isCompleted ? 'bg-emerald-600 text-white' : 'border border-slate-200 text-slate-400'}
                     `}>
-                      <span>{isCompleted ? <CheckCircle2 className="w-3 h-3" /> : i + 1}</span>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <h3 className={`text-[9px] font-bold truncate ${isActive ? 'text-emerald-800' : isCompleted ? 'text-slate-800' : 'text-slate-400'}`}>
-                        {agent.name}
-                      </h3>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>}
-        </section>}
-
-        {}
-        <section className={`col-span-12 ${showConversation ? (steps.length > 0 ? 'lg:col-span-5' : 'lg:col-span-8') : 'lg:col-span-8'} flex flex-col space-y-4 h-[calc(100vh-140px)] min-h-0`}>
-          <div className="flex-1 overflow-y-auto pr-2 space-y-4 scroll-smooth custom-scrollbar pb-20" ref={scrollRef}>
-            <AnimatePresence mode="popLayout">
-              {steps.length === 0 && (
-                <motion.div 
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="h-full overflow-hidden bg-white border border-slate-100 rounded-[2rem] shadow-sm"
-                >
-                  <div className="grid h-full grid-cols-1 xl:grid-cols-[0.92fr_1.08fr]">
-                    <div className="p-8 lg:p-10 flex flex-col justify-center">
-                      <div className="inline-flex w-fit items-center gap-2 rounded-full bg-emerald-50 px-4 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-800 mb-6">
-                        <ChefHat className="w-4 h-4" />
-                        Ready to plan
+                          <span>{isCompleted ? <CheckCircle2 className="w-3 h-3" /> : i + 1}</span>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <h3 className={`text-[9px] font-bold truncate ${isActive ? 'text-emerald-800' : isCompleted ? 'text-slate-800' : 'text-slate-400'}`}>
+                            {agent.name}
+                          </h3>
+                        </div>
                       </div>
-                      <h3 className="text-4xl font-black tracking-[-0.03em] text-slate-950 max-w-md">
-                        Build a catering plan from one conversation.
-                      </h3>
-                      <p className="mt-4 text-sm leading-7 text-slate-500 max-w-md">
-                        Start with the event brief on the left. CaterFlow will assemble the menu, supplies, schedule, quote, and risk notes here.
-                      </p>
-                      <div className="mt-8 grid grid-cols-2 gap-3 max-w-md">
-                        {[
-                          ['Menu', 'Dishes and portions'],
-                          ['Supplies', 'Procurement list'],
-                          ['Schedule', 'Prep and delivery'],
-                          ['Quote', 'Pricing and margin'],
-                        ].map(([title, copy]) => (
-                          <div key={title} className="rounded-2xl bg-[#fff7e8] border border-amber-100 p-4">
-                            <p className="text-sm font-black text-slate-900">{title}</p>
-                            <p className="text-[11px] text-slate-500 mt-1">{copy}</p>
+                    );
+                  })}
+                </div>
+              </div>}
+            </section>}
+
+            { }
+            <section className={`col-span-12 ${Object.keys(monitoringStep).length > 0 ? 'lg:col-span-12' : 'lg:col-span-8'} flex flex-col space-y-4 h-[calc(100vh-190px)] min-h-0`}>
+              <div className="flex-1 overflow-y-auto pr-2 space-y-4 scroll-smooth custom-scrollbar pb-20" ref={scrollRef}>
+                {/* Start New Plan banner — always visible when results exist */}
+                {steps.length > 0 && (
+                  <div className="flex items-center justify-between bg-slate-900 rounded-2xl px-5 py-3 mb-2">
+                    <p className="text-xs font-bold text-slate-300">Viewing a previous plan result</p>
+                    <button
+                      onClick={restartChat}
+                      className="flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-white px-4 py-2 rounded-full text-xs font-black uppercase tracking-wider transition"
+                    >
+                      <ArrowRight className="w-3.5 h-3.5" />
+                      Start New Plan
+                    </button>
+                  </div>
+                )}
+                <AnimatePresence mode="popLayout">
+                  {steps.length === 0 && (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="min-h-full bg-white border border-slate-100 rounded-[2rem] shadow-sm"
+                    >
+                      <div className="grid grid-cols-1 xl:grid-cols-[0.92fr_1.08fr]">
+                        <div className="p-8 lg:p-10 flex flex-col justify-center min-h-[500px]">
+                          <div className="inline-flex w-fit items-center gap-2 rounded-full bg-emerald-50 px-4 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-800 mb-6">
+                            <ChefHat className="w-4 h-4" />
+                            Ready to plan
+                          </div>
+                          <h3 className="text-4xl font-black tracking-[-0.03em] text-slate-950 max-w-md">
+                            Build a catering plan from one conversation.
+                          </h3>
+                          <p className="mt-4 text-sm leading-7 text-slate-500 max-w-md">
+                            Start with the event brief on the left. CaterFlow will assemble the menu, supplies, schedule, quote, and risk notes here.
+                          </p>
+                          <div className="mt-8 grid grid-cols-2 gap-3 max-w-md">
+                            {[
+                              ['Menu', 'Dishes and portions'],
+                              ['Supplies', 'Procurement list'],
+                              ['Schedule', 'Prep and delivery'],
+                              ['Quote', 'Pricing and margin'],
+                            ].map(([title, copy]) => (
+                              <div key={title} className="rounded-2xl bg-[#fff7e8] border border-amber-100 p-4">
+                                <p className="text-sm font-black text-slate-900">{title}</p>
+                                <p className="text-[11px] text-slate-500 mt-1">{copy}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="relative min-h-[360px]">
+                          <img
+                            src="https://images.unsplash.com/photo-1555244162-803834f70033?auto=format&fit=crop&q=85&w=1000"
+                            alt="Prepared catering table"
+                            className="absolute inset-0 h-full w-full object-cover"
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/45 to-transparent"></div>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {steps.length > 0 && (
+                    <motion.div
+                      key="plan-flow-overview"
+                      initial={{ opacity: 0, y: 12 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="mb-6 rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm"
+                    >
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-[0.22em] text-emerald-600">Dashboard Flow</p>
+                          <h2 className="mt-1 text-2xl font-black tracking-tight text-slate-950">Brief to executable catering plan</h2>
+                          <p className="mt-2 max-w-2xl text-xs leading-6 text-slate-500">
+                            Review the customer brief first, then inspect menu decisions, operations, and pricing from the selector below.
+                          </p>
+                        </div>
+                        <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-right">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-emerald-700">Current View</p>
+                          <p className="text-sm font-black text-emerald-950">{reportView === 'menu' ? 'Menu Strategy' : reportView === 'logistics' ? 'Ops & Logistics' : reportView === 'finance' ? 'Finance' : 'Full Workflow'}</p>
+                        </div>
+                      </div>
+
+                      <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
+                        <InfoTile icon={<Users className="w-4 h-4" />} label="Servings" value={customerStep.guests || eventData.guest_count || '--'} />
+                        <InfoTile icon={<Calendar className="w-4 h-4" />} label="Date" value={customerStep.date || eventData.event_date || '--'} />
+                        <InfoTile icon={<MapPin className="w-4 h-4" />} label="Location" value={customerStep.location || eventData.event_location || '--'} />
+                        <InfoTile icon={<DollarSign className="w-4 h-4" />} label="Budget" value={customerStep.budget || eventData.budget || '--'} />
+                        <InfoTile icon={<ShieldCheck className="w-4 h-4" />} label="Readiness" value={monitoringStep.execution_readiness ? `${monitoringStep.execution_readiness}%` : isProcessing ? 'Planning' : '--'} />
+                      </div>
+
+                      <div className="mt-5 grid grid-cols-1 gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500 sm:grid-cols-5">
+                        {['Brief', 'Menu', 'Procurement', 'Logistics', 'Quote'].map((item, index) => (
+                          <div key={item} className={`rounded-xl border px-3 py-2 ${index <= (monitoringStep.execution_readiness ? 4 : steps.length > 5 ? 2 : 1) ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-slate-100 bg-slate-50'}`}>
+                            {item}
                           </div>
                         ))}
                       </div>
-                    </div>
-                    <div className="relative min-h-[360px]">
-                      <img
-                        src="https://images.unsplash.com/photo-1555244162-803834f70033?auto=format&fit=crop&q=85&w=1000"
-                        alt="Prepared catering table"
-                        className="absolute inset-0 h-full w-full object-cover"
-                      />
-                      <div className="absolute inset-0 bg-gradient-to-t from-slate-950/45 to-transparent"></div>
-                    </div>
-                  </div>
-                </motion.div>
-              )}
-
-              {steps.length > 0 && (
-                <motion.div
-                  key="plan-flow-overview"
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="mb-6 rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm"
-                >
-                  <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                    <div>
-                      <p className="text-[10px] font-black uppercase tracking-[0.22em] text-emerald-600">Dashboard Flow</p>
-                      <h2 className="mt-1 text-2xl font-black tracking-tight text-slate-950">Brief to executable catering plan</h2>
-                      <p className="mt-2 max-w-2xl text-xs leading-6 text-slate-500">
-                        Review the customer brief first, then inspect menu decisions, operations, and pricing from the selector below.
-                      </p>
-                    </div>
-                    <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-right">
-                      <p className="text-[9px] font-black uppercase tracking-widest text-emerald-700">Current View</p>
-                      <p className="text-sm font-black text-emerald-950">{reportView === 'menu' ? 'Menu Strategy' : reportView === 'logistics' ? 'Ops & Logistics' : reportView === 'finance' ? 'Finance' : 'Full Workflow'}</p>
-                    </div>
-                  </div>
-
-                  <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
-                    <InfoTile icon={<Users className="w-4 h-4" />} label="Servings" value={customerStep.guests || eventData.guest_count || '--'} />
-                    <InfoTile icon={<Calendar className="w-4 h-4" />} label="Date" value={customerStep.date || eventData.event_date || '--'} />
-                    <InfoTile icon={<MapPin className="w-4 h-4" />} label="Location" value={customerStep.location || eventData.event_location || '--'} />
-                    <InfoTile icon={<DollarSign className="w-4 h-4" />} label="Quote" value={pricingStep.optimized_quote || '--'} />
-                    <InfoTile icon={<ShieldCheck className="w-4 h-4" />} label="Readiness" value={monitoringStep.execution_readiness ? `${monitoringStep.execution_readiness}%` : isProcessing ? 'Planning' : '--'} />
-                  </div>
-
-                  <div className="mt-5 grid grid-cols-1 gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500 sm:grid-cols-5">
-                    {['Brief', 'Menu', 'Procurement', 'Logistics', 'Quote'].map((item, index) => (
-                      <div key={item} className={`rounded-xl border px-3 py-2 ${index <= (monitoringStep.execution_readiness ? 4 : steps.length > 5 ? 2 : 1) ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-slate-100 bg-slate-50'}`}>
-                        {item}
-                      </div>
-                    ))}
-                  </div>
-                </motion.div>
-              )}
-
-              {}
-              {Object.keys(monitoringStep).length > 0 && (
-                <motion.div
-                  key="final-summary-highlight"
-                  initial={{ opacity: 0, y: -20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="mb-8 p-6 bg-gradient-to-br from-indigo-600 via-emerald-600 to-fuchsia-700 text-white space-y-5 shadow-[0_20px_50px_rgba(79,70,229,0.4)] relative overflow-hidden group border border-white/20"
-                  style={{ clipPath: 'polygon(0 0, 100% 0, 100% calc(100% - 30px), calc(100% - 30px) 100%, 0 100%)' }}
-                >
-                  <div className="absolute top-0 right-0 w-64 h-64 bg-white/10 blur-3xl rounded-full -translate-y-1/2 translate-x-1/2"></div>
-                  
-                  <div className="relative z-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-y border-white/10 py-6">
-                    <div>
-                      <h2 className="text-3xl font-black tracking-tighter uppercase font-mono italic">Smart Catering Plan</h2>
-                      <p className="text-emerald-100/60 text-[10px] font-bold mt-1">Multi-agent orchestration complete. Ready for export.</p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        onClick={saveConversation}
-                        className="rounded-full bg-white/15 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-white border border-white/20 hover:bg-white/25 transition"
-                      >
-                        Save Plan
-                      </button>
-                      <button
-                        onClick={exportSummaryTable}
-                        className="rounded-full bg-white/15 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-white border border-white/20 hover:bg-white/25 transition"
-                      >
-                        Save CSV
-                      </button>
-                      <button
-                        onClick={exportBlueprint}
-                        className="rounded-full bg-white/10 bg-emerald-500/20 px-6 py-3 text-[11px] font-black uppercase tracking-widest text-white border border-white/30 hover:bg-emerald-500/30 transition shadow-xl"
-                      >
-                        Export Full Blueprint
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2 relative z-10">
-                    <span className="text-[8px] uppercase font-bold text-emerald-200/60 block">INTEGRATED_SUMMARY</span>
-                    <p className="text-sm font-medium text-white font-mono leading-relaxed bg-black/20 p-3 border-l-2 border-emerald-400">
-                      {monitoringStep.final_summary || 'Synchronizing final data...'}
-                    </p>
-                  </div>
-                  <div className="relative z-10 overflow-hidden rounded-2xl border border-white/15 bg-white/10">
-                    <div className="grid grid-cols-2 border-b border-white/10 bg-white/10 px-3 py-2 text-[8px] font-black uppercase tracking-widest text-emerald-100/70">
-                      <span>Metric</span>
-                      <span>Value</span>
-                    </div>
-                    {buildSummaryRows().slice(0, 8).map(([label, value]) => (
-                      <div key={label} className="grid grid-cols-2 gap-3 border-b border-white/10 px-3 py-2 text-[10px] last:border-0">
-                        <span className="font-black uppercase tracking-widest text-white/55">{label}</span>
-                        <span className="font-semibold text-white/90">{String(value)}</span>
-                      </div>
-                    ))}
-                  </div>
-                  {steps.find(s => s.agent === 'Executive Brief Agent')?.data?.judge_pitch && (
-                    <div className="relative z-10 rounded-2xl bg-white/12 border border-white/15 p-4">
-                      <span className="text-[8px] uppercase font-bold text-emerald-100/70 block mb-2 tracking-widest">JUDGE PITCH</span>
-                      <p className="text-sm leading-6 text-white/90">
-                        {steps.find(s => s.agent === 'Executive Brief Agent')?.data?.judge_pitch}
-                      </p>
-                    </div>
+                    </motion.div>
                   )}
-                </motion.div>
-              )}
 
-              {}
-              <div key="agent-reports-container" className="space-y-12">
-                {steps.length > 0 && (
-                  <div className="sticky top-0 z-20 flex items-center justify-between rounded-2xl border border-slate-200 bg-white/95 px-6 py-3 shadow-md backdrop-blur-lg">
-                    <div className="flex items-center gap-3">
-                      <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                      <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Orchestration View</div>
-                    </div>
-                    <select
-                      value={reportView}
-                      onChange={(e) => setReportView(e.target.value as any)}
-                      className="bg-transparent text-[11px] font-black uppercase tracking-widest text-emerald-700 outline-none cursor-pointer hover:text-emerald-900 transition-colors"
+                  {Object.keys(monitoringStep).length > 0 && !showDetailedAgentView && (
+                    <motion.div
+                      key="final-summary-highlight"
+                      initial={{ opacity: 0, y: -20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="mb-8 overflow-hidden rounded-[2.5rem] border border-emerald-100 bg-white shadow-2xl shadow-emerald-900/8"
                     >
-                      <option value="menu">Start Here: Brief + Menu</option>
-                      <option value="logistics">Ops: Supplies + Delivery</option>
-                      <option value="finance">Finance: Quote + Readiness</option>
-                      <option value="all">Full Agent Trace</option>
-                    </select>
-                  </div>
-                )}
+                      {/* Hero gradient header */}
+                      <div className="relative overflow-hidden bg-gradient-to-br from-slate-900 via-emerald-950 to-slate-900 p-8 md:p-10">
+                        <div className="absolute top-0 right-0 w-72 h-72 bg-emerald-500/10 rounded-full blur-3xl -translate-y-1/3 translate-x-1/3" />
+                        <div className="absolute bottom-0 left-0 w-48 h-48 bg-sky-500/10 rounded-full blur-2xl translate-y-1/3 -translate-x-1/3" />
+                        <div className="relative z-10">
+                          <div className="flex flex-wrap items-start justify-between gap-4">
+                            <div>
+                              <p className="text-[10px] font-black uppercase tracking-[0.3em] text-emerald-400 mb-2">Multi-Agent Orchestration Complete</p>
+                              <h2 className="text-3xl md:text-4xl font-black tracking-tight text-white">Smart Catering Blueprint</h2>
+                              <p className="text-sm text-slate-300 mt-2 max-w-xl leading-relaxed">{monitoringStep.final_summary || 'Blueprint synchronized across all agents.'}</p>
+                            </div>
+                            <div className="flex flex-wrap gap-2 mt-2">
+                              <button
+                                onClick={() => setDashboardView('inventory-planner')}
+                                className="rounded-full bg-emerald-500 hover:bg-emerald-400 px-5 py-2.5 text-[11px] font-black uppercase tracking-wider text-white transition shadow-lg flex items-center gap-2"
+                              >
+                                <ShoppingBag className="w-3.5 h-3.5" />
+                                Inventory Plan
+                              </button>
+                              <button onClick={saveConversation} className="rounded-full bg-white/10 hover:bg-white/20 border border-white/20 px-5 py-2.5 text-[11px] font-black uppercase tracking-wider text-white transition">
+                                Save
+                              </button>
+                              <button onClick={exportBlueprint} className="rounded-full bg-white/10 hover:bg-white/20 border border-white/20 px-5 py-2.5 text-[11px] font-black uppercase tracking-wider text-white transition">
+                                Export
+                              </button>
+                            </div>
+                          </div>
 
-                {[
-                  {
-                    id: 'phase-1',
-                    title: 'Phase 1: Concierge',
-                    subtitle: 'Intake & Requirement Engineering',
-                    desc: 'Extracting user intent, cultural adaptation, and dietary constraints.',
-                    agents: ['Phase 1: Concierge (User Intent)', 'Knowledge Base & RAG Agent', 'Dietary & Allergens Specialist']
-                  },
-                  {
-                    id: 'phase-2',
-                    title: 'Phase 2: Head Chef',
-                    subtitle: 'Creative Design & Risk Analysis',
-                    desc: 'Menu engineering balanced with weather risks and location intelligence.',
-                    agents: ['Phase 2: Head Chef (Menu Design)', 'Weather Intelligence', 'Contingency & Plan B Specialist']
-                  },
-                  {
-                    id: 'phase-3',
-                    title: 'Phase 3: Accountant',
-                    subtitle: 'Financial & Resource Optimization',
-                    desc: 'Cost audit, procurement mapping, and profit margin protection.',
-                    agents: ['Phase 3: Accountant (Cost Optimization)', 'Inventory & Procurement Specialist', 'Supplier Intelligence Specialist', 'Sustainability & Impact Specialist']
-                  },
-                  {
-                    id: 'phase-4',
-                    title: 'Phase 4: Logistics Lead',
-                    subtitle: 'Operational Execution',
-                    desc: 'T-minus timelines, staffing allocation, and delivery routing.',
-                    agents: ['Phase 4: Logistics Lead (Execution)']
-                  },
-                  {
-                    id: 'core-systems',
-                    title: 'Core AI Systems',
-                    subtitle: 'Integrity & Memory',
-                    desc: 'Cross-agent coordination, decision logging, and system health.',
-                    agents: ['Shared Memory Ledger', 'System Monitoring & QA']
-                  }
-                ].map((phase) => {
-                  const phaseSteps = visibleSteps.filter(s => phase.agents.some(name => s.agent.includes(name)));
-                  if (phaseSteps.length === 0) return null;
-
-                  return (
-                    <div key={phase.id} className="space-y-6 relative">
-                      <div className="flex flex-col gap-1 border-l-4 border-emerald-500 pl-4 py-2 bg-gradient-to-r from-emerald-50 to-transparent">
-                        <div className="flex items-center gap-2">
-                           <h3 className="text-sm font-black text-slate-900 uppercase tracking-tighter">{phase.title}</h3>
-                           <span className="text-[10px] text-emerald-600 font-bold tracking-widest">{phase.subtitle}</span>
+                          {/* KPI Stat Cards */}
+                          <div className="mt-8 grid grid-cols-2 md:grid-cols-3 gap-3">
+                            {[
+                              { label: 'Your Budget', value: customerStep.budget || eventData.budget || '--', color: 'from-emerald-500/20 to-emerald-600/10', border: 'border-emerald-500/30', text: 'text-emerald-300' },
+                              { label: 'Guests', value: customerStep.guests || eventData.guest_count || '--', color: 'from-sky-500/20 to-sky-600/10', border: 'border-sky-500/30', text: 'text-sky-300' },
+                              { label: 'Readiness', value: monitoringStep.execution_readiness ? `${monitoringStep.execution_readiness}%` : '--', color: 'from-violet-500/20 to-violet-600/10', border: 'border-violet-500/30', text: 'text-violet-300' },
+                            ].map(({ label, value, color, border, text }) => (
+                              <div key={label} className={`bg-gradient-to-br ${color} border ${border} rounded-2xl p-4`}>
+                                <p className="text-[9px] font-black uppercase tracking-[0.25em] text-white/50 mb-1">{label}</p>
+                                <p className={`text-xl font-black ${text} tracking-tight truncate`}>{String(value)}</p>
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                        <p className="text-[11px] text-slate-500 font-medium">{phase.desc}</p>
                       </div>
-                      <div className="space-y-4">
-                        {phaseSteps.map((step, idx) => {
-                          const realIndex = steps.indexOf(step);
-                          return (
-                            <motion.div
-                              key={`phase-step-${step.agent}-${realIndex}`}
-                              initial={{ opacity: 0, x: -10 }}
-                              animate={{ opacity: 1, x: 0 }}
-                              className={steps.find(s => s.agent.includes('Monitoring')) && !step.agent.includes('Monitoring') && !step.agent.includes('Shared Memory') ? "opacity-60 hover:opacity-100 transition-opacity" : ""}
-                            >
-                              <AgentReport 
-                                step={step} 
-                                isExpanded={expandedStepIndex === realIndex}
-                                onToggle={() => setExpandedStepIndex(expandedStepIndex === realIndex ? null : realIndex)}
-                              />
-                            </motion.div>
-                          );
-                        })}
+
+                      {/* Results Grid */}
+                      <div className="p-8 space-y-6">
+                        {/* Menu Items */}
+                        {(menuStep.menu || []).length > 0 && (
+                          <div>
+                            <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400 mb-3">Menu Items ({(menuStep.menu || []).length} dishes)</p>
+                            <div className="flex flex-wrap gap-2">
+                              {(menuStep.menu || []).map((item: any, i: number) => (
+                                <span key={i} className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-emerald-50 border border-emerald-100 text-sm font-semibold text-emerald-800">
+                                  <Utensils className="w-3 h-3 text-emerald-400" />
+                                  {item.dish}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Metrics Table */}
+                        <div className="overflow-hidden rounded-2xl border border-slate-100">
+                          <table className="w-full">
+                            <thead>
+                              <tr className="bg-slate-50 border-b border-slate-100">
+                                <th className="px-5 py-3.5 text-left text-xs font-black uppercase tracking-[0.18em] text-slate-400">Metric</th>
+                                <th className="px-5 py-3.5 text-left text-xs font-black uppercase tracking-[0.18em] text-slate-400">Value</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-50">
+                              {buildSummaryRows().slice(0, 8).map(([label, value]) => (
+                                <tr key={label} className="hover:bg-slate-50/80 transition-colors">
+                                  <td className="px-5 py-4 text-sm font-bold text-slate-500 uppercase tracking-wide">{label}</td>
+                                  <td className="px-5 py-4 text-sm font-semibold text-slate-900">{String(value)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Catering Shop Recommendations */}
+                        {(supplierStep.catering_shop_recommendations || []).length > 0 && (
+                          <div>
+                            <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400 mb-3">Recommended Catering Shops</p>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                              {(supplierStep.catering_shop_recommendations || []).slice(0, 3).map((shop: any, i: number) => (
+                                <div key={i} className="bg-gradient-to-br from-slate-50 to-white border border-slate-200 rounded-2xl p-4 hover:border-emerald-200 hover:shadow-md transition-all">
+                                  <div className="flex items-start justify-between mb-2">
+                                    <p className="text-sm font-black text-slate-900">{shop.name}</p>
+                                    <span className="text-xs font-black text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">{shop.match_score}</span>
+                                  </div>
+                                  <p className="text-xs text-slate-500 font-medium">{shop.area}</p>
+                                  {shop.reason && <p className="text-xs text-slate-400 mt-2 leading-relaxed">{shop.reason}</p>}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Staffing & Logistics */}
+                        {logisticsStep.staffing_needs && (
+                          <div className="flex items-start gap-4 bg-amber-50 border border-amber-100 rounded-2xl p-5">
+                            <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                              <Users className="w-5 h-5 text-amber-700" />
+                            </div>
+                            <div>
+                              <p className="text-xs font-black uppercase tracking-widest text-amber-700 mb-1">Staffing & Operations</p>
+                              <p className="text-sm font-semibold text-slate-800 leading-relaxed">{logisticsStep.staffing_needs}</p>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="pt-2 flex justify-end">
+                          <button
+                            onClick={() => setShowDetailedAgentView(true)}
+                            className="flex items-center gap-2 bg-slate-900 hover:bg-emerald-800 text-white px-7 py-3.5 rounded-full text-sm font-black uppercase tracking-wider transition shadow-lg"
+                          >
+                            View Detailed Agent Breakdown
+                            <ArrowRight className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    </motion.div>
+                  )}
 
-              {dashboardView === 'menu-editor' && (
-                <MenuEditor 
-                  menu={localMenu} 
-                  onChange={(newMenu) => setLocalMenu(newMenu)} 
-                />
-              )}
-              {dashboardView === 'admin-dashboard' && (
-                <AdminDashboard 
-                  inventory={localInventory}
-                  pricing={pricingStep}
-                />
-              )}
-              {dashboardView === 'staff-tasks' && (
-                <StaffTaskBoard 
-                  tasks={staffTasks}
-                  onToggle={(index) => {
-                    const newTasks = [...staffTasks];
-                    newTasks[index].completed = !newTasks[index].completed;
-                    setStaffTasks(newTasks);
-                  }}
-                />
-              )}
-              {dashboardView === 'shop-setup' && (
-                <AdminShopSetup 
-                  profile={shopProfile} 
-                  onSave={async (data) => {
-                    const saved = await mongoService.saveShop(data);
-                    setShopProfile(saved);
-                  }} 
-                />
-              )}
-              {dashboardView === 'checkout' && (
-                <CheckoutPortal 
-                  shop={matchedShop}
-                  event={eventData}
-                  blueprint={steps}
-                  status={agreementStatus}
-                  onAccept={() => setAgreementStatus('accepted')}
-                  onFinalize={() => setAgreementStatus('finalized')}
-                />
-              )}
-              {dashboardView === 'delivery' && (
-                <DriverView 
-                  event={eventData}
-                  logistics={logisticsStep}
-                />
-              )}
-            </AnimatePresence>
-          </div>
-        </section>
+                  { }
+                  {(steps.length > 0 && (!Object.keys(monitoringStep).length || showDetailedAgentView)) && (
+                  <div key="agent-reports-container" className="space-y-12">
+                    {Object.keys(monitoringStep).length > 0 && (
+                      <div className="flex items-center mt-2 mb-[-20px]">
+                        <button
+                          onClick={() => setShowDetailedAgentView(false)}
+                          className="flex items-center gap-2 text-slate-500 hover:text-emerald-700 text-[10px] font-black uppercase tracking-[0.2em] transition"
+                        >
+                          <ArrowLeft className="w-4 h-4" />
+                          Back to Blueprint Summary
+                        </button>
+                      </div>
+                    )}
+                    {steps.length > 0 && (
+                      <div className="sticky top-0 z-20 flex items-center justify-between rounded-2xl border border-slate-200 bg-white/95 px-6 py-3 shadow-md backdrop-blur-lg">
+                        <div className="flex items-center gap-3">
+                          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Orchestration View</div>
+                        </div>
+                        <select
+                          value={reportView}
+                          onChange={(e) => setReportView(e.target.value as any)}
+                          className="bg-transparent text-[11px] font-black uppercase tracking-widest text-emerald-700 outline-none cursor-pointer hover:text-emerald-900 transition-colors"
+                        >
+                          <option value="menu">Start Here: Brief + Menu</option>
+                          <option value="logistics">Ops: Supplies + Delivery</option>
+                          <option value="finance">Finance: Quote + Readiness</option>
+                          <option value="all">Full Agent Trace</option>
+                        </select>
+                      </div>
+                    )}
 
-        {steps.length > 0 && (showOperations || showFinance) && (
-          <section className="col-span-12 lg:col-span-3 flex flex-col space-y-4">
-            <div className="high-density-card flex flex-col">
-              <div className="high-density-header">
-                <h2 className="high-density-label">Plan Snapshot</h2>
-                <Utensils className="w-4 h-4 text-emerald-500" />
-              </div>
-              <div className="p-4 space-y-4">
-                {steps.length > 0 ? (
-                  <>
-                    <div className="grid grid-cols-2 gap-3">
-                      <InfoTile icon={<Users className="w-4 h-4" />} label="Guests" value={customerStep.guests || eventData.guest_count || '--'} />
-                      <InfoTile icon={<MapPin className="w-4 h-4" />} label="Location" value={customerStep.location || eventData.event_location || '--'} />
-                      <InfoTile icon={<Calendar className="w-4 h-4" />} label="Date" value={customerStep.date || eventData.event_date || '--'} />
-                      <InfoTile icon={<ChefHat className="w-4 h-4" />} label="Menu Items" value={(menuStep.menu || []).length || '--'} />
-                    </div>
-                    <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3">
-                      <p className="text-[10px] font-bold text-emerald-800 uppercase tracking-widest mb-2">Next Best Actions</p>
-                      {nextBestActions.slice(0, 3).map((item: string, i: number) => (
-                        <p key={i} className="text-[10px] text-slate-600 leading-relaxed">- {item}</p>
-                      ))}
-                      {nextBestActions.length === 0 && (
-                        <p className="text-[10px] text-slate-500 leading-relaxed">Run the planner to generate next actions.</p>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <div className="py-8 text-center text-slate-400">
-                    <Utensils className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                    <p className="text-[10px] font-bold uppercase tracking-widest">Catering plan appears here after intake</p>
+                    {(() => {
+                      const ORCHESTRATION_PHASES = [
+                        {
+                          id: 'phase-1',
+                          title: 'Phase 1: Concierge',
+                          subtitle: 'Intake & Requirement Engineering',
+                          desc: 'Extracting user intent, cultural adaptation, and dietary constraints.',
+                          agents: ['Phase 1: Concierge (User Intent)', 'Knowledge Base & RAG Agent', 'Dietary & Allergens Specialist']
+                        },
+                        {
+                          id: 'phase-2',
+                          title: 'Phase 2: Head Chef',
+                          subtitle: 'Creative Design & Risk Analysis',
+                          desc: 'Menu engineering balanced with weather risks and location intelligence.',
+                          agents: ['Phase 2: Head Chef (Menu Design)', 'Weather Intelligence', 'Contingency & Plan B Specialist']
+                        },
+                        {
+                          id: 'phase-3',
+                          title: 'Phase 3: Accountant',
+                          subtitle: 'Financial & Resource Optimization',
+                          desc: 'Cost audit, procurement mapping, and profit margin protection.',
+                          agents: ['Phase 3: Accountant (Cost Optimization)', 'Inventory & Procurement Specialist', 'Supplier Intelligence Specialist', 'Sustainability & Impact Specialist']
+                        },
+                        {
+                          id: 'phase-4',
+                          title: 'Phase 4: Logistics Lead',
+                          subtitle: 'Operational Execution',
+                          desc: 'T-minus timelines, staffing allocation, and delivery routing.',
+                          agents: ['Phase 4: Logistics Lead (Execution)']
+                        },
+                        {
+                          id: 'core-systems',
+                          title: 'Core AI Systems',
+                          subtitle: 'Integrity & Memory',
+                          desc: 'Cross-agent coordination, decision logging, and system health.',
+                          agents: ['Shared Memory Ledger', 'System Monitoring & QA']
+                        }
+                      ];
+
+                      const activePhases = ORCHESTRATION_PHASES.filter(phase => 
+                        visibleSteps.some(s => phase.agents.some(name => s.agent.includes(name)))
+                      );
+
+                      if (activePhases.length === 0) return null;
+
+                      // Ensure activePhaseIndex is within bounds
+                      const safeIndex = Math.min(activePhaseIndex, activePhases.length - 1);
+                      const currentPhase = activePhases[safeIndex];
+                      const phaseSteps = visibleSteps.filter(s => currentPhase.agents.some(name => s.agent.includes(name)));
+
+                      // Auto-advance during processing is handled via standard navigation now
+
+                      return (
+                        <div className="space-y-6 relative border border-slate-200 bg-white rounded-3xl p-6 shadow-sm">
+                          {/* Stepper Header */}
+                          <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-6">
+                            <div className="flex flex-col">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-emerald-500 mb-1">
+                                Step {safeIndex + 1} of {activePhases.length}
+                              </span>
+                              <h2 className="text-xl font-bold text-slate-800">{currentPhase.title}</h2>
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => setActivePhaseIndex(Math.max(0, safeIndex - 1))}
+                                disabled={safeIndex === 0}
+                                className="flex items-center gap-1 px-4 py-2 text-xs font-semibold rounded-full border border-slate-200 text-slate-600 disabled:opacity-30 hover:bg-slate-50 transition"
+                              >
+                                Back
+                              </button>
+                              <button
+                                onClick={() => setActivePhaseIndex(Math.min(activePhases.length - 1, safeIndex + 1))}
+                                disabled={safeIndex === activePhases.length - 1}
+                                className="flex items-center gap-1 px-4 py-2 text-xs font-semibold rounded-full bg-emerald-600 text-white disabled:opacity-50 hover:bg-emerald-700 transition"
+                              >
+                                Next
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-col gap-1 border-l-4 border-emerald-500 pl-4 py-2 bg-gradient-to-r from-emerald-50 to-transparent rounded-r-lg">
+                            <div className="flex items-center gap-2">
+                              <h3 className="text-sm font-black text-slate-900 uppercase tracking-tighter">{currentPhase.title}</h3>
+                              <span className="text-[10px] text-emerald-600 font-bold tracking-widest">{currentPhase.subtitle}</span>
+                            </div>
+                            <p className="text-[11px] text-slate-500 font-medium">{currentPhase.desc}</p>
+                          </div>
+
+                          <div className="space-y-4">
+                            {phaseSteps.map((step, idx) => {
+                              const realIndex = steps.indexOf(step);
+                              return (
+                                <motion.div
+                                  key={`phase-step-${step.agent}-${realIndex}`}
+                                  initial={{ opacity: 0, x: -10 }}
+                                  animate={{ opacity: 1, x: 0 }}
+                                  className={steps.find(s => s.agent.includes('Monitoring')) && !step.agent.includes('Monitoring') && !step.agent.includes('Shared Memory') ? "opacity-60 hover:opacity-100 transition-opacity" : ""}
+                                >
+                                  <AgentReport
+                                    step={step}
+                                    isExpanded={expandedStepIndex === realIndex}
+                                    onToggle={() => setExpandedStepIndex(expandedStepIndex === realIndex ? null : realIndex)}
+                                  />
+                                </motion.div>
+                              );
+                            })}
+                          </div>
+                          
+                          {/* Footer Stepper Controls */}
+                          <div className="flex justify-between items-center mt-8 pt-4 border-t border-slate-100">
+                             <div className="flex gap-1">
+                               {activePhases.map((_, i) => (
+                                 <div 
+                                   key={i} 
+                                   onClick={() => setActivePhaseIndex(i)}
+                                   className={`h-1.5 rounded-full cursor-pointer transition-all duration-300 ${i === safeIndex ? 'w-6 bg-emerald-500' : 'w-2 bg-slate-200 hover:bg-emerald-200'}`} 
+                                 />
+                               ))}
+                             </div>
+                             {safeIndex < activePhases.length - 1 && (
+                               <button 
+                                 onClick={() => setActivePhaseIndex(safeIndex + 1)}
+                                 className="text-xs font-bold text-emerald-600 hover:text-emerald-800 uppercase tracking-wider"
+                               >
+                                 Continue to next step →
+                               </button>
+                             )}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
-                )}
-              </div>
-            </div>
+                  )}
 
-            {showOperations && (
-              <>
-                <GeoOpsLeafletMap
-                  role={workspaceRole}
-                  customer={customerStep}
-                  inventory={inventoryStep}
-                  logistics={logisticsStep}
-                />
-                <RoleWorkspace role={workspaceRole} monitoring={monitoringStep} pricing={pricingStep} />
-                <ProblemStatementFit stackStatus={stackStatus} />
+                  {dashboardView === 'menu-editor' && (
+                    <MenuEditor
+                      menu={localMenu}
+                      onChange={(newMenu) => setLocalMenu(newMenu)}
+                    />
+                  )}
+                  {dashboardView === 'inventory-planner' && (
+                    <CustomerPlanner
+                      menu={localMenu}
+                      inventory={localInventory}
+                    />
+                  )}
+                  {dashboardView === 'admin-inbox' && (
+                    <AdminInbox
+                      plans={[{
+                        _id: 'sample-1',
+                        eventId: 'evt-123',
+                        customerName: 'Aron Customer',
+                        customerEmail: 'aron@example.com',
+                        customerUid: 'cust-1',
+                        eventType: 'Wedding Reception',
+                        guests: 150,
+                        budget: '₱75,000',
+                        location: 'Taguig City',
+                        date: '2026-12-25',
+                        menuSummary: ['Lechon Pork', 'Chicken Inasal', 'Chopsuey'],
+                        quote: '₱75,000',
+                        sentAt: new Date().toISOString(),
+                        status: 'new'
+                      }]}
+                      adminUid={user.uid}
+                      adminName={user.displayName || 'Admin'}
+                      onSendMessage={async (planId, text) => {
+                        console.log(`Sending to ${planId}: ${text}`);
+                      }}
+                      onUpdateStatus={(id, status) => {
+                        console.log(`Status of ${id} changed to ${status}`);
+                      }}
+                    />
+                  )}
+                  {dashboardView === 'admin-dashboard' && (
+                    <AdminDashboard
+                      inventory={localInventory}
+                      pricing={pricingStep}
+                    />
+                  )}
+                  {dashboardView === 'staff-tasks' && (
+                    <StaffTaskBoard
+                      tasks={staffTasks}
+                      onToggle={(index) => {
+                        const newTasks = [...staffTasks];
+                        newTasks[index].completed = !newTasks[index].completed;
+                        setStaffTasks(newTasks);
+                      }}
+                    />
+                  )}
+                  {dashboardView === 'shop-setup' && (
+                    <AdminShopSetup
+                      profile={shopProfile}
+                      onSave={async (data) => {
+                        const saved = await mongoService.saveShop(data);
+                        setShopProfile(saved);
+                      }}
+                    />
+                  )}
+                  {dashboardView === 'checkout' && (
+                    <CheckoutPortal
+                      shop={matchedShop}
+                      event={eventData}
+                      blueprint={steps}
+                      status={agreementStatus}
+                      onAccept={() => setAgreementStatus('accepted')}
+                      onFinalize={() => setAgreementStatus('finalized')}
+                    />
+                  )}
+                  {dashboardView === 'delivery' && (
+                    <DriverView
+                      event={eventData}
+                      logistics={logisticsStep}
+                    />
+                  )}
+                </AnimatePresence>
+              </div>
+            </section>
+
+            {steps.length > 0 && (showOperations || showFinance) && (
+              <section className="col-span-12 lg:col-span-3 flex flex-col space-y-4">
                 <div className="high-density-card flex flex-col">
                   <div className="high-density-header">
-                    <h2 className="high-density-label">Readiness</h2>
+                    <h2 className="high-density-label">Plan Snapshot</h2>
+                    <Utensils className="w-4 h-4 text-emerald-500" />
                   </div>
                   <div className="p-4 space-y-4">
-                    {Object.keys(monitoringStep).length > 0 ? (
-                      <div className="space-y-4">
-                        <div className="grid grid-cols-2 gap-3 text-center">
-                          <div className="border border-emerald-100 bg-emerald-50 rounded-2xl p-3">
-                             <div className="text-lg font-black text-emerald-800 tracking-tighter">{monitoringStep.execution_readiness}%</div>
-                             <div className="text-[8px] text-emerald-500 uppercase font-bold tracking-widest">Readiness</div>
-                          </div>
-                          <div className="border border-emerald-100 bg-white rounded-2xl p-3">
-                             <div className="text-lg font-black text-slate-800 tracking-tighter">{monitoringStep.overall_status?.toUpperCase() || 'UNKNOWN'}</div>
-                             <div className="text-[8px] text-emerald-500 uppercase font-bold tracking-widest">Status</div>
-                          </div>
+                    {steps.length > 0 ? (
+                      <>
+                        <div className="grid grid-cols-2 gap-3">
+                          <InfoTile icon={<Users className="w-4 h-4" />} label="Guests" value={customerStep.guests || eventData.guest_count || '--'} />
+                          <InfoTile icon={<MapPin className="w-4 h-4" />} label="Location" value={customerStep.location || eventData.event_location || '--'} />
+                          <InfoTile icon={<Calendar className="w-4 h-4" />} label="Date" value={customerStep.date || eventData.event_date || '--'} />
+                          <InfoTile icon={<ChefHat className="w-4 h-4" />} label="Menu Items" value={(menuStep.menu || []).length || '--'} />
                         </div>
-                        <div className="p-3 bg-[#fff7e8] rounded-2xl border border-amber-100">
-                          <p className="text-[11px] leading-relaxed text-slate-600 font-medium">
-                            {monitoringStep.final_summary || 'Protocols finalising...'}
-                          </p>
+                        <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3">
+                          <p className="text-[10px] font-bold text-emerald-800 uppercase tracking-widest mb-2">Next Best Actions</p>
+                          {nextBestActions.slice(0, 3).map((item: string, i: number) => (
+                            <p key={i} className="text-[10px] text-slate-600 leading-relaxed">- {item}</p>
+                          ))}
+                          {nextBestActions.length === 0 && (
+                            <p className="text-[10px] text-slate-500 leading-relaxed">Run the planner to generate next actions.</p>
+                          )}
                         </div>
-                      </div>
+                      </>
                     ) : (
-                      <div className="h-full flex flex-col items-center justify-center text-emerald-900/40 py-12">
-                        <ShieldCheck className="w-12 h-12 mb-2 opacity-20" />
-                        <span className="text-[9px] font-bold uppercase tracking-[0.3em]">Plan review pending</span>
+                      <div className="py-8 text-center text-slate-400">
+                        <Utensils className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                        <p className="text-[10px] font-bold uppercase tracking-widest">Catering plan appears here after intake</p>
                       </div>
                     )}
                   </div>
                 </div>
-              </>
-            )}
 
-            {showFinance && (
-              <div className="high-density-card flex flex-col">
-                <div className="high-density-header">
-                  <h2 className="high-density-label">Pricing</h2>
-                </div>
-                <div className="p-4 flex-1">
-                  {Object.keys(pricingStep).length > 0 ? (
-                    <PricingInsight data={pricingStep} />
-                  ) : (
-                    <div className="h-full flex flex-col items-center justify-center text-emerald-900/40 py-12">
-                      <DollarSign className="w-12 h-12 mb-2 opacity-20" />
-                      <span className="text-[9px] font-bold uppercase tracking-[0.3em] font-mono">Profit_Analysis_Hold</span>
+                {showOperations && (
+                  <>
+                    <GeoOpsLeafletMap
+                      role={workspaceRole}
+                      customer={customerStep}
+                      inventory={inventoryStep}
+                      logistics={logisticsStep}
+                    />
+                    <RoleWorkspace role={workspaceRole} monitoring={monitoringStep} pricing={pricingStep} />
+                    <ProblemStatementFit stackStatus={stackStatus} />
+                    <div className="high-density-card flex flex-col">
+                      <div className="high-density-header">
+                        <h2 className="high-density-label">Readiness</h2>
+                      </div>
+                      <div className="p-4 space-y-4">
+                        {Object.keys(monitoringStep).length > 0 ? (
+                          <div className="space-y-4">
+                            <div className="grid grid-cols-2 gap-3 text-center">
+                              <div className="border border-emerald-100 bg-emerald-50 rounded-2xl p-3">
+                                <div className="text-lg font-black text-emerald-800 tracking-tighter">{monitoringStep.execution_readiness}%</div>
+                                <div className="text-[8px] text-emerald-500 uppercase font-bold tracking-widest">Readiness</div>
+                              </div>
+                              <div className="border border-emerald-100 bg-white rounded-2xl p-3">
+                                <div className="text-lg font-black text-slate-800 tracking-tighter">{monitoringStep.overall_status?.toUpperCase() || 'UNKNOWN'}</div>
+                                <div className="text-[8px] text-emerald-500 uppercase font-bold tracking-widest">Status</div>
+                              </div>
+                            </div>
+                            <div className="p-3 bg-[#fff7e8] rounded-2xl border border-amber-100">
+                              <p className="text-[11px] leading-relaxed text-slate-600 font-medium">
+                                {monitoringStep.final_summary || 'Protocols finalising...'}
+                              </p>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="h-full flex flex-col items-center justify-center text-emerald-900/40 py-12">
+                            <ShieldCheck className="w-12 h-12 mb-2 opacity-20" />
+                            <span className="text-[9px] font-bold uppercase tracking-[0.3em]">Plan review pending</span>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </section>
-        )}
-      </main>
+                  </>
+                )}
 
-      <footer className="h-10 bg-white/90 border-t border-slate-200 px-6 flex items-center justify-between text-[8px] text-slate-400 font-bold uppercase tracking-[0.24em] flex-shrink-0 z-20">
-        <div>CaterFlow Smart Catering Planner</div>
-        <div className="flex items-center space-x-6">
-          <span className="hidden sm:inline">Customer to menu to inventory to logistics to pricing</span>
-          <div className="flex items-center space-x-2">
-            <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></div>
-            <span>Planner ready</span>
-          </div>
-        </div>
-      </footer>
-      <AnimatePresence>
-        {showAccessibilityPanel && (
-          <motion.div 
-            initial={{ opacity: 0 }} 
-            animate={{ opacity: 1 }} 
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
-          >
-            <motion.div 
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              className="bg-white rounded-[2.5rem] w-full max-w-md overflow-hidden shadow-2xl border border-slate-200"
-            >
-              <div className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                <h3 className="text-xl font-black text-slate-950">CaterFlow Accessibility</h3>
-                <button onClick={() => setShowAccessibilityPanel(false)} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-              <div className="p-8 space-y-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-bold text-slate-900">High Contrast Mode</p>
-                    <p className="text-xs text-slate-500">Pure black and high visibility colors</p>
+                {showFinance && (
+                  <div className="high-density-card flex flex-col">
+                    <div className="high-density-header">
+                      <h2 className="high-density-label">Pricing</h2>
+                    </div>
+                    <div className="p-4 flex-1">
+                      {Object.keys(pricingStep).length > 0 ? (
+                        <PricingInsight data={pricingStep} />
+                      ) : (
+                        <div className="h-full flex flex-col items-center justify-center text-emerald-900/40 py-12">
+                          <DollarSign className="w-12 h-12 mb-2 opacity-20" />
+                          <span className="text-[9px] font-bold uppercase tracking-[0.3em] font-mono">Profit_Analysis_Hold</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <button 
-                    onClick={() => setHighContrast(!highContrast)}
-                    className={`w-12 h-6 rounded-full transition-all relative ${highContrast ? 'bg-emerald-600' : 'bg-slate-200'}`}
-                  >
-                    <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${highContrast ? 'left-7' : 'left-1'}`} />
-                  </button>
-                </div>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-bold text-slate-900">Text-to-Speech (TTS)</p>
-                    <p className="text-xs text-slate-500">Read bot responses aloud</p>
-                  </div>
-                  <button 
-                    onClick={() => setTtsEnabled(!ttsEnabled)}
-                    className={`w-12 h-6 rounded-full transition-all relative ${ttsEnabled ? 'bg-emerald-600' : 'bg-slate-200'}`}
-                  >
-                    <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${ttsEnabled ? 'left-7' : 'left-1'}`} />
-                  </button>
-                </div>
-                <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-emerald-800 mb-2">Screen Reader Tip</p>
-                  <p className="text-xs leading-relaxed text-slate-600">
-                    Use <kbd className="bg-white border border-slate-200 px-1 rounded text-[10px]">Tab</kbd> to navigate between roles and menu items. Press <kbd className="bg-white border border-slate-200 px-1 rounded text-[10px]">Space</kbd> to toggle tasks.
-                  </p>
-                </div>
+                )}
+              </section>
+            )}
+          </main>
+
+          <footer className="h-10 bg-white/90 border-t border-slate-200 px-6 flex items-center justify-between text-[8px] text-slate-400 font-bold uppercase tracking-[0.24em] flex-shrink-0 z-20">
+            <div>CaterFlow Smart Catering Planner</div>
+            <div className="flex items-center space-x-6">
+              <span className="hidden sm:inline">Customer to menu to inventory to logistics to pricing</span>
+              <div className="flex items-center space-x-2">
+                <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></div>
+                <span>Planner ready</span>
               </div>
-              <div className="p-8 bg-slate-50">
-                <button 
-                  onClick={() => setShowAccessibilityPanel(false)}
-                  className="w-full py-4 bg-slate-950 text-white rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-xl shadow-slate-950/20"
+            </div>
+          </footer>
+          <AnimatePresence>
+            {showAccessibilityPanel && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
+              >
+                <motion.div
+                  initial={{ scale: 0.9, y: 20 }}
+                  animate={{ scale: 1, y: 0 }}
+                  className="bg-white rounded-[2.5rem] w-full max-w-md overflow-hidden shadow-2xl border border-slate-200"
                 >
-                  Done
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+                  <div className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                    <h3 className="text-xl font-black text-slate-950">CaterFlow Accessibility</h3>
+                    <button onClick={() => setShowAccessibilityPanel(false)} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+                  <div className="p-8 space-y-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-bold text-slate-900">High Contrast Mode</p>
+                        <p className="text-xs text-slate-500">Pure black and high visibility colors</p>
+                      </div>
+                      <button
+                        onClick={() => setHighContrast(!highContrast)}
+                        className={`w-12 h-6 rounded-full transition-all relative ${highContrast ? 'bg-emerald-600' : 'bg-slate-200'}`}
+                      >
+                        <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${highContrast ? 'left-7' : 'left-1'}`} />
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-bold text-slate-900">Text-to-Speech (TTS)</p>
+                        <p className="text-xs text-slate-500">Read bot responses aloud</p>
+                      </div>
+                      <button
+                        onClick={() => setTtsEnabled(!ttsEnabled)}
+                        className={`w-12 h-6 rounded-full transition-all relative ${ttsEnabled ? 'bg-emerald-600' : 'bg-slate-200'}`}
+                      >
+                        <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${ttsEnabled ? 'left-7' : 'left-1'}`} />
+                      </button>
+                    </div>
+                    <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-emerald-800 mb-2">Screen Reader Tip</p>
+                      <p className="text-xs leading-relaxed text-slate-600">
+                        Use <kbd className="bg-white border border-slate-200 px-1 rounded text-[10px]">Tab</kbd> to navigate between roles and menu items. Press <kbd className="bg-white border border-slate-200 px-1 rounded text-[10px]">Space</kbd> to toggle tasks.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="p-8 bg-slate-50">
+                    <button
+                      onClick={() => setShowAccessibilityPanel(false)}
+                      className="w-full py-4 bg-slate-950 text-white rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-xl shadow-slate-950/20"
+                    >
+                      Done
+                    </button>
+                  </div>
+                </motion.div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </>
+      )}
     </div>
   );
 }
@@ -1909,7 +2653,7 @@ function LandingPage({ onStart }: { onStart: () => void }) {
               onClick={() => setShowTutorial(true)}
               className="rounded-full border border-slate-300 bg-white/80 px-7 py-4 text-sm font-black uppercase tracking-[0.16em] text-slate-800 shadow-sm backdrop-blur transition hover:-translate-y-0.5 hover:bg-white"
             >
-              Show tutorial
+              Tutorial
             </button>
           </div>
           <div className="grid max-w-2xl grid-cols-3 gap-3 pt-4">
@@ -1961,25 +2705,25 @@ function LandingPage({ onStart }: { onStart: () => void }) {
 
       <AnimatePresence>
         {showTutorial && (
-          <motion.div 
-            initial={{ opacity: 0 }} 
-            animate={{ opacity: 1 }} 
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[200] flex items-center justify-center p-4"
           >
-            <motion.div 
+            <motion.div
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.9, y: 20 }}
               className="bg-white rounded-[3rem] w-full max-w-2xl overflow-hidden shadow-2xl relative"
             >
-              <button 
+              <button
                 onClick={() => setShowTutorial(false)}
                 className="absolute top-8 right-8 p-3 hover:bg-slate-100 rounded-full transition-colors z-10"
               >
                 <X className="w-6 h-6 text-slate-400" />
               </button>
-              
+
               <div className="p-12">
                 <div className="flex items-center justify-between mb-8">
                   <div className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-4 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-800">
@@ -1991,7 +2735,7 @@ function LandingPage({ onStart }: { onStart: () => void }) {
                     ))}
                   </div>
                 </div>
-                
+
                 <AnimatePresence mode="wait">
                   <motion.div
                     key={tutorialStep}
@@ -2007,26 +2751,26 @@ function LandingPage({ onStart }: { onStart: () => void }) {
                     <p className="text-lg text-slate-500 leading-relaxed max-w-lg">{tutorialSteps[tutorialStep].desc}</p>
                   </motion.div>
                 </AnimatePresence>
-                
+
                 <div className="mt-12 flex gap-4">
                   {tutorialStep > 0 && (
-                    <button 
+                    <button
                       onClick={() => setTutorialStep(prev => prev - 1)}
                       className="px-8 py-5 border border-slate-200 text-slate-900 rounded-2xl font-black uppercase tracking-widest hover:bg-slate-50 transition-all"
                     >
                       Back
                     </button>
                   )}
-                  
+
                   {tutorialStep < tutorialSteps.length - 1 ? (
-                    <button 
+                    <button
                       onClick={() => setTutorialStep(prev => prev + 1)}
                       className="flex-1 py-5 bg-slate-950 text-white rounded-2xl font-black uppercase tracking-widest hover:bg-slate-800 transition-all shadow-xl shadow-slate-950/20"
                     >
                       Next
                     </button>
                   ) : (
-                    <button 
+                    <button
                       onClick={() => {
                         setShowTutorial(false);
                         setTutorialStep(0);
@@ -2200,15 +2944,15 @@ function RoleWorkspace({ role, monitoring, pricing }: { role: WorkspaceRole, mon
     ]
     : role === 'admin'
       ? [
-      ['Quote', pricing?.optimized_quote || 'Pending'],
-      ['Margin', pricing?.profit_margin || 'Pending'],
-      ['Readiness', monitoring?.execution_readiness ? `${monitoring.execution_readiness}%` : 'Pending'],
-    ]
-    : [
-      ['Prep board', monitoring ? 'Ready for assignment' : 'Pending'],
-      ['Risk flags', monitoring?.overall_status || 'Pending'],
-      ['Dispatch', monitoring ? 'Awaiting route confirm' : 'Pending'],
-    ];
+        ['Quote', pricing?.optimized_quote || 'Pending'],
+        ['Margin', pricing?.profit_margin || 'Pending'],
+        ['Readiness', monitoring?.execution_readiness ? `${monitoring.execution_readiness}%` : 'Pending'],
+      ]
+      : [
+        ['Prep board', monitoring ? 'Ready for assignment' : 'Pending'],
+        ['Risk flags', monitoring?.overall_status || 'Pending'],
+        ['Dispatch', monitoring ? 'Awaiting route confirm' : 'Pending'],
+      ];
 
   return (
     <div className="high-density-card">
@@ -2254,32 +2998,34 @@ function ProblemStatementFit({ stackStatus }: { stackStatus: any }) {
   ];
 
   return (
-    <div className="high-density-card">
-      <div className="high-density-header">
+    <div className="backdrop-blur-xl bg-white/40 border border-white/60 rounded-[2.5rem] shadow-[0_8px_30px_rgb(0,0,0,0.04)] overflow-hidden h-fit sticky top-8">
+      <div className="flex items-center justify-between p-6 pb-4 border-b border-white/30">
         <div>
-          <h2 className="high-density-label">Problem Fit</h2>
-          <p className="text-[10px] text-slate-500 mt-1">iNextLabs catering requirements mapped in-app.</p>
+          <h2 className="text-sm font-black uppercase tracking-widest text-slate-800 drop-shadow-sm">Problem Fit</h2>
+          <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mt-1">iNextLabs requirements mapped</p>
         </div>
-        <ShieldCheck className="w-4 h-4 text-emerald-600" />
+        <div className="w-10 h-10 bg-white/50 backdrop-blur-md rounded-2xl flex items-center justify-center border border-white/60 shadow-sm">
+          <ShieldCheck className="w-5 h-5 text-emerald-600 drop-shadow-sm" />
+        </div>
       </div>
-      <div className="p-4 space-y-2">
+      <div className="p-6 pt-4 space-y-3">
         {requirements.map(([label, value]) => (
-          <div key={label} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-white p-3">
+          <div key={label} className="flex flex-col gap-1 rounded-2xl border border-white/50 bg-white/30 backdrop-blur-md p-4 shadow-sm transition-all hover:bg-white/40">
             <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">{label}</span>
-            <span className="text-[10px] font-black text-emerald-700 text-right">{value}</span>
+            <span className="text-xs font-black text-slate-800">{value}</span>
           </div>
         ))}
-        <div className="rounded-2xl border border-amber-100 bg-[#fff7e8] p-3">
-          <p className="text-[9px] font-black uppercase tracking-widest text-amber-700">Required Stack</p>
-          <div className="mt-2 space-y-1">
+        <div className="rounded-2xl border border-amber-100/50 bg-amber-50/50 backdrop-blur-md p-4 mt-6 shadow-sm">
+          <p className="text-[9px] font-black uppercase tracking-widest text-amber-700 mb-3">Required Stack</p>
+          <div className="space-y-2">
             {stackRows.map(([label, value]) => (
               <div key={label} className="flex items-center justify-between gap-2 text-[10px]">
                 <span className="font-black uppercase tracking-widest text-slate-500">{label}</span>
-                <span className="font-black text-emerald-700 text-right">{String(value).replaceAll('_', ' ')}</span>
+                <span className={`font-black text-right ${String(value).includes('implemented') ? 'text-emerald-700' : 'text-amber-700'}`}>{String(value).replaceAll('_', ' ')}</span>
               </div>
             ))}
           </div>
-          <p className="mt-2 text-[10px] leading-4 text-slate-600">
+          <p className="mt-3 text-[9px] leading-4 text-slate-600 font-medium border-t border-amber-200/50 pt-3">
             Agent Framework and Foundry path live in the Python backend; Azure AI Search powers RAG when credentials are set, otherwise local menus and suppliers keep the demo running.
           </p>
         </div>
@@ -2288,20 +3034,75 @@ function ProblemStatementFit({ stackStatus }: { stackStatus: any }) {
   );
 }
 
-function AgentReport({ step, isExpanded, onToggle }: { step: AgentStep, isExpanded: boolean, onToggle: () => void }) {
+function FoodDetailModal({ item, onClose }: { item: any, onClose: () => void }) {
+  if (!item) return null;
+  const ingredients = item.allergens?.map((a: string) => a) || [];
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.92, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.92, y: 20 }}
+        onClick={e => e.stopPropagation()}
+        className="w-full max-w-md bg-white rounded-[2rem] overflow-hidden shadow-2xl"
+      >
+        <div className="relative h-52 overflow-hidden">
+          <img src={item.image_url || getDishImage(item.dish)} alt={item.dish} className="w-full h-full object-cover"
+            onError={(e) => { (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&q=80&w=600&h=420'; }} />
+          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-transparent to-transparent" />
+          <button onClick={onClose} className="absolute top-4 right-4 w-9 h-9 bg-white/20 backdrop-blur rounded-full flex items-center justify-center text-white hover:bg-white/30 transition"><X className="w-4 h-4" /></button>
+          <div className="absolute bottom-4 left-5 right-5">
+            <p className="text-[10px] font-black uppercase tracking-widest text-emerald-300 mb-1">{item.tags?.includes('dessert') ? 'Dessert' : item.tags?.includes('drinks') ? 'Beverage' : 'Main Dish'}</p>
+            <h3 className="text-xl font-black text-white leading-tight">{item.dish}</h3>
+          </div>
+        </div>
+        <div className="p-6 space-y-4">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">About this dish</p>
+            <p className="text-sm text-slate-700 leading-relaxed font-medium">{item.description || 'A carefully crafted dish tailored to your event.'}</p>
+          </div>
+          <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-100 rounded-2xl px-4 py-3">
+            <Utensils className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            <div>
+              <p className="text-[9px] font-black uppercase tracking-widest text-emerald-600">Portion per Guest</p>
+              <p className="text-sm font-bold text-slate-800">{item.portion_per_guest || '1 serving'}</p>
+            </div>
+          </div>
+          {ingredients.length > 0 && (
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Allergens / Key Ingredients</p>
+              <div className="flex flex-wrap gap-2">
+                {ingredients.map((ing: string, i: number) => (
+                  <span key={i} className="px-3 py-1 rounded-full bg-amber-50 border border-amber-100 text-xs font-semibold text-amber-800">{ing}</span>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className={`rounded-2xl px-4 py-3 border text-xs font-semibold ${item.dietary_compliance === 'Needs substitution' ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-emerald-50 border-emerald-100 text-emerald-700'}`}>
+            {item.dietary_compliance === 'Needs substitution' ? '⚠️ Needs substitution — allergen detected' : '✓ Dietary compliant'}
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function AgentReport({ step, isExpanded, onToggle }: { step: AgentStep, isExpanded: boolean, onToggle: () => void, key?: any }) {
   const { agent, data } = step;
+  const [selectedFood, setSelectedFood] = useState<any>(null);
 
   const getStatusColor = (agent: string) => {
-    if (agent.includes('Concierge')) return 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20';
-    if (agent.includes('Head Chef')) return 'bg-sky-500/10 text-sky-500 border-sky-500/20';
-    if (agent.includes('Accountant')) return 'bg-amber-500/10 text-amber-500 border-amber-500/20';
-    if (agent.includes('Logistics Lead')) return 'bg-rose-500/10 text-rose-500 border-rose-500/20';
-    if (agent.includes('RAG')) return 'bg-emerald-50 text-emerald-700 border-emerald-100';
-    if (agent.includes('Dietary')) return 'bg-pink-500/10 text-pink-500 border-pink-500/20';
-    if (agent.includes('Weather')) return 'bg-sky-50 text-sky-700 border-sky-100';
-    if (agent.includes('Monitoring')) return 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20';
-    if (agent.includes('Shared Memory')) return 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20';
-    return 'bg-slate-500/10 text-slate-400 border-slate-500/20';
+    if (agent.includes('Concierge')) return 'bg-white/40 text-emerald-800 border-white/50 shadow-sm';
+    if (agent.includes('Head Chef')) return 'bg-white/40 text-sky-800 border-white/50 shadow-sm';
+    if (agent.includes('Accountant')) return 'bg-white/40 text-amber-800 border-white/50 shadow-sm';
+    if (agent.includes('Logistics Lead')) return 'bg-white/40 text-rose-800 border-white/50 shadow-sm';
+    if (agent.includes('Dietary')) return 'bg-white/40 text-pink-800 border-white/50 shadow-sm';
+    if (agent.includes('Weather')) return 'bg-white/40 text-sky-800 border-white/50 shadow-sm';
+    if (agent.includes('Supplier')) return 'bg-white/40 text-amber-800 border-white/50 shadow-sm';
+    if (agent.includes('Inventory')) return 'bg-white/40 text-emerald-800 border-white/50 shadow-sm';
+    return 'bg-white/40 text-slate-800 border-white/50 shadow-sm';
   };
 
   const getStatusText = (agent: string) => {
@@ -2309,53 +3110,29 @@ function AgentReport({ step, isExpanded, onToggle }: { step: AgentStep, isExpand
     if (agent.includes('Head Chef')) return 'DESIGN';
     if (agent.includes('Accountant')) return 'OPTIMIZE';
     if (agent.includes('Logistics Lead')) return 'EXECUTE';
-    if (agent.includes('RAG')) return 'KNOWLEDGE';
-    if (agent.includes('Monitoring')) return 'SECURE';
-    if (agent.includes('Shared Memory')) return 'TRACE';
+    if (agent.includes('Weather')) return 'FORECAST';
+    if (agent.includes('Dietary')) return 'SAFETY';
+    if (agent.includes('Supplier')) return 'SOURCE';
+    if (agent.includes('Inventory')) return 'PROCURE';
     return 'READY';
   };
 
   const renderContent = () => {
     switch (agent) {
-      case 'Knowledge Base & RAG Agent':
-        return (
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {(data.retrieved_playbooks || data.knowledge || []).slice(0, 3).map((item: any, i: number) => (
-                <div key={i} className="bg-[#fff7e8] p-4 border border-amber-100 rounded-2xl">
-                  <span className="text-[9px] font-bold text-amber-700 uppercase block mb-1 tracking-widest">{item.id || `playbook-${i + 1}`}</span>
-                  <p className="text-sm font-black text-slate-900 tracking-tight mb-2">{item.title}</p>
-                  <p className="text-xs text-slate-600 leading-relaxed">{item.guidance}</p>
-                </div>
-              ))}
-            </div>
-            <div className="border border-slate-100 bg-white p-4 rounded-2xl">
-              <span className="text-[9px] font-bold text-emerald-700 uppercase tracking-widest block mb-3">Supplier Context</span>
-              <div className="grid grid-cols-2 gap-2">
-                {(data.supplier_sources || []).slice(0, 4).map((supplier: any, i: number) => (
-                  <div key={i} className="flex justify-between gap-2 text-xs border-b border-slate-100 pb-2">
-                    <span className="text-slate-700 truncate font-semibold">{supplier.name}</span>
-                    <span className="text-emerald-400 font-bold">{supplier.reliability}%</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        );
       case 'Phase 1: Concierge (User Intent)':
         return (
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
-              <InfoItem label="proto" value={data.event_type} />
-              <InfoItem label="zone" value={data.location} />
-              <InfoItem label="pref" value={data.cuisine_preference} />
-              <InfoItem label="style" value={data.service_style} />
+              <InfoItem label="Event Type" value={data.event_type} />
+              <InfoItem label="Location" value={data.location} />
+              <InfoItem label="Cuisine" value={data.cuisine_preference} />
+              <InfoItem label="Service Style" value={data.service_style} />
             </div>
             {data.cultural_profile && (
-              <div className="rounded-2xl border border-sky-100 bg-sky-50 p-4">
-                <p className="text-[9px] font-black uppercase tracking-widest text-sky-700">Language + Culture (Winning Feature)</p>
-                <p className="mt-2 text-xs leading-5 text-slate-700">
-                  {data.cultural_profile.language} input detected. {data.cultural_profile.adaptation}
+              <div className="rounded-2xl border border-white/50 bg-white/30 backdrop-blur-md p-4 shadow-sm">
+                <p className="text-[9px] font-black uppercase tracking-widest text-slate-600">Language Detected</p>
+                <p className="mt-1 text-xs leading-5 text-slate-800">
+                  {data.cultural_profile.language} input detected.
                 </p>
               </div>
             )}
@@ -2363,305 +3140,121 @@ function AgentReport({ step, isExpanded, onToggle }: { step: AgentStep, isExpand
         );
       case 'Dietary & Allergens Specialist':
         return (
-          <div className="space-y-3">
-            <div className="text-[10px] font-bold text-emerald-700 uppercase tracking-widest">Dietary Safety Specialist</div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="bg-rose-50 p-4 border border-rose-100 rounded-2xl">
-                <span className="text-[10px] font-bold text-rose-600 uppercase block mb-1 tracking-tight">Allergies Detected</span>
-                <p className="text-xs text-slate-700 font-medium">{data.allergens_to_avoid?.length > 0 ? data.allergens_to_avoid.join(', ') : 'None'}</p>
-              </div>
-              <div className="bg-emerald-50 p-4 border border-emerald-100 rounded-2xl">
-                <span className="text-[10px] font-bold text-emerald-700 uppercase block mb-1 tracking-tight">Dietary Recommendations</span>
-                <p className="text-xs text-slate-700 font-medium">{data.recommended_labels?.length > 0 ? data.recommended_labels.join(', ') : 'None'}</p>
-              </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-white/30 backdrop-blur-md p-4 border border-white/50 rounded-2xl shadow-sm">
+              <span className="text-[10px] font-bold text-rose-700 uppercase block mb-1 tracking-tight">Allergies to Avoid</span>
+              <p className="text-xs text-slate-800 font-medium">{data.allergens_to_avoid?.length > 0 ? data.allergens_to_avoid.join(', ') : 'None'}</p>
+            </div>
+            <div className="bg-white/30 backdrop-blur-md p-4 border border-white/50 rounded-2xl shadow-sm">
+              <span className="text-[10px] font-bold text-emerald-700 uppercase block mb-1 tracking-tight">Dietary Preferences</span>
+              <p className="text-xs text-slate-800 font-medium">{data.recommended_labels?.length > 0 ? data.recommended_labels.join(', ') : 'None'}</p>
             </div>
           </div>
         );
       case 'Phase 2: Head Chef (Menu Design)':
         return (
           <div className="space-y-4">
-            <div className="text-[10px] font-bold text-emerald-700 uppercase tracking-widest bg-emerald-50 border border-emerald-100 rounded-full px-4 py-2 inline-flex">Phase 2 Collaboration: {data.dietary_compliance || "Balanced Selection"}</div>
-            {data.cultural_adaptation && (
-              <p className="rounded-2xl border border-amber-100 bg-[#fff7e8] p-3 text-xs font-semibold leading-5 text-slate-700">
-                {data.cultural_adaptation}
-              </p>
-            )}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <AnimatePresence>
+              {selectedFood && (
+                <FoodDetailModal item={selectedFood} onClose={() => setSelectedFood(null)} />
+              )}
+            </AnimatePresence>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {(data.menu || data.dishes)?.map((item: any, i: number) => (
-                <div key={i} className="bg-white border border-slate-100 rounded-3xl overflow-hidden flex flex-col group transition-all hover:border-emerald-200 shadow-sm">
-                  <div className="h-44 w-full bg-slate-100 relative">
-                    <img 
-                      src={item.image_url || null} 
-                      alt={item.dish} 
-                      className="w-full h-full object-cover transition-opacity duration-500"
-                      referrerPolicy="no-referrer"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src = "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&q=80&w=400&h=300";
-                      }}
+                <button
+                  key={i}
+                  onClick={() => setSelectedFood(item)}
+                  className="text-left bg-white border border-slate-200 rounded-3xl overflow-hidden flex flex-col group transition-all hover:border-emerald-300 hover:shadow-lg shadow-sm cursor-pointer"
+                >
+                  <div className="h-40 w-full relative overflow-hidden">
+                    <img
+                      src={item.image_url || getDishImage(item.dish)}
+                      alt={item.dish}
+                      className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
+                      onError={(e) => { (e.target as HTMLImageElement).src = getDishImage(item.dish); }}
                     />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-transparent to-transparent" />
-                    <div className="absolute bottom-2 left-2 right-2">
-                       <span className="text-sm font-black text-white tracking-tight line-clamp-1">{item.dish}</span>
+                    <div className="absolute inset-0 bg-gradient-to-t from-slate-950/75 via-transparent to-transparent" />
+                    <div className="absolute top-3 right-3">
+                      <span className="text-[8px] font-black uppercase tracking-widest bg-white/20 backdrop-blur text-white px-2 py-1 rounded-full border border-white/30">Tap for details</span>
+                    </div>
+                    <div className="absolute bottom-3 left-4 right-4">
+                      <p className="text-[9px] font-black uppercase tracking-widest text-emerald-300 mb-0.5">
+                        {item.tags?.includes('dessert') ? 'Dessert' : item.tags?.includes('drinks') ? 'Beverage' : 'Main Dish'}
+                      </p>
+                      <span className="text-base font-black text-white tracking-tight line-clamp-1">{item.dish}</span>
                     </div>
                   </div>
-                  <div className="p-3 space-y-2">
-                    <p className="text-xs text-slate-600 leading-relaxed line-clamp-3 min-h-[3rem]">{item.description}</p>
-                    <div className="flex justify-between items-center pt-2 border-t border-slate-100">
-                      <span className="text-[9px] text-slate-400 font-black uppercase tracking-widest">Portion</span>
-                      <span className="text-[10px] text-emerald-700 font-bold">{item.portion_per_guest}</span>
+                  <div className="p-4 flex-1 flex flex-col">
+                    <p className="text-xs text-slate-600 leading-relaxed line-clamp-2 font-medium flex-1">{item.description}</p>
+                    <div className="mt-3 flex justify-between items-center pt-3 border-t border-slate-100">
+                      <span className="text-[9px] text-slate-400 font-black uppercase tracking-widest">Per guest</span>
+                      <span className="text-xs text-emerald-700 font-bold bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100">{item.portion_per_guest}</span>
                     </div>
                   </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+
+      case 'Inventory & Procurement Specialist':
+        return (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+              {data.procurement_list?.slice(0, 4).map((ing: any, i: number) => (
+                <div key={i} className="bg-white/30 backdrop-blur-md border border-white/50 p-4 rounded-2xl shadow-sm text-center">
+                  <span className="text-2xl font-black text-slate-800">{ing.qty?.split(' ')[0] || '--'}</span>
+                  <span className="text-xs font-bold text-emerald-700 ml-1">{ing.qty?.split(' ')[1] || ''}</span>
+                  <p className="text-[9px] uppercase tracking-widest text-slate-500 mt-2 font-bold">{ing.item}</p>
                 </div>
               ))}
             </div>
-            {data.nutrition_summary?.per_guest_estimate && (
-              <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
-                <p className="text-[9px] font-black uppercase tracking-widest text-emerald-700 mb-3">Head Chef Nutrition Summary</p>
-                <div className="grid grid-cols-4 gap-2 text-center">
-                  {[
-                    ['Calories', data.nutrition_summary.per_guest_estimate.calories],
-                    ['Protein', `${data.nutrition_summary.per_guest_estimate.protein_g}g`],
-                    ['Carbs', `${data.nutrition_summary.per_guest_estimate.carbs_g}g`],
-                    ['Fat', `${data.nutrition_summary.per_guest_estimate.fat_g}g`],
-                  ].map(([label, value]) => (
-                    <div key={label} className="rounded-xl bg-white p-2">
-                      <p className="text-sm font-black text-slate-900">{value}</p>
-                      <p className="text-[8px] font-bold uppercase tracking-widest text-slate-400">{label}</p>
-                    </div>
-                  ))}
-                </div>
+            {data.potential_shortages?.length > 0 && (
+              <div className="bg-rose-50/50 backdrop-blur-md p-3 border border-rose-100/50 rounded-2xl">
+                <span className="text-[9px] font-bold text-rose-700 uppercase block mb-1 tracking-widest">Potential Shortages</span>
+                <p className="text-xs text-slate-700">{data.potential_shortages.join(', ')}</p>
               </div>
             )}
-          </div>
-        );
-      case 'Inventory & Procurement Specialist':
-        return (
-          <div className="flex-1 space-y-3">
-            <div className="bg-amber-50 p-3 border border-amber-100 rounded-2xl">
-              <span className="text-[9px] font-bold text-amber-700 uppercase block mb-1 tracking-widest">Procurement Specialist Insight</span>
-              <p className="text-xs text-slate-600">
-                {data.potential_shortages?.length > 0 ? data.potential_shortages.join(', ') : 'No inventory conflicts detected in Microsoft Agent Framework scan.'}
-              </p>
-            </div>
-            <table className="w-full text-xs">
-              <thead className="text-slate-400 border-b border-slate-100">
-                <tr className="text-left uppercase text-[9px] tracking-widest font-bold">
-                  <th className="pb-1">Specialist_Procurement</th>
-                  <th className="pb-1">Qty</th>
-                  <th className="pb-1">Status</th>
-                </tr>
-              </thead>
-              <tbody className="text-slate-700">
-                {data.procurement_list?.slice(0, 5).map((ing: any, i: number) => (
-                  <tr key={i} className="border-b border-slate-100 hover:bg-emerald-50 transition-colors">
-                    <td className="py-1 uppercase">{ing.item}</td>
-                    <td className="py-1">{ing.qty}</td>
-                    <td className="py-1 text-emerald-700 font-bold">Validated</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
           </div>
         );
       case 'Supplier Intelligence Specialist':
         return (
-          <div className="space-y-4">
-            <div className="rounded-2xl border border-amber-100 bg-[#fff7e8] p-4">
-              <p className="text-[9px] font-black uppercase tracking-widest text-amber-700">Strategic Implementation Advice</p>
-              <p className="mt-2 text-xs leading-5 text-slate-700">{data.optimization_strategy}</p>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {(data.supplier_matches || []).slice(0, 4).map((supplier: any, i: number) => (
-                <div key={i} className="rounded-2xl border border-slate-100 bg-white p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-black text-slate-900">{supplier.name}</p>
-                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{supplier.market}</p>
-                    </div>
-                    <span className="rounded-full bg-emerald-50 px-3 py-1 text-[10px] font-black text-emerald-700">{supplier.score}</span>
-                  </div>
-                  <div className="mt-3 grid grid-cols-2 gap-2">
-                    <InfoItem label="distance" value={`${supplier.estimated_distance_km} km`} />
-                    <InfoItem label="traffic" value={`${supplier.traffic_buffer_minutes} min`} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      case 'Phase 3: Accountant (Cost Optimization)':
-        return (
-          <div className="space-y-5">
-             <div className="rounded-3xl border border-emerald-100 bg-emerald-50 p-6 text-center">
-                <span className="text-[10px] font-black text-emerald-700 uppercase tracking-[0.28em]">Phase 3 Optimized Quote</span>
-                <p className="mt-3 text-5xl font-black text-slate-950 tracking-tight">{data.optimized_quote}</p>
-                <p className="mt-3 text-xs text-slate-600">{data.pricing_strategy}</p>
-             </div>
-             <div className="grid grid-cols-2 gap-4">
-                <div className="bg-white p-5 border border-slate-100 rounded-2xl">
-                   <span className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Cost Per Guest</span>
-                   <p className="text-2xl font-black text-slate-900">{data.unit_cost}</p>
-                </div>
-                <div className="bg-white p-5 border border-slate-100 rounded-2xl">
-                   <span className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Profit Yield</span>
-                   <p className="text-2xl font-black text-emerald-700">{data.profit_margin}</p>
-                </div>
-             </div>
-          </div>
-        );
-      case 'Real-Time Simulation Agent':
-        return (
-          <div className="space-y-4 font-mono">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {(data.timeline_ticks || data.ticks || []).slice(0, 6).map((tick: any, i: number) => (
-                <div key={i} className="border border-orange-500/20 bg-orange-500/5 p-3">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-[10px] text-orange-400 font-black uppercase">{tick.time || tick.stage || `T+${i}`}</span>
-                    <span className="text-[8px] text-emerald-400/70 uppercase">{tick.status || 'simulated'}</span>
-                  </div>
-                  <p className="text-[9px] text-orange-100/70 leading-relaxed">{tick.event || tick.activity || tick.note}</p>
-                </div>
-              ))}
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="bg-pink-500/5 border border-pink-500/20 p-3">
-                <span className="text-[8px] text-pink-400 font-black uppercase tracking-widest block mb-2">Live Risks</span>
-                {(data.live_risks || []).slice(0, 4).map((risk: string, i: number) => (
-                  <p key={i} className="text-[9px] text-pink-100/70 leading-relaxed">- {risk}</p>
-                ))}
-              </div>
-              <div className="bg-emerald-500/5 border border-emerald-500/20 p-3">
-                <span className="text-[8px] text-emerald-400 font-black uppercase tracking-widest block mb-2">Mitigation Queue</span>
-                {(data.mitigation_queue || []).slice(0, 4).map((item: string, i: number) => (
-                  <p key={i} className="text-[9px] text-emerald-100/70 leading-relaxed">- {item}</p>
-                ))}
-              </div>
-            </div>
-          </div>
-        );
-      case 'Contingency & Plan B Specialist':
-      case 'Contingency Agent':
-        return (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {[
-              ['Weather Plan B', data.weather_plan_b],
-              ['Supplier Backup', data.supplier_backup_plan],
-              ['Staffing Backup', data.staffing_backup_plan],
-              ['Trigger Points', Array.isArray(data.trigger_points) ? data.trigger_points.join(', ') : data.trigger_points],
-            ].map(([label, value]) => (
-              <div key={label} className="rounded-2xl border border-rose-100 bg-rose-50/70 p-4">
-                <p className="text-[9px] font-black uppercase tracking-widest text-rose-600 mb-2">{label}</p>
-                <p className="text-[11px] leading-5 text-slate-700">{String(value || 'No issue detected.')}</p>
+            {(data.catering_shop_recommendations || data.supplier_matches || []).slice(0, 4).map((supplier: any, i: number) => (
+              <div key={i} className="rounded-2xl border border-white/50 bg-white/30 backdrop-blur-md p-4 shadow-sm hover:shadow-md transition-shadow">
+                <div className="flex items-start justify-between gap-3 mb-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-black text-slate-800">{supplier.name}</p>
+                    <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500 mt-0.5">{supplier.area || supplier.market}</p>
+                  </div>
+                  <span className="rounded-full bg-white/50 border border-white/60 px-3 py-1 text-[10px] font-black text-emerald-800 shadow-sm">{supplier.score || supplier.match_score}</span>
+                </div>
+                <p className="text-[10px] text-slate-600 leading-relaxed font-medium line-clamp-2">{supplier.reason || supplier.specialties}</p>
+                {supplier.contact && (
+                  <p className="mt-3 pt-3 border-t border-white/30 text-[10px] font-bold text-emerald-700 flex items-center gap-1.5 break-all">
+                    <span className="bg-emerald-500/10 p-1 rounded-full"><svg className="w-3 h-3 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg></span>
+                    {supplier.contact}
+                  </p>
+                )}
               </div>
             ))}
           </div>
         );
-      case 'Sustainability & Impact Specialist':
-      case 'Sustainability & Waste Agent':
-        return (
-          <div className="space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="rounded-2xl border border-lime-100 bg-lime-50 p-4">
-                <p className="text-[9px] font-black uppercase tracking-widest text-lime-700">Impact Score</p>
-                <p className="text-3xl font-black text-lime-800 mt-2">{data.impact_score || '--'}</p>
-              </div>
-              <div className="rounded-2xl border border-lime-100 bg-white p-4 sm:col-span-2">
-                <p className="text-[9px] font-black uppercase tracking-widest text-lime-700 mb-2">Waste Forecast</p>
-                <p className="text-[11px] leading-5 text-slate-700">{data.waste_forecast || 'Waste forecast pending.'}</p>
-              </div>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="rounded-2xl border border-slate-100 bg-white p-4">
-                <p className="text-[9px] font-black uppercase tracking-widest text-slate-500 mb-2">Donation Plan</p>
-                <p className="text-[11px] leading-5 text-slate-700">{data.donation_plan || 'No donation plan generated.'}</p>
-              </div>
-              <div className="rounded-2xl border border-slate-100 bg-white p-4">
-                <p className="text-[9px] font-black uppercase tracking-widest text-slate-500 mb-2">Low-Waste Actions</p>
-                {(data.low_waste_actions || []).slice(0, 4).map((item: string, i: number) => (
-                  <p key={i} className="text-[11px] leading-5 text-slate-700">- {item}</p>
-                ))}
-              </div>
-            </div>
-          </div>
-        );
-      case 'Executive Brief Agent':
+      case 'Phase 3: Accountant (Cost Optimization)':
         return (
           <div className="space-y-4">
-            <div className="rounded-3xl bg-amber-50 border border-amber-100 p-5">
-              <p className="text-[10px] font-black uppercase tracking-widest text-amber-700 mb-2">{data.headline || 'Executive Brief'}</p>
-              <p className="text-sm leading-6 text-slate-800">{data.judge_pitch || 'A concise pitch will appear here after orchestration.'}</p>
+            <div className="rounded-3xl border border-white/60 bg-white/40 backdrop-blur-md p-6 text-center shadow-sm">
+              <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] drop-shadow-sm">Total Projected Cost</span>
+              <p className="mt-2 text-4xl font-black text-slate-900 tracking-tight drop-shadow-sm">{data.optimized_quote}</p>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {(data.differentiators || []).slice(0, 4).map((item: string, i: number) => (
-                <div key={i} className="rounded-2xl border border-amber-100 bg-white p-3 text-[11px] font-semibold text-slate-700">
-                  {item}
-                </div>
-              ))}
-            </div>
-            {data.recommended_next_step && (
-              <p className="text-[11px] text-amber-800 font-bold bg-amber-50 border border-amber-100 rounded-2xl p-3">
-                Next: {data.recommended_next_step}
-              </p>
-            )}
-          </div>
-        );
-      case 'System Monitoring & QA':
-        return (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className={`w-2.5 h-2.5 rounded-full ${data.overall_status === 'green' ? 'bg-emerald-500' : data.overall_status === 'yellow' ? 'bg-amber-500' : 'bg-rose-500'}`} />
-                <span className="text-[11px] font-bold text-slate-800 uppercase tracking-widest">{data.overall_status} status</span>
-              </div>
-              <span className="text-[11px] font-bold text-emerald-700">{data.execution_readiness}% orchestration integrity</span>
-            </div>
-            <p className="text-xs text-slate-600 leading-relaxed border-l border-emerald-200 pl-3">
-              {data?.final_summary || 'Final report is being prepared.'}
-            </p>
-            {data.qa_checks?.length > 0 && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                {data.qa_checks.slice(0, 4).map((check: string, i: number) => (
-                  <div key={i} className="text-[10px] text-slate-700 bg-emerald-50 border border-emerald-100 p-3 rounded-2xl">
-                    ✅ {check}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      case 'Shared Memory Ledger':
-        return (
-          <div className="space-y-4 font-mono">
             <div className="grid grid-cols-2 gap-4">
-              <div className="bg-sky-500/10 border border-sky-500/20 p-4 rounded-2xl backdrop-blur-md">
-                <span className="text-[9px] font-black text-sky-400 uppercase tracking-widest block mb-2">Winning Feature: Shared Memory</span>
-                <p className="text-[10px] text-sky-100/80 leading-relaxed">{data.readiness_basis}</p>
+              <div className="bg-white/30 backdrop-blur-md p-5 border border-white/50 rounded-2xl shadow-sm text-center">
+                <span className="text-[9px] font-bold text-slate-500 uppercase block mb-1">Cost Per Guest</span>
+                <p className="text-xl font-black text-slate-800 drop-shadow-sm">{data.unit_cost?.split('/')[0] || '--'}</p>
               </div>
-              <div className="bg-indigo-500/10 border border-indigo-500/20 p-4 rounded-2xl backdrop-blur-md">
-                <span className="text-[9px] font-black text-indigo-400 uppercase tracking-widest block mb-2">Stack: Deployment Architecture</span>
-                <div className="space-y-1">
-                  {Object.entries(data.deployment || {}).map(([k, v]) => (
-                    <div key={k} className="flex justify-between text-[8px]">
-                      <span className="text-indigo-200/60 uppercase">{k}:</span>
-                      <span className="text-white font-bold">{String(v)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-            <div className="bg-black/40 border border-white/10 rounded-2xl p-4">
-              <span className="text-[9px] font-black text-white/50 uppercase tracking-widest block mb-3">Audit Trail (Decision Tracking)</span>
-              <div className="space-y-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
-                {(data.audit_trail || []).map((entry: any, i: number) => (
-                  <div key={i} className="text-[8px] border-l border-emerald-500/30 pl-3 py-1 space-y-0.5">
-                    <div className="flex justify-between">
-                      <span className="text-emerald-400 font-bold uppercase">{entry.actor}</span>
-                      <span className="text-white/30">{new Date(entry.timestamp).toLocaleTimeString()}</span>
-                    </div>
-                    <p className="text-white/70 italic">{entry.action}</p>
-                    <p className="text-white/40">{entry.decision_context}</p>
-                  </div>
-                ))}
+              <div className="bg-white/30 backdrop-blur-md p-5 border border-white/50 rounded-2xl shadow-sm text-center">
+                <span className="text-[9px] font-bold text-slate-500 uppercase block mb-1">Profit Yield</span>
+                <p className="text-xl font-black text-emerald-700 drop-shadow-sm">{data.profit_margin}</p>
               </div>
             </div>
           </div>
@@ -2669,102 +3262,94 @@ function AgentReport({ step, isExpanded, onToggle }: { step: AgentStep, isExpand
       case 'Weather Intelligence':
       case 'Weather Intelligence Agent':
         return (
-           <div className="space-y-3">
-             <div className="flex items-center gap-3">
-               <div className={`p-3 rounded-2xl ${data.risk_level === 'high' ? 'bg-rose-50 text-rose-600 border border-rose-100' : 'bg-sky-50 text-sky-600 border border-sky-100'}`}>
-                 {data.risk_level === 'high' ? <CloudRain className="w-4 h-4" /> : <Droplets className="w-4 h-4" />}
-               </div>
-               <div className="min-w-0">
-                 <p className="text-sm font-bold text-slate-800 tracking-tight">{data.summary}</p>
-                 <p className={`text-[9px] font-bold uppercase tracking-[0.2em] ${data.risk_level === 'high' ? 'text-rose-600' : 'text-sky-600'}`}>Risk: {data.risk_level}</p>
-               </div>
-             </div>
-             <div className="bg-white p-4 border border-slate-100 rounded-2xl">
-                <span className="text-[9px] font-bold text-slate-400 uppercase block mb-2 tracking-widest">Recommendations</span>
-                <ul className="text-xs text-slate-600 space-y-1">
-                  {data.recommendations?.slice(0, 2).map((r: string, i: number) => (
-                    <li key={i} className="leading-relaxed">- {r}</li>
-                  ))}
-                </ul>
-             </div>
-           </div>
-        );
-      case 'Phase 4: Logistics Lead (Execution)':
-        return (
-          <div className="space-y-6">
-            <div className="text-[10px] font-bold text-rose-700 uppercase tracking-widest bg-rose-50 px-4 py-2 rounded-full border border-rose-100 inline-flex">Phase 4: Operational Timeline</div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {data.timeline?.map((t: any, i: number) => (
-                <div key={i} className="flex flex-col bg-white p-4 border border-slate-100 rounded-2xl relative group hover:border-rose-200 transition-all">
-                  <div className="flex justify-between items-start mb-3">
-                    <span className="text-xs font-black text-rose-700 bg-rose-50 px-3 py-1 rounded-full border border-rose-100">{t.time}</span>
-                  </div>
-                  <p className="text-sm font-bold text-slate-800 leading-tight line-clamp-2">{t.activity}</p>
-                </div>
-              ))}
-            </div>
-            
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-slate-100">
-              <div className="bg-[#fff7e8] p-5 border border-amber-100 rounded-2xl relative overflow-hidden group min-h-[140px]">
-                <div className="flex items-center gap-4 mb-5 relative z-10">
-                  <div className="w-2 h-8 bg-amber-500 rounded-full" />
-                  <span className="text-xs font-black text-amber-700 uppercase tracking-[0.18em]">Staffing Needs</span>
-                </div>
-                <p className="text-sm text-slate-700 leading-relaxed font-semibold relative z-10 pr-4">
-                  {data.staffing_needs}
-                </p>
+          <div className="space-y-3">
+            <div className="flex items-center gap-4 bg-white/30 backdrop-blur-md p-4 rounded-2xl border border-white/50 shadow-sm">
+              <div className={`p-3 rounded-2xl shadow-inner ${data.risk_level === 'high' ? 'bg-rose-100/50 text-rose-700' : 'bg-sky-100/50 text-sky-700'}`}>
+                {data.risk_level === 'high' ? <CloudRain className="w-5 h-5" /> : <Droplets className="w-5 h-5" />}
               </div>
-              <div className="bg-rose-50 p-5 border border-rose-100 rounded-2xl relative overflow-hidden group min-h-[140px]">
-                <div className="flex items-center gap-4 mb-5 relative z-10">
-                  <div className="w-2 h-8 bg-rose-600 rounded-full" />
-                  <span className="text-xs font-black text-rose-700 uppercase tracking-[0.18em]">Logistics Lead Advice</span>
-                </div>
-                <p className="text-sm text-slate-700 leading-relaxed font-semibold relative z-10 pr-4">
-                  {data.transport_plan || "Two-vehicle dispatch optimized for Metro Manila traffic windows."}
-                </p>
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-slate-800 tracking-tight">{data.summary}</p>
+                <p className={`text-[9px] font-black uppercase tracking-[0.2em] mt-1 ${data.risk_level === 'high' ? 'text-rose-600' : 'text-sky-600'}`}>Risk Level: {data.risk_level}</p>
               </div>
             </div>
           </div>
         );
+      case 'Phase 4: Logistics Lead (Execution)':
+        return (
+          <div className="space-y-4">
+            <div className="bg-white/30 backdrop-blur-md p-5 border border-white/50 rounded-2xl shadow-sm">
+              <div className="flex items-center gap-3 mb-2">
+                <div className="w-2 h-6 bg-slate-400 rounded-full" />
+                <span className="text-xs font-black text-slate-700 uppercase tracking-widest">Staffing & Transport</span>
+              </div>
+              <p className="text-sm text-slate-800 leading-relaxed font-medium pl-5">{data.staffing_needs}</p>
+              <p className="text-[11px] text-slate-500 font-medium pl-5 mt-1">{data.transport_plan}</p>
+            </div>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {data.timeline?.slice(-4).map((t: any, i: number) => (
+                <div key={i} className="flex flex-col bg-white/40 backdrop-blur-md p-4 border border-white/60 rounded-2xl shadow-sm">
+                  <div className="flex justify-between items-start mb-2">
+                    <span className="text-[10px] font-black text-slate-700 bg-white/60 px-3 py-1 rounded-full border border-white/80 shadow-sm">{t.time}</span>
+                  </div>
+                  <p className="text-xs font-bold text-slate-800 leading-snug">{t.activity}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
       default:
-        return <div className="text-[8px] text-emerald-500/60 font-mono uppercase italic break-all opacity-50">{JSON.stringify(data).substring(0, 100)}...</div>;
+        return <div className="text-[8px] text-slate-500/60 font-mono uppercase italic break-all opacity-50">{JSON.stringify(data).substring(0, 100)}...</div>;
     }
   };
 
+  const getPhaseGradient = (agent: string) => {
+    if (agent.includes('Concierge')) return 'from-emerald-900 via-emerald-950 to-slate-900';
+    if (agent.includes('Head Chef')) return 'from-sky-900 via-slate-900 to-slate-900';
+    if (agent.includes('Accountant')) return 'from-amber-900 via-slate-900 to-slate-900';
+    if (agent.includes('Logistics Lead')) return 'from-rose-900 via-slate-900 to-slate-900';
+    if (agent.includes('Dietary')) return 'from-pink-900 via-slate-900 to-slate-900';
+    if (agent.includes('Weather')) return 'from-sky-900 via-indigo-950 to-slate-900';
+    if (agent.includes('Supplier')) return 'from-amber-900 via-orange-950 to-slate-900';
+    if (agent.includes('Inventory')) return 'from-teal-900 via-emerald-950 to-slate-900';
+    return 'from-slate-800 via-slate-900 to-slate-950';
+  };
+
   return (
-    <div className={`high-density-card transition-all duration-300 group ${isExpanded ? 'ring-2 ring-emerald-500/20' : 'hover:border-emerald-200'}`}>
-      <div 
+    <div className="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm hover:shadow-md transition-all duration-300 mb-4">
+      {/* Dark gradient header */}
+      <div
         onClick={onToggle}
-        className="high-density-header cursor-pointer select-none"
+        className={`relative overflow-hidden bg-gradient-to-br ${getPhaseGradient(agent)} cursor-pointer select-none`}
       >
-        <div className="flex items-center gap-3">
-          <div className={`w-1.5 h-1.5 rounded-full ${isExpanded ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-slate-300'}`} />
-          <h2 className="high-density-label group-hover:text-emerald-900 transition-all">{agent.replace(' Agent', '')}</h2>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className={`text-[9px] px-3 py-1 rounded-full font-bold uppercase tracking-widest border ${getStatusColor(agent)}`}>
-            {getStatusText(agent)}
-          </span>
-          <motion.div
-            animate={{ rotate: isExpanded ? 180 : 0 }}
-            transition={{ duration: 0.3, ease: "circOut" }}
-          >
-             <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M19 9l-7 7-7-7" />
-             </svg>
-          </motion.div>
+        <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full blur-2xl -translate-y-1/2 translate-x-1/2" />
+        <div className="relative z-10 flex items-center justify-between px-6 py-5">
+          <div className="flex items-center gap-3">
+            <div className={`w-2 h-2 rounded-full ${isExpanded ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-white/30'} transition-all`} />
+            <h2 className="text-sm font-black uppercase tracking-widest text-white">
+              {agent.replace(' Agent', '').replace('Phase 1: ', '').replace('Phase 2: ', '').replace('Phase 3: ', '').replace('Phase 4: ', '')}
+            </h2>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-[9px] px-3 py-1.5 rounded-full font-black uppercase tracking-widest bg-white/15 border border-white/20 text-white/80">
+              {getStatusText(agent)}
+            </span>
+            <motion.div animate={{ rotate: isExpanded ? 180 : 0 }} transition={{ duration: 0.3 }} className="text-white/60">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M19 9l-7 7-7-7" /></svg>
+            </motion.div>
+          </div>
         </div>
       </div>
       <AnimatePresence initial={false}>
         {isExpanded && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
+            animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.4, ease: [0.04, 0.62, 0.23, 0.98] }}
             className="overflow-hidden"
           >
-            <div className="p-4 border-t border-slate-100 bg-white/50">
+            <div className="p-6 border-t border-slate-100">
               {renderContent()}
             </div>
           </motion.div>
@@ -2864,9 +3449,9 @@ function MenuEditor({ menu, onChange }: { menu: any[], onChange: (menu: any[]) =
             <div className="flex items-center gap-4">
               <div className="flex-1">
                 <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 block mb-1">Portion/Guest</label>
-                <input 
-                  type="text" 
-                  value={item.portion_per_guest} 
+                <input
+                  type="text"
+                  value={item.portion_per_guest}
                   onChange={(e) => updatePortion(i, e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs outline-none focus:border-emerald-500"
                 />
@@ -2889,199 +3474,7 @@ function MenuEditor({ menu, onChange }: { menu: any[], onChange: (menu: any[]) =
   );
 }
 
-function AdminDashboard({ inventory, pricing }: { inventory: any[], pricing: any }) {
-  if (!inventory || inventory.length === 0) return (
-    <div className="p-20 text-center text-slate-400 font-bold uppercase tracking-widest">
-      Waiting for procurement data...
-    </div>
-  );
 
-  const chartData = inventory.slice(0, 8).map(ing => ({
-    name: ing.item,
-    cost: ing.estimated_cost_php || 0
-  }));
-
-  const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
-
-  return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6 p-6">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-black text-slate-900 flex items-center gap-2">
-          <BarChart3 className="w-5 h-5 text-emerald-600" />
-          Owner Cost Controls
-        </h2>
-        <div className="flex gap-2">
-          <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100">ON BUDGET</span>
-          <span className="text-[10px] font-black text-slate-500 bg-slate-50 px-3 py-1 rounded-full border border-slate-200">ADMIN</span>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm">
-          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Total Procurement Cost</p>
-          <p className="text-2xl font-black text-slate-900">PHP {inventory.reduce((acc, curr) => acc + (curr.estimated_cost_php || 0), 0).toLocaleString()}</p>
-        </div>
-        <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm">
-          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Projected Margin</p>
-          <p className="text-2xl font-black text-emerald-600">{pricing?.profit_margin || '32%'}</p>
-        </div>
-        <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm">
-          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Unit Cost/Guest</p>
-          <p className="text-2xl font-black text-slate-900">{pricing?.unit_cost || '--'}</p>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
-          <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 mb-6 flex items-center gap-2">
-            <PieIcon className="w-4 h-4" />
-            Budget-per-Ingredient Breakdown
-          </h3>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={chartData}
-                  innerRadius={60}
-                  outerRadius={80}
-                  paddingAngle={5}
-                  dataKey="cost"
-                >
-                  {chartData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip />
-                <Legend />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
-          <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 mb-6 flex items-center gap-2">
-            <BarChart3 className="w-4 h-4" />
-            Ingredient Price Estimation
-          </h3>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData}>
-                <XAxis dataKey="name" fontSize={8} tick={{ fontSize: 8 }} />
-                <YAxis fontSize={8} />
-                <Tooltip />
-                <Bar dataKey="cost" fill="#10b981" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </div>
-    </motion.div>
-  );
-}
-
-function StaffTaskBoard({ tasks, onToggle }: { tasks: any[], onToggle: (index: number) => void }) {
-  if (!tasks || tasks.length === 0) return (
-    <div className="p-20 text-center text-slate-400 font-bold uppercase tracking-widest">
-      Waiting for logistics timeline...
-    </div>
-  );
-
-  return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6 p-6">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-black text-slate-900 flex items-center gap-2">
-          <ClipboardList className="w-5 h-5 text-emerald-600" />
-          Operational Task Board
-        </h2>
-        <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100">
-          {tasks.filter(t => t.completed).length} / {tasks.length} DONE
-        </span>
-      </div>
-      <div className="space-y-3">
-        {tasks.map((task, i) => (
-          <div 
-            key={i} 
-            onClick={() => onToggle(i)}
-            className={`flex items-center gap-4 p-5 rounded-3xl border transition-all cursor-pointer ${task.completed ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-200 hover:border-emerald-300'}`}
-          >
-            <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${task.completed ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-slate-200'}`}>
-              {task.completed && <CheckCircle2 className="w-4 h-4" />}
-            </div>
-            <div className="flex-1">
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-[10px] font-black text-emerald-700 font-mono">{task.time}</span>
-                <span className="text-[8px] font-black uppercase tracking-widest text-slate-400">Duration: {task.duration}</span>
-              </div>
-              <p className={`text-sm font-bold ${task.completed ? 'text-slate-400 line-through' : 'text-slate-800'}`}>{task.activity}</p>
-            </div>
-          </div>
-        ))}
-      </div>
-    </motion.div>
-  );
-}
-
-function AdminShopSetup({ profile, onSave }: { profile: any, onSave: (data: any) => void }) {
-  const [name, setName] = useState(profile?.name || '');
-  const [location, setLocation] = useState(profile?.location || '');
-  const [specialties, setSpecialties] = useState(profile?.specialties || '');
-  const [baseQuote, setBaseQuote] = useState(profile?.baseQuote || '');
-
-  return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="p-8 space-y-8 max-w-2xl mx-auto">
-      <div className="space-y-2 text-center">
-        <h2 className="text-3xl font-black text-slate-900 tracking-tight">Setup Your Catering Shop</h2>
-        <p className="text-slate-500 text-sm">Appear on the CaterFlow map and get recommended to customers.</p>
-      </div>
-      <div className="bg-white rounded-[2.5rem] border border-slate-200 p-8 shadow-2xl shadow-slate-200/50 space-y-6">
-        <div className="space-y-4">
-          <div className="grid gap-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Shop Name</label>
-            <input 
-              value={name} onChange={e => setName(e.target.value)}
-              className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 text-sm font-bold outline-none focus:border-emerald-500" 
-              placeholder="e.g. Gourmet Manila Events"
-            />
-          </div>
-          <div className="grid gap-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Location / Address</label>
-            <div className="relative">
-              <input 
-                value={location} onChange={e => setLocation(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-2xl pl-12 pr-5 py-4 text-sm font-bold outline-none focus:border-emerald-500" 
-                placeholder="City, District"
-              />
-              <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
-            </div>
-          </div>
-          <div className="grid gap-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Specialties</label>
-            <textarea 
-              value={specialties} onChange={e => setSpecialties(e.target.value)}
-              className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 text-sm font-bold outline-none focus:border-emerald-500 h-24" 
-              placeholder="Filipino Fusion, Corporate Buffet, etc."
-            />
-          </div>
-          <div className="grid gap-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Base Quote Estimate (PHP)</label>
-            <input 
-              type="number" value={baseQuote} onChange={e => setBaseQuote(e.target.value)}
-              className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 text-sm font-bold outline-none focus:border-emerald-500" 
-              placeholder="50000"
-            />
-          </div>
-        </div>
-        <button 
-          onClick={() => onSave({ name, location, specialties, baseQuote: Number(baseQuote) })}
-          className="w-full py-5 bg-emerald-700 text-white rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-xl shadow-emerald-900/20 flex items-center justify-center gap-3"
-        >
-          <Save className="w-5 h-5" />
-          Update Shop Profile
-        </button>
-      </div>
-    </motion.div>
-  );
-}
 
 function CheckoutPortal({ shop, event, blueprint, status, onAccept, onFinalize }: { shop: any, event: any, blueprint: any[], status: string, onAccept: () => void, onFinalize: () => void }) {
   const [msg, setMsg] = useState('');
@@ -3100,18 +3493,18 @@ function CheckoutPortal({ shop, event, blueprint, status, onAccept, onFinalize }
       <div className="flex flex-col gap-6 overflow-hidden">
         <div className="bg-white border border-slate-200 rounded-[2rem] p-8 shadow-sm flex-shrink-0">
           <div className="flex items-center justify-between mb-6">
-             <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-emerald-100 rounded-2xl grid place-items-center text-emerald-700">
-                  <ChefHat className="w-6 h-6" />
-                </div>
-                <div>
-                   <h2 className="text-xl font-black text-slate-900">Casa Mesa Catering</h2>
-                   <p className="text-xs text-slate-500">Official Partner Recommendation</p>
-                </div>
-             </div>
-             <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest ${status === 'finalized' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                {status.toUpperCase()}
-             </span>
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 bg-emerald-100 rounded-2xl grid place-items-center text-emerald-700">
+                <ChefHat className="w-6 h-6" />
+              </div>
+              <div>
+                <h2 className="text-xl font-black text-slate-900">Casa Mesa Catering</h2>
+                <p className="text-xs text-slate-500">Official Partner Recommendation</p>
+              </div>
+            </div>
+            <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest ${status === 'finalized' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+              {status.toUpperCase()}
+            </span>
           </div>
 
           <div className="space-y-4">
@@ -3138,173 +3531,77 @@ function CheckoutPortal({ shop, event, blueprint, status, onAccept, onFinalize }
         </div>
 
         <div className="bg-slate-50 border border-slate-200 rounded-[2rem] p-6 flex flex-col flex-1 overflow-hidden">
-           <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
-              {localMsgs.map((m, i) => (
-                <div key={i} className={`flex ${m.role === 'customer' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[80%] p-4 rounded-3xl text-sm font-medium ${m.role === 'customer' ? 'bg-emerald-700 text-white rounded-tr-none' : 'bg-white border border-slate-200 text-slate-800 rounded-tl-none'}`}>
-                    <p>{m.text}</p>
-                    <span className={`text-[8px] mt-1 block uppercase font-bold ${m.role === 'customer' ? 'text-emerald-200' : 'text-slate-400'}`}>{m.time}</span>
-                  </div>
+          <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
+            {localMsgs.map((m, i) => (
+              <div key={i} className={`flex ${m.role === 'customer' ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[80%] p-4 rounded-3xl text-sm font-medium ${m.role === 'customer' ? 'bg-emerald-700 text-white rounded-tr-none' : 'bg-white border border-slate-200 text-slate-800 rounded-tl-none'}`}>
+                  <p>{m.text}</p>
+                  <span className={`text-[8px] mt-1 block uppercase font-bold ${m.role === 'customer' ? 'text-emerald-200' : 'text-slate-400'}`}>{m.time}</span>
                 </div>
-              ))}
-           </div>
-           <div className="mt-4 flex gap-2">
-             <input 
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 flex gap-2">
+            <input
               value={msg} onChange={e => setMsg(e.target.value)}
               onKeyPress={e => e.key === 'Enter' && send()}
               placeholder="Chat with catering owner..."
               className="flex-1 bg-white border border-slate-200 rounded-2xl px-5 py-3 text-sm outline-none focus:border-emerald-500 shadow-sm"
-             />
-             <button onClick={send} className="w-12 h-12 bg-emerald-700 text-white rounded-2xl grid place-items-center hover:bg-emerald-800 transition-all shadow-lg shadow-emerald-900/20">
-               <Send className="w-5 h-5" />
-             </button>
-           </div>
+            />
+            <button onClick={send} className="w-12 h-12 bg-emerald-700 text-white rounded-2xl grid place-items-center hover:bg-emerald-800 transition-all shadow-lg shadow-emerald-900/20">
+              <Send className="w-5 h-5" />
+            </button>
+          </div>
         </div>
       </div>
 
       <div className="bg-white border border-slate-200 rounded-[2rem] p-8 shadow-sm overflow-y-auto custom-scrollbar">
-         <h3 className="text-sm font-black uppercase tracking-[0.2em] text-slate-400 mb-8 flex items-center gap-2">
-           <ClipboardList className="w-4 h-4" />
-           Catering Receipt (Blueprint)
-         </h3>
-         <div className="space-y-8">
-            <section className="space-y-3">
-              <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Event Brief</p>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                 <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
-                    <p className="text-[8px] text-slate-400 uppercase font-black mb-1">Guests</p>
-                    <p className="font-bold text-slate-800">{event.guest_count || '150'}</p>
-                 </div>
-                 <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
-                    <p className="text-[8px] text-slate-400 uppercase font-black mb-1">Cuisine</p>
-                    <p className="font-bold text-slate-800">{event.cuisine_preference || 'Filipino'}</p>
-                 </div>
+        <h3 className="text-sm font-black uppercase tracking-[0.2em] text-slate-400 mb-8 flex items-center gap-2">
+          <ClipboardList className="w-4 h-4" />
+          Catering Receipt (Blueprint)
+        </h3>
+        <div className="space-y-8">
+          <section className="space-y-3">
+            <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Event Brief</p>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                <p className="text-[8px] text-slate-400 uppercase font-black mb-1">Guests</p>
+                <p className="font-bold text-slate-800">{event.guest_count || '150'}</p>
               </div>
-            </section>
-
-            <section className="space-y-3">
-              <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Menu Selection</p>
-              <div className="space-y-2">
-                 {blueprint.find(s => s.agent.includes('Head Chef'))?.data.menu?.map((m: any, i: number) => (
-                   <div key={i} className="flex justify-between items-center text-xs p-3 border-b border-slate-50">
-                      <span className="font-bold text-slate-800">{m.dish}</span>
-                      <span className="text-[10px] text-slate-400">{m.portion_per_guest}</span>
-                   </div>
-                 ))}
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                <p className="text-[8px] text-slate-400 uppercase font-black mb-1">Cuisine</p>
+                <p className="font-bold text-slate-800">{event.cuisine_preference || 'Filipino'}</p>
               </div>
-            </section>
-
-            <section className="space-y-3">
-              <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Operational Timeline</p>
-              <div className="space-y-2 border-l-2 border-emerald-100 pl-4 ml-2">
-                 {blueprint.find(s => s.agent.includes('Logistics'))?.data.timeline?.slice(0, 5).map((t: any, i: number) => (
-                   <div key={i} className="relative py-1">
-                      <div className="absolute -left-[21px] top-2.5 w-2 h-2 rounded-full bg-emerald-500 border-2 border-white shadow-sm" />
-                      <p className="text-[10px] font-black text-emerald-800 font-mono">{t.time}</p>
-                      <p className="text-[11px] font-medium text-slate-600">{t.activity}</p>
-                   </div>
-                 ))}
-              </div>
-            </section>
-         </div>
-      </div>
-    </motion.div>
-  );
-}
-
-function DriverView({ event, logistics }: { event: any, logistics: any }) {
-  const [driverMsg, setDriverMsg] = useState('');
-  const [chat, setChat] = useState<any[]>([
-    { sender: 'driver', text: "Just arrived at the kitchen. Loading the packages now.", time: '10:05 AM' }
-  ]);
-
-  const send = () => {
-    if (!driverMsg.trim()) return;
-    setChat([...chat, { sender: 'staff', text: driverMsg, time: '10:12 AM' }]);
-    setDriverMsg('');
-  };
-
-  return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-[calc(100vh-140px)] grid grid-cols-1 lg:grid-cols-3 gap-6 p-6">
-      <div className="lg:col-span-2 flex flex-col gap-6">
-         <div className="bg-white border border-slate-200 rounded-[2rem] p-6 shadow-sm flex-1 relative overflow-hidden">
-            <div className="absolute inset-0 bg-[#f0f9f1] cyber-grid opacity-30" />
-            <div className="relative h-full flex flex-col">
-               <div className="flex items-center justify-between mb-4 flex-shrink-0">
-                  <div>
-                    <h2 className="text-xl font-black text-slate-900 flex items-center gap-2">
-                      <Truck className="w-5 h-5 text-emerald-600" />
-                      Live Logistics Route
-                    </h2>
-                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">Plate to Venue Delivery</p>
-                  </div>
-                  <div className="bg-emerald-700 text-white px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-[0.2em] shadow-lg shadow-emerald-900/20">
-                    IN TRANSIT
-                  </div>
-               </div>
-               <div className="flex-1 bg-slate-200 rounded-3xl relative overflow-hidden border border-slate-300">
-                  <img src="https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?auto=format&fit=crop&q=80&w=1200" className="w-full h-full object-cover opacity-40" alt="Map mockup" />
-                  <div className="absolute inset-0 bg-emerald-900/10" />
-                  <div className="absolute top-[30%] left-[20%] w-32 h-32 border-4 border-dashed border-emerald-500/50 rounded-full animate-pulse" />
-                  <motion.div 
-                    animate={{ x: [0, 100, 200, 300], y: [0, -20, 10, 0] }}
-                    transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
-                    className="absolute top-1/2 left-[10%] w-10 h-10 bg-white rounded-2xl shadow-2xl grid place-items-center border-2 border-emerald-600 z-10"
-                  >
-                    <Truck className="w-6 h-6 text-emerald-700" />
-                  </motion.div>
-                  <div className="absolute top-[40%] right-[10%] w-12 h-12 bg-emerald-700 rounded-2xl shadow-2xl grid place-items-center text-white z-10 border-2 border-white">
-                    <MapPin className="w-6 h-6" />
-                  </div>
-               </div>
             </div>
-         </div>
-      </div>
+          </section>
 
-      <div className="flex flex-col gap-6 overflow-hidden">
-        <div className="bg-white border border-slate-200 rounded-[2rem] p-6 shadow-sm flex flex-col flex-1 overflow-hidden">
-           <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-6 flex items-center gap-2">
-             <Users className="w-4 h-4" />
-             Chat with Driver
-           </h3>
-           <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
-              {chat.map((m, i) => (
-                <div key={i} className={`flex ${m.sender === 'staff' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[85%] p-4 rounded-3xl text-xs font-bold ${m.sender === 'staff' ? 'bg-emerald-700 text-white rounded-tr-none' : 'bg-slate-100 text-slate-800 rounded-tl-none'}`}>
-                    <p>{m.text}</p>
-                    <span className="text-[7px] mt-1 block opacity-60 uppercase">{m.time}</span>
-                  </div>
+          <section className="space-y-3">
+            <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Menu Selection</p>
+            <div className="space-y-2">
+              {blueprint.find(s => s.agent.includes('Head Chef'))?.data.menu?.map((m: any, i: number) => (
+                <div key={i} className="flex justify-between items-center text-xs p-3 border-b border-slate-50">
+                  <span className="font-bold text-slate-800">{m.dish}</span>
+                  <span className="text-[10px] text-slate-400">{m.portion_per_guest}</span>
                 </div>
               ))}
-           </div>
-           <div className="mt-4 flex gap-2">
-             <input 
-              value={driverMsg} onChange={e => setDriverMsg(e.target.value)}
-              onKeyPress={e => e.key === 'Enter' && send()}
-              placeholder="Send message to driver..."
-              className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs outline-none focus:border-emerald-500 font-bold"
-             />
-             <button onClick={send} className="w-11 h-11 bg-emerald-700 text-white rounded-xl grid place-items-center hover:bg-emerald-800 transition-all shadow-lg">
-               <Send className="w-4 h-4" />
-             </button>
-           </div>
-        </div>
+            </div>
+          </section>
 
-        <div className="bg-slate-900 rounded-[2rem] p-6 shadow-sm text-white overflow-y-auto custom-scrollbar h-64">
-           <h3 className="text-[9px] font-black uppercase tracking-[0.25em] text-emerald-400 mb-6">Delivery Checklist</h3>
-           <div className="space-y-4">
-              {logistics?.timeline?.map((t: any, i: number) => (
-                <div key={i} className="flex gap-4 items-start group">
-                   <div className="w-5 h-5 rounded-lg border-2 border-emerald-500/30 group-hover:bg-emerald-500/20 transition-all flex-shrink-0 mt-0.5" />
-                   <div>
-                      <p className="text-[10px] font-black text-emerald-400 font-mono mb-1">{t.time}</p>
-                      <p className="text-xs font-medium text-slate-300 leading-relaxed">{t.activity}</p>
-                   </div>
+          <section className="space-y-3">
+            <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Operational Timeline</p>
+            <div className="space-y-2 border-l-2 border-emerald-100 pl-4 ml-2">
+              {blueprint.find(s => s.agent.includes('Logistics'))?.data.timeline?.slice(0, 5).map((t: any, i: number) => (
+                <div key={i} className="relative py-1">
+                  <div className="absolute -left-[21px] top-2.5 w-2 h-2 rounded-full bg-emerald-500 border-2 border-white shadow-sm" />
+                  <p className="text-[10px] font-black text-emerald-800 font-mono">{t.time}</p>
+                  <p className="text-[11px] font-medium text-slate-600">{t.activity}</p>
                 </div>
               ))}
-           </div>
+            </div>
+          </section>
         </div>
       </div>
     </motion.div>
   );
 }
+

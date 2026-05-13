@@ -16,7 +16,7 @@ import {
 
 export function AdminDashboard({ inventory, pricing }: { inventory: any[], pricing: any }) {
   if (!inventory || inventory.length === 0) return (
-    <div className="p-20 text-center text-slate-400 font-bold uppercase tracking-widest">
+    <div className="p-20 text-center text-slate-600 font-black uppercase tracking-[0.3em] opacity-40">
       Waiting for procurement data...
     </div>
   );
@@ -26,80 +26,55 @@ export function AdminDashboard({ inventory, pricing }: { inventory: any[], prici
     cost: ing.estimated_cost_php || 0
   }));
 
-  const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
+  const COLORS = ['#f2b84b', '#f59e0b', '#fbbf24', '#d97706', '#b45309', '#92400e'];
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6 p-6">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-black text-slate-900 flex items-center gap-2">
-          <BarChart3 className="w-5 h-5 text-emerald-600" />
-          Owner Cost Controls
-        </h2>
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8 p-6 max-w-6xl mx-auto">
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-[var(--accent-color)]/10 border border-[var(--accent-color)]/20 flex items-center justify-center">
+            <BarChart3 className="w-6 h-6 text-[var(--accent-color)]" />
+          </div>
+          <div>
+            <h2 className="text-xl font-black text-[var(--text-color)] tracking-tight uppercase tracking-widest">
+              Owner Cost Controls
+            </h2>
+            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Real-time financial analytics and margin tracking</p>
+          </div>
+        </div>
         <div className="flex gap-2">
-          <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100">ON BUDGET</span>
-          <span className="text-[10px] font-black text-slate-500 bg-slate-50 px-3 py-1 rounded-full border border-slate-200">ADMIN</span>
+          <span className="text-[10px] font-black text-[var(--accent-color)] bg-[var(--accent-color)]/10 px-4 py-1.5 rounded-full border border-[var(--accent-color)]/20 uppercase tracking-widest">ON BUDGET</span>
+          <span className="text-[10px] font-black text-slate-500 bg-white/5 px-4 py-1.5 rounded-full border border-white/5 uppercase tracking-widest">ADMIN PORTAL</span>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm">
-          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Total Procurement Cost</p>
-          <p className="text-2xl font-black text-slate-900">PHP {inventory.reduce((acc, curr) => acc + (curr.estimated_cost_php || 0), 0).toLocaleString()}</p>
-        </div>
-        <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm">
-          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Projected Margin</p>
-          <p className="text-2xl font-black text-emerald-600">{pricing?.profit_margin || '32%'}</p>
-        </div>
-        <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm">
-          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Unit Cost/Guest</p>
-          <p className="text-2xl font-black text-slate-900">{pricing?.unit_cost || '--'}</p>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
-          <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 mb-6 flex items-center gap-2">
-            <PieIcon className="w-4 h-4" />
-            Budget-per-Ingredient Breakdown
-          </h3>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={chartData}
-                  innerRadius={60}
-                  outerRadius={80}
-                  paddingAngle={5}
-                  dataKey="cost"
-                >
-                  {chartData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip />
-                <Legend />
-              </PieChart>
-            </ResponsiveContainer>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {[
+          ['Total Procurement Cost', `PHP ${inventory.reduce((acc, curr) => acc + (curr.estimated_cost_php || 0), 0).toLocaleString()}`, 'bg-white/5'],
+          ['Projected Margin', pricing?.profit_margin || '32%', 'bg-[var(--accent-color)]/10 border-[var(--accent-color)]/20'],
+          ['Unit Cost/Guest', pricing?.unit_cost || '--', 'bg-white/5'],
+        ].map(([label, value, extraClass]) => (
+          <div key={label} className={`admin-card p-6 shadow-2xl ${extraClass}`}>
+            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 mb-2">{label}</p>
+            <p className={`text-3xl font-black ${label.includes('Margin') ? 'text-[var(--accent-color)]' : 'text-[var(--text-color)]'}`}>{value}</p>
           </div>
-        </div>
+        ))}
+      </div>
 
-        <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
-          <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 mb-6 flex items-center gap-2">
-            <BarChart3 className="w-4 h-4" />
-            Ingredient Price Estimation
-          </h3>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData}>
-                <XAxis dataKey="name" fontSize={8} tick={{ fontSize: 8 }} />
-                <YAxis fontSize={8} />
-                <Tooltip />
-                <Bar dataKey="cost" fill="#10b981" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+      <div className="admin-card p-8 bg-gradient-to-br from-[var(--card-bg)] to-[#1a2235]">
+        <h3 className="text-xs font-black uppercase tracking-[0.2em] text-slate-500 mb-8 flex items-center gap-3">
+          <PieIcon className="w-4 h-4 text-[var(--accent-color)]" />
+          Business Analytics Overview
+        </h3>
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <div className="w-20 h-20 bg-[var(--accent-color)]/10 rounded-full flex items-center justify-center mb-6 border border-[var(--accent-color)]/20">
+            <BarChart3 className="w-10 h-10 text-[var(--accent-color)]" />
           </div>
+          <p className="text-lg font-black text-[var(--text-color)] uppercase tracking-widest">Analytics Active</p>
+          <p className="text-xs text-slate-500 mt-2 max-w-sm leading-relaxed font-medium uppercase tracking-wider">High-level cost controls and margin tracking are enabled for your catering operations. Detailed reports are being generated.</p>
         </div>
       </div>
+
     </motion.div>
   );
 }

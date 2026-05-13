@@ -13,9 +13,18 @@ import {
 } from "./knowledgeBase";
 import { parseBudgetDetails } from "./budget";
 
-// @ts-ignore
-export const apiKey = (typeof process !== 'undefined' ? process.env.GEMINI_API_KEY : import.meta.env.VITE_GEMINI_API_KEY) || "";
+export const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
 export const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
+
+export function parseAIJSON(text: string | null | undefined): any {
+  if (!text) return {};
+  try {
+    return JSON.parse(text.replace(/```(?:json)?/gi, '').trim());
+  } catch (e) {
+    console.error("Failed to parse JSON:", text);
+    return {};
+  }
+}
 
 const AGENT_ORDER = [
   "ConciergeAgent",
@@ -45,11 +54,34 @@ const AGENT_DISPLAY_NAMES: Record<string, string> = {
   MonitoringAgent: "System Monitoring & QA",
 };
 
-export async function predictWeather(location: string, date: string) {
-  // @ts-ignore
-  const openWeatherKey = (typeof process !== 'undefined' ? process.env.OPENWEATHERMAP_API_KEY : import.meta.env.VITE_OPENWEATHERMAP_API_KEY) || "";
+// ─── Weather pre-fetch cache (keyed by "location::date") ───────────────────
+export const weatherPrefetchCache: Map<string, Promise<any>> = new Map();
 
-  if (openWeatherKey && location) {
+/**
+ * Pre-warm the weather cache as soon as location is known.
+ * Call this fire-and-forget; predictWeather() will use the cached promise.
+ */
+export function prefetchWeather(location: string, date: string, language = "english") {
+  const key = `${location.toLowerCase()}::${date}`;
+  if (!weatherPrefetchCache.has(key)) {
+    weatherPrefetchCache.set(key, predictWeather(location, date, language));
+  }
+}
+
+export async function predictWeather(location: string, date: string, language: string = "english") {
+  // Return cached result if already in-flight or resolved
+  const key = `${location.toLowerCase()}::${date}`;
+  if (weatherPrefetchCache.has(key)) {
+    // Re-use same promise (may already be resolved)
+    return weatherPrefetchCache.get(key)!;
+  }
+
+  const openWeatherKey = import.meta.env.VITE_OPENWEATHERMAP_API_KEY || "";
+  const dateObj = new Date(date);
+  const isFarFuture = isNaN(dateObj.getTime()) || (dateObj.getTime() - Date.now() > 5 * 24 * 60 * 60 * 1000);
+
+  // ── Real-time: only within the 5-day OWM forecast window ──────────────────
+  if (!isFarFuture && openWeatherKey && location) {
     try {
       const geoUrl = `https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(location)}&limit=1&appid=${openWeatherKey}`;
       const geoResponse = await fetch(geoUrl);
@@ -59,67 +91,49 @@ export async function predictWeather(location: string, date: string) {
         const forecastUrl = `https://api.openweathermap.org/data/2.5/forecast?lat=${first.lat}&lon=${first.lon}&appid=${openWeatherKey}&units=metric`;
         const forecastResponse = await fetch(forecastUrl);
         const forecast = await forecastResponse.json();
-        
         const list = forecast?.list || [];
         const rainy = list.some((item: any) => /rain|storm|drizzle/i.test(item.weather?.[0]?.main || ""));
         const avgTemp = list.length > 0 ? Math.round(list.reduce((sum: number, item: any) => sum + item.main.temp, 0) / list.length) : 28;
-        
-        return {
-          source: "OpenWeatherMap",
-          summary: `${rainy ? 'Expect rain or showers' : 'Expect mostly clear skies'} with an average temperature of ${avgTemp}°C near ${location} for the event period.`,
-          risk_level: rainy ? "high" : "low",
-          recommendations: rainy
-            ? ["Move guest dining under cover or reserve tenting.", "Add waterproof loading covers and a 30 minute dispatch buffer."]
-            : ["Keep standard covered loading and hydration stations in the event plan."],
-        };
+        const condition = list[0]?.weather?.[0]?.description || (rainy ? "Rainy" : "Sunny");
+
+        const aiSummary = await ai.models.generateContent({
+          model: "gemini-2.0-flash-lite",
+          contents: `Weather for ${location} on ${date}: ${rainy ? 'Rainy' : 'Sunny/Clear'}, ${condition}, ${avgTemp}°C. Language: ${language}. In ≤3 sentences: state SUNNY/RAINY/CLOUDY/MODERATE explicitly and give 2 catering tips. Concierge tone.`
+        });
+        const summaryText = aiSummary.text?.trim();
+        if (summaryText) {
+          return { source: "OpenWeatherMap + AI", summary: summaryText, risk_level: rainy ? "high" : "low", recommendations: [] };
+        }
       }
     } catch (error) {
-      console.warn("OpenWeatherMap unavailable, falling back:", error);
+      console.warn("OpenWeatherMap unavailable, falling back to seasonal:", error);
     }
   }
 
-  try {
-    if (!apiKey) throw new Error("No Gemini API key configured");
-    const weatherPrompt = `You are a professional weather consultant. Predict the specific weather for ${location} on ${date}. 
-    Provide a detailed summary including:
-    1. Likely sky conditions (Sunny, Partly Cloudy, Overcast, etc.)
-    2. Expected temperature range in Celsius.
-    3. Precipitation risk (Low/Medium/High).
-    4. Any specific seasonal risks for this location (e.g., monsoon season, humidity).
-    
-    Return the response in JSON format.`;
-    
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: weatherPrompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            summary: { type: Type.STRING },
-            risk_level: { type: Type.STRING },
-            recommendations: { type: Type.ARRAY, items: { type: Type.STRING } },
-          },
-          required: ["summary", "risk_level", "recommendations"],
-        },
-      },
-    });
-
-    return JSON.parse(response.text || "{}");
-  } catch (error) {
-    const highRisk = /july|august|september|rain|outdoor|manila|taguig|bgc/i.test(`${location} ${date}`);
-    return {
-      source: "local_climatology_fallback",
-      summary: highRisk
-        ? `Seasonal rain risk is elevated for ${location || "the venue"} around ${date || "the event date"} (Monsoon season). Humidity will likely be high.`
-        : `Typical conditions for ${location || "the venue"} are generally stable, but keep an eye on local updates closer to ${date}.`,
-      risk_level: highRisk ? "high" : "medium",
-      recommendations: highRisk
-        ? ["Reserve tenting or an indoor Plan B.", "Use covered loading, waterproof packaging, and a 30 minute traffic/weather buffer."]
-        : ["Keep a covered loading zone and hydration station available."],
-    };
+  // ── Seasonal / far-future fallback ────────────────────────────────────────
+  if (ai) {
+    try {
+      const aiResponse = await ai.models.generateContent({
+        model: "gemini-2.0-flash-lite",
+        contents: `Weather analyst. Predict weather for ${location} on ${date}. Language: ${language}. In ≤3 sentences: state season, declare condition as SUNNY/RAINY/CLOUDY/MODERATE, give 2 catering tips. Be decisive.`
+      });
+      return {
+        source: "AI Seasonal Intelligence",
+        summary: aiResponse.text?.trim() || "Weather details to be confirmed closer to date.",
+        risk_level: "low",
+        recommendations: [],
+      };
+    } catch (err) {
+      console.error("AI Weather Prediction failed:", err);
+    }
   }
+
+  return {
+    source: "Static Fallback",
+    summary: `Typical conditions for ${location} around ${date}. Keep a covered loading zone ready.`,
+    risk_level: "low",
+    recommendations: ["Keep a covered loading zone and hydration station available."],
+  };
 }
 
 export async function orchestrateCatering(input: string, onStep: (step: any) => void, useFoundry = false) {
@@ -141,38 +155,8 @@ export async function orchestrateCatering(input: string, onStep: (step: any) => 
     }
   }
 
-  const rag = await retrieveKnowledgeWithAzure(input);
-
-  onStep({
-    agent: "Knowledge Base & RAG Agent",
-    data: {
-      mode: rag.mode,
-      retrieved_playbooks: rag.retrieved_playbooks,
-      supplier_sources: rag.supplier_sources,
-      retrieval_query: input,
-      hybrid_status: useFoundry ? "Foundry + Gemini Hybrid Active" : "Gemini Native Mode",
-    },
-  });
-
   const getAgentData = (key: string, geminiFallback: any) => {
     return (blueprint[key] || blueprint[key.replace('_agent', '')] || geminiFallback);
-  };
-  const sharedMemory: any = {
-    source_input: input,
-    architecture: "Microsoft Agent Framework (Hybrid Orchestration)",
-    workflow_phases: ["User Input & Intent", "Menu Creation", "Cost Optimization", "Logistics Planning"],
-    agent_order: AGENT_ORDER,
-    handoffs: [],
-    audit_trail: [],
-    assumptions: [],
-    rag,
-    supplier_context: rag.supplier_sources?.length ? rag.supplier_sources : buildSupplierContext(),
-    db_sync_status: "PostgreSQL/Redis Persistence Active",
-    resource_pool: {
-      staff_available: 45,
-      vehicles: 12,
-      equipment_sets: 8,
-    },
   };
 
   const emitStep = (from: string, agentKey: string, payload: any) => {
@@ -198,15 +182,46 @@ export async function orchestrateCatering(input: string, onStep: (step: any) => 
     onStep({ agent: to, data: payload });
   };
 
-  // Phase 1: User Input & Intent
+  // Phase 1: Sequential Data Collection (Concierge first, then Shared Memory)
+  const rag = await retrieveKnowledgeWithAzure(input);
   const conciergeData = await runConciergeAgent(input);
-  
+
+  const sharedMemory: any = {
+    source_input: input,
+    architecture: "Microsoft Agent Framework (Hybrid Orchestration)",
+    workflow_phases: ["User Input & Intent", "Menu Creation", "Cost Optimization", "Logistics Planning"],
+    agent_order: AGENT_ORDER,
+    handoffs: [],
+    audit_trail: [],
+    assumptions: [],
+    rag,
+    supplier_context: rag.supplier_sources?.length ? rag.supplier_sources : buildSupplierContext(),
+    db_sync_status: "PostgreSQL/Redis Persistence Active",
+    resource_pool: {
+      staff_available: 45,
+      vehicles: 12,
+      equipment_sets: 8,
+    },
+  };
+
+  onStep({
+    agent: "Knowledge Base & RAG Agent",
+    data: {
+      mode: rag.mode,
+      retrieved_playbooks: rag.retrieved_playbooks,
+      supplier_sources: rag.supplier_sources,
+      retrieval_query: input,
+      hybrid_status: useFoundry ? "Foundry + Gemini Hybrid Active" : "Gemini Native Mode",
+    },
+  });
+
   if (useFoundry && blueprint.customer) {
     conciergeData.guests = blueprint.customer.guests || blueprint.customer.guest_count || conciergeData.guests;
     conciergeData.location = blueprint.customer.location || blueprint.customer.event_location || conciergeData.location;
     conciergeData.date = blueprint.customer.date || blueprint.customer.event_date || conciergeData.date;
     conciergeData.budget = blueprint.customer.budget || conciergeData.budget;
   }
+  sharedMemory.rag = rag;
   sharedMemory.customer = conciergeData;
   emitStep("System Orchestrator", "ConciergeAgent", conciergeData);
 
@@ -227,16 +242,29 @@ export async function orchestrateCatering(input: string, onStep: (step: any) => 
     };
   }
 
-  // Phase 2: Menu Creation
-  const dietaryData = getAgentData("dietary", await runDietarySpecialist(input, conciergeData));
+  // Phase 2: Parallelize Specialist Insights
+  // Weather and Sustainability don't depend on Dietary/Menu
+  const [dietaryData, weatherData, sustainabilityData] = await Promise.all([
+    getAgentData("dietary", await runDietarySpecialist(input, conciergeData)),
+    getAgentData("weather", await predictWeather(conciergeData.location, conciergeData.date)),
+    runSustainabilityAgent(input, sharedMemory)
+  ]);
+
   sharedMemory.dietary = dietaryData;
   emitStep("ConciergeAgent", "DietarySpecialist", dietaryData);
+  
+  sharedMemory.weather = weatherData;
+  emitStep("ConciergeAgent", "WeatherIntelligence", weatherData);
 
+  sharedMemory.sustainability = sustainabilityData;
+  emitStep("ConciergeAgent", "SustainabilityAgent", sustainabilityData);
+
+  // Phase 3: Sequential Menu -> Inventory -> Suppliers (Dependencies)
   const headChefData = getAgentData("menu", await runHeadChefAgent(input, conciergeData, dietaryData, sharedMemory.rag));
   sharedMemory.menu = headChefData;
   emitStep("DietarySpecialist", "HeadChefAgent", headChefData);
 
-  const inventoryData = getAgentData("inventory", runInventorySpecialist(conciergeData, headChefData));
+  const inventoryData = getAgentData("inventory", await runInventorySpecialist(conciergeData, headChefData));
   sharedMemory.inventory = inventoryData;
   emitStep("HeadChefAgent", "InventorySpecialist", inventoryData);
 
@@ -244,28 +272,22 @@ export async function orchestrateCatering(input: string, onStep: (step: any) => 
   sharedMemory.suppliers = supplierData;
   emitStep("InventorySpecialist", "SupplierSpecialist", supplierData);
 
-  const weatherData = getAgentData("weather", await predictWeather(conciergeData.location, conciergeData.date));
-  sharedMemory.weather = weatherData;
-  emitStep("SupplierSpecialist", "WeatherIntelligence", weatherData);
-
-  // Conditional: Contingency Agent (Winning Feature: Real-time adaptation)
+  // Conditional: Contingency Agent
   if (weatherData.risk_level === 'high' || sharedMemory.customer.guests > 500) {
     const contingencyData = await runContingencyAgent(input, sharedMemory);
     sharedMemory.contingency = contingencyData;
     emitStep("WeatherIntelligence", "ContingencyAgent", contingencyData);
   }
 
-  const sustainabilityData = await runSustainabilityAgent(input, sharedMemory);
-  sharedMemory.sustainability = sustainabilityData;
-  emitStep("ContingencyAgent", "SustainabilityAgent", sustainabilityData);
+  // Phase 4: Final Operational Planning (Parallelize Pricing and Logistics)
+  const [accountantData, logisticsLeadData] = await Promise.all([
+    getAgentData("pricing", runAccountantAgent(conciergeData, headChefData, inventoryData, supplierData, {})),
+    getAgentData("logistics", runLogisticsLeadAgent(conciergeData, inventoryData, supplierData, weatherData))
+  ]);
 
-  // Phase 3: Cost Optimization
-  const accountantData = getAgentData("pricing", runAccountantAgent(conciergeData, headChefData, inventoryData, supplierData, {}));
   sharedMemory.pricing = accountantData;
   emitStep("SustainabilityAgent", "AccountantAgent", accountantData);
 
-  // Phase 4: Logistics Planning
-  const logisticsLeadData = getAgentData("logistics", runLogisticsLeadAgent(conciergeData, inventoryData, supplierData, weatherData));
   sharedMemory.logistics = logisticsLeadData;
   emitStep("AccountantAgent", "LogisticsLeadAgent", logisticsLeadData);
 
@@ -315,37 +337,22 @@ export async function orchestrateCatering(input: string, onStep: (step: any) => 
   };
 }
 
-export async function validateUserResponse(question: string, answer: string, preferredLanguage: string = "english") {
+export async function validateUserResponse(questionKey: string, questionText: string, answer: string, preferredLanguage: string = "english") {
   const normalizedAnswer = String(answer || "").trim();
-  const deterministicValidation = validateAnswerDeterministically(question, normalizedAnswer, preferredLanguage);
-  if (!deterministicValidation.valid) return deterministicValidation;
+  const deterministicValidation = validateAnswerDeterministically(questionKey, questionText, normalizedAnswer, preferredLanguage);
+  // If deterministic check is confident (either pass or fail), skip the AI call entirely
+  if (!deterministicValidation.valid || deterministicValidation.confident) return deterministicValidation;
 
   try {
     if (!apiKey) return deterministicValidation;
-
     const lang = (preferredLanguage && preferredLanguage.length > 2) ? preferredLanguage : "english";
-
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `You are a strict Catering Planning Assistant. 
-      Current Question: "${question}"
-      User's Answer: "${normalizedAnswer}"
-      
-      CRITICAL EVALUATION:
-      1. Is this answer meaningful? (Not gibberish like "asdf", "jwdjhdj", "kkkkk", "lksjdf")
-      2. Does it attempt to answer the question or ask for clarification?
-      
-      Special case for Language: If the question is "what language do you prefer?", the answer must be a name of a language (e.g. English, Tagalog, etc.).
-      
-      If the answer is a keyboard mash, random letters, or completely meaningless:
-      Respond with: "INVALID: [Ask politely for a real answer in ${lang}]"
-      
-      If the answer is valid:
-      Respond with: "VALID"`,
+      model: "gemini-2.0-flash-lite",
+      contents: `Q: "${questionText}" A: "${normalizedAnswer}". Is A gibberish/meaningless? Reply only: VALID or INVALID: <short message in ${lang}>`,
     });
     const text = response.text?.trim() || "VALID";
-    if (text.includes("INVALID:")) {
-      return { valid: false, message: text.split("INVALID:")[1].trim() };
+    if (text.startsWith("INVALID:")) {
+      return { valid: false, message: text.replace("INVALID:", "").trim() };
     }
     return { valid: true };
   } catch (err) {
@@ -354,54 +361,84 @@ export async function validateUserResponse(question: string, answer: string, pre
   }
 }
 
-export async function generateConversationalPrompt(
+
+// Fast-path defaults returned without an AI call
+const FAST_PASS = { intent: { type: 'ANSWER' }, validation: { valid: true }, reaction: { text: "" } };
+const FAST_FAIL = (msg: string) => ({ intent: { type: 'ANSWER' }, validation: { valid: false, message: msg }, reaction: { text: "" } });
+
+export async function processIntake(
+  input: string,
   currentQuestionKey: string,
   currentQuestionText: string,
-  userAnswer: string,
-  nextQuestionText: string,
-  preferredLanguage: string = "english",
+  language: string = "english"
 ) {
-  if (!apiKey) {
-    return {
-      reply: `Thanks, noted. ${nextQuestionText}`,
-      source: "deterministic_fallback",
-    };
+  const trimmed = input.trim();
+
+  // ── Deterministic fast-path (no AI call needed) ─────────────────────────
+  const deterministicResult = validateAnswerDeterministically(currentQuestionKey, currentQuestionText, trimmed, language);
+  if (!deterministicResult.valid) {
+    return FAST_FAIL(deterministicResult.message || "Please provide a more specific answer.");
   }
 
+  // If deterministic is confident AND it's a clearly simple/structured answer, skip AI entirely
+  if (deterministicResult.confident) {
+    // Still detect language change and DONE without AI
+    if (/\b(english|tagalog|filipino|spanish|japanese|chinese|mandarin)\b/i.test(trimmed)) {
+      return { intent: { type: 'LANGUAGE_CHANGE', value: trimmed }, validation: { valid: true }, reaction: { text: "" } };
+    }
+    if (/^(done|tapos|wala na|that'?s all|finish|none|wala)$/i.test(trimmed)) {
+      return { intent: { type: 'DONE', value: trimmed }, validation: { valid: true }, reaction: { text: "" } };
+    }
+    return FAST_PASS;
+  }
+
+  if (!apiKey) return FAST_PASS;
+
+  // ── AI call — only for ambiguous / complex answers ──────────────────────
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `You are CaterFlow intake assistant.
-Language: ${preferredLanguage}
-Current field collected: ${currentQuestionKey}
-Current question asked: "${currentQuestionText}"
-User answer: "${userAnswer}"
-Next required field prompt: "${nextQuestionText}"
-
-  Write one short, warm, and professional conversational assistant reply in the same language:
-1) Acknowledge what the user said using natural variations (e.g., "Great choice," "Got that," "Perfect," "I've noted that down"). Avoid repeating "Thanks, noted" every time.
-2) If the field is 'event_date', enthusiastically mention that you'll check the weather for them.
-3) If the field is 'food_choice_mode', express excitement about building a custom menu together.
-4) Ask the next required field naturally as part of the flow.
-5) Keep it under 40 words.
-6) Do NOT invent data and do NOT skip the next required field.
-7) Make it feel like a helpful concierge, not a robot.`,
+      model: "gemini-2.0-flash-lite",
+      contents: `CaterFlow concierge. Q: "${currentQuestionText}" | User: "${trimmed}" | Lang: ${language}.
+Detect intent (ANSWER/LANGUAGE_CHANGE/GENERAL_REQUEST/DONE), validate (not gibberish), give ≤8-word reaction.
+JSON: {"intent":{"type":"ANSWER","value":""},"validation":{"valid":true,"message":""},"reaction":{"text":""}}`,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            intent: { type: Type.OBJECT, properties: { type: { type: Type.STRING }, value: { type: Type.STRING } }, required: ["type"] },
+            validation: { type: Type.OBJECT, properties: { valid: { type: Type.BOOLEAN }, message: { type: Type.STRING } }, required: ["valid"] },
+            reaction: { type: Type.OBJECT, properties: { text: { type: Type.STRING } }, required: ["text"] }
+          },
+          required: ["intent", "validation", "reaction"]
+        }
+      }
     });
+    return parseAIJSON(response.text) || FAST_PASS;
+  } catch (err) {
+    console.error("Intake processing error:", err);
+    return FAST_PASS;
+  }
+}
 
-    const text = (response.text || "").trim();
-    if (!text) {
-      return {
-        reply: `Thanks, noted. ${nextQuestionText}`,
-        source: "deterministic_fallback",
-      };
-    }
 
-    return { reply: text, source: "gemini" };
+export async function generateConversationalPrompt(
+  questionKey: string,
+  questionText: string,
+  userAnswer: string,
+  nextQuestion: string,
+  language: string = "english"
+): Promise<{ reply: string }> {
+  if (!apiKey) return { reply: nextQuestion };
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.0-flash-lite",
+      contents: `CaterFlow concierge. Answered "${questionText}": "${userAnswer}". Language: ${language}. Write ≤8-word warm acknowledgement, then on new line: "${nextQuestion}". No JSON, plain text only.`
+    });
+    const text = response.text?.trim();
+    return { reply: text || nextQuestion };
   } catch {
-    return {
-      reply: `Thanks, noted. ${nextQuestionText}`,
-      source: "deterministic_fallback",
-    };
+    return { reply: nextQuestion };
   }
 }
 
@@ -409,7 +446,7 @@ async function runConciergeAgent(input: string) {
   try {
     if (!apiKey) throw new Error("No Gemini API key configured");
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-2.0-flash-lite",
       contents: `You are the CaterFlow Concierge Agent (Phase 1). 
       Analyze this input: "${input}". 
       
@@ -417,7 +454,7 @@ async function runConciergeAgent(input: string) {
       
       CRITICAL RULE 2: Respond and extract information in the SAME LANGUAGE as the user's input.
       
-      Extract: event_type, guests, budget, location, date, dietary_needs, cuisine_preference, service_style, special_requests.`,
+      Extract ALL fields mentioned: event_type, guests, budget, location, date, dietary_needs, cuisine_preference, service_style, special_requests, food_choice_mode, specific_food_items, menu_composition, portion_control_mode.`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -432,12 +469,17 @@ async function runConciergeAgent(input: string) {
             cuisine_preference: { type: Type.STRING },
             service_style: { type: Type.STRING },
             special_requests: { type: Type.STRING },
+            food_choice_mode: { type: Type.STRING },
+            specific_food_items: { type: Type.STRING },
+            menu_composition: { type: Type.STRING },
+            food_style_preference: { type: Type.STRING },
+            portion_control_mode: { type: Type.STRING },
           },
           required: ["event_type", "guests", "location", "date"],
         },
       },
     });
-    return enrichCustomer(JSON.parse(response.text || "{}"), input);
+    return enrichCustomer(parseAIJSON(response.text), input);
   } catch {
     return enrichCustomer(parseCustomerFallback(input), input);
   }
@@ -447,7 +489,7 @@ async function runDietarySpecialist(input: string, customer: any) {
   try {
     if (!apiKey) throw new Error("No Gemini API key configured");
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-2.0-flash-lite",
       contents: `You are the Dietary Specialist. Identify allergens, labels, and safety controls for ${JSON.stringify(customer)} from "${input}".`,
       config: {
         responseMimeType: "application/json",
@@ -461,7 +503,7 @@ async function runDietarySpecialist(input: string, customer: any) {
         },
       },
     });
-    const parsed = JSON.parse(response.text || "{}");
+    const parsed = parseAIJSON(response.text);
     return {
       allergens_to_avoid: parsed.allergens_to_avoid || extractAllergens(input),
       recommended_labels: parsed.recommended_labels || dietaryLabels(input),
@@ -485,24 +527,51 @@ async function runHeadChefAgent(input: string, customer: any, dietary: any, rag:
     image_url: imageForIndex(index),
   }));
 
+  const budgetMeta = parseBudgetDetails(customer.budget || "");
   const budgetValue = parseBudget(customer.budget);
   const budgetPerGuest = budgetValue ? Math.round(budgetValue / (customer.guests || 100)) : 500;
+
+  // Parse menu composition (e.g. '4 ulam, 2 desserts, 2 drinks' or 'system decide')
+  const composition = (() => {
+    const norm = (customer.menu_composition || "").toLowerCase();
+    const autoDecide = /system|auto|bahala|decide|ikaw na|kayo na/i.test(norm);
+    const ulamMatch = norm.match(/(\d+)\s*(?:ulam|main|dish(?:es)?|viand|entree)/);
+    const dessertMatch = norm.match(/(\d+)\s*(?:dessert|pastry|cake|sweet|panghimagas)/);
+    const drinkMatch = norm.match(/(\d+)\s*(?:drink|beverage|juice|softdrink|soda|inumin)/);
+    return {
+      mainCount: ulamMatch ? Number(ulamMatch[1]) : (autoDecide ? 4 : 4),
+      dessertCount: dessertMatch ? Number(dessertMatch[1]) : (autoDecide ? 1 : 1),
+      drinkCount: drinkMatch ? Number(drinkMatch[1]) : (autoDecide ? 1 : 1),
+      autoDecide,
+    };
+  })();
+
+  const totalItemsTarget = composition.mainCount + composition.dessertCount + composition.drinkCount;
+  const compositionInstruction = composition.autoDecide
+    ? `Menu composition: AUTO-DECIDE. Build ${totalItemsTarget} items (${composition.mainCount} main, ${composition.dessertCount} dessert, ${composition.drinkCount} drink). Optimize for budget PHP ${budgetPerGuest}/guest.`
+    : `Menu composition: USER-SPECIFIED. You MUST build exactly: ${composition.mainCount} main dish${composition.mainCount !== 1 ? 'es' : ''}, ${composition.dessertCount} dessert${composition.dessertCount !== 1 ? 's' : ''}, ${composition.drinkCount} drink/beverage item${composition.drinkCount !== 1 ? 's' : ''}. Total: ${totalItemsTarget} items.`;
 
   try {
     if (!apiKey) throw new Error("No Gemini API key configured");
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-2.0-flash-lite",
       contents: `You are the CaterFlow Head Chef (Phase 2). Suggest a culturally adapted menu for ${JSON.stringify(customer)}. 
       Total Guests: ${customer.guests}.
-      Budget per guest: PHP ${budgetPerGuest}. 
+      Budget currency: ${budgetMeta.currency || 'PHP'}. Budget per guest: ${budgetMeta.currency || 'PHP'} ${budgetPerGuest}. 
       Food Choice Mode: ${customer.food_choice_mode || 'Suggest for me'}.
       Specific Food Items: ${customer.specific_food_items || 'None'}.
-      Avoid: ${JSON.stringify(dietary.allergens_to_avoid)}. 
+      Preferred Cooking Styles: ${customer.food_style_preference || 'No preference — use variety'}.
+      Cuisine Preference: ${customer.cuisine_preference || 'Chef\'s choice'}.
+      Portion Mode: ${customer.portion_control_mode || 'Auto-calculate'}.
+      Avoid allergens: ${JSON.stringify(dietary.allergens_to_avoid)}.
+      ${compositionInstruction}
 
       Use RAG: ${JSON.stringify(rag.retrieved_playbooks)}.
       
-      If Food Choice Mode is 'specific', carefully incorporate the user's mentioned dishes into a complete 6-dish set.
-      If Food Choice Mode is 'suggest', use your creativity to build a premium menu based on the event type and location.`,
+      CRITICAL: Each menu item MUST have: dish (string), description (string), portion_per_guest (string), tags (array — use 'dessert' tag for desserts, 'drinks' tag for beverages), allergens (array).
+      Tag dessert items with ['dessert']. Tag drinks/juices/beverages with ['drinks'].
+      If Food Choice Mode is 'specific', incorporate the user's mentioned dishes then fill in the required counts.
+      If Food Choice Mode is 'suggest', build a complete, premium menu matching the exact composition above.`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -511,16 +580,37 @@ async function runHeadChefAgent(input: string, customer: any, dietary: any, rag:
             dietary_compliance: { type: Type.STRING },
             cultural_adaptation: { type: Type.STRING },
             nutrition_summary: { type: Type.OBJECT },
-            menu: { type: Type.ARRAY, items: { type: Type.OBJECT } },
+            menu: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  dish: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  portion_per_guest: { type: Type.STRING },
+                  tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  allergens: { type: Type.ARRAY, items: { type: Type.STRING } },
+                },
+              },
+            },
           },
         },
       },
     });
-    const parsed = JSON.parse(response.text || "{}");
-    const menu = (parsed.menu?.length ? parsed.menu : fallbackItems).map((item: any, index: number) => ({
-      ...fallbackItems[index % fallbackItems.length],
-      ...item,
-      image_url: item.image_url || imageForIndex(index),
+    const parsed = parseAIJSON(response.text);
+    // AI items take full priority — only use fallback if AI returned nothing
+    const aiMenuItems = parsed.menu?.length ? parsed.menu : null;
+    const menu = (aiMenuItems || fallbackItems).map((item: any, index: number) => ({
+      // Start with clean item — do NOT spread fallback over AI data
+      dish: item.dish || `Dish ${index + 1}`,
+      description: item.description || "",
+      portion_per_guest: item.portion_per_guest || "1 serving",
+      tags: item.tags || [],
+      allergens: item.allergens || [],
+      dietary_compliance: item.dietary_compliance
+        || (item.allergens?.some((a: string) => dietary.allergens_to_avoid?.includes(a)) ? "Needs substitution" : "Compliant"),
+      image_url: item.image_url || getDishImage(item.dish || `dish-${index}`),
+      macros: item.macros,
     }));
     return {
       dietary_compliance: parsed.dietary_compliance || "All allergens and dietary labels are explicitly handled.",
@@ -538,57 +628,186 @@ async function runHeadChefAgent(input: string, customer: any, dietary: any, rag:
   }
 }
 
-function runInventorySpecialist(customer: any, menuData: any) {
+
+async function runInventorySpecialist(customer: any, menuData: any) {
   const guests = Number(customer.guests || 100);
   const menu = menuData.menu || [];
-  const procurement_list = [
-    { item: "Chicken / poultry", qty: `${Math.ceil(guests * 0.18)} kg`, source_category: "chicken" },
-    { item: "Rice and grains", qty: `${Math.ceil(guests * 0.12)} kg`, source_category: "dry goods" },
-    { item: "Fresh vegetables", qty: `${Math.ceil(guests * 0.16)} kg`, source_category: "vegetables" },
-    { item: "Beverages", qty: `${Math.ceil(guests * 0.7)} L`, source_category: "beverages" },
-    { item: "Serviceware", qty: `${Math.ceil(guests * 1.15)} sets`, source_category: "packaging" },
-    { item: "Warmers & Tents", qty: `${Math.max(6, Math.ceil(menu.length * 1.5))} sets`, source_category: "equipment" },
-  ];
-
-  return {
-    procurement_list,
-    procurement_weight_kg: procurement_list
-      .filter((item) => item.qty.includes("kg"))
-      .reduce((sum, item) => sum + Number.parseInt(item.qty), 0),
-    potential_shortages: [],
-    food_safety_notes: ["Cold-chain logs required.", "Allergen labels must be printed."],
-  };
+  
+  try {
+    if (!apiKey) throw new Error("No API key");
+    const response = await ai!.models.generateContent({
+      model: "gemini-2.0-flash-lite",
+      contents: `You are the CaterFlow Inventory Specialist. Calculate procurement for a ${customer.event_type || 'catering event'} with ${guests} guests. Budget: ${customer.budget || 'TBD'}. Menu: ${JSON.stringify(menu.map((m: any) => m.dish))}. Provide realistic quantities in kg, liters, or sets. Calculate total procurement weight in kg. Be specific to the menu items listed.`,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            procurement_list: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  item: { type: Type.STRING },
+                  qty: { type: Type.STRING },
+                  source_category: { type: Type.STRING }
+                }
+              }
+            },
+            potential_shortages: { type: Type.ARRAY, items: { type: Type.STRING } },
+            food_safety_notes: { type: Type.ARRAY, items: { type: Type.STRING } }
+          }
+        }
+      }
+    });
+    const parsed = parseAIJSON(response.text);
+    return {
+      procurement_list: parsed.procurement_list || [],
+      procurement_weight_kg: (parsed.procurement_list || [])
+        .filter((item: any) => String(item.qty).includes("kg"))
+        .reduce((sum: number, item: any) => sum + (Number.parseFloat(String(item.qty)) || 0), 0) || Math.ceil(guests * 0.46),
+      potential_shortages: parsed.potential_shortages || [],
+      food_safety_notes: parsed.food_safety_notes || ["Cold-chain logs required."],
+    };
+  } catch (e) {
+    const procurement_list = [
+      { item: "Chicken / poultry", qty: `${Math.ceil(guests * 0.18)} kg`, source_category: "chicken" },
+      { item: "Rice and grains", qty: `${Math.ceil(guests * 0.12)} kg`, source_category: "dry goods" },
+      { item: "Fresh vegetables", qty: `${Math.ceil(guests * 0.16)} kg`, source_category: "vegetables" },
+      { item: "Beverages", qty: `${Math.ceil(guests * 0.7)} L`, source_category: "beverages" },
+      { item: "Serviceware", qty: `${Math.ceil(guests * 1.15)} sets`, source_category: "packaging" },
+      { item: "Warmers & Tents", qty: `${Math.max(6, Math.ceil(menu.length * 1.5))} sets`, source_category: "equipment" },
+    ];
+    return {
+      procurement_list,
+      procurement_weight_kg: procurement_list.filter((i) => i.qty.includes("kg")).reduce((s, i) => s + Number.parseInt(i.qty), 0),
+      potential_shortages: [],
+      food_safety_notes: ["Cold-chain logs required."],
+    };
+  }
 }
 
 async function runSupplierSpecialist(customer: any, inventory: any, input: string) {
-  const ranked = (await scoreSuppliers(customer.location, input)).slice(0, 5);
-  const cateringShops = (await recommendCateringShops(customer.location, input, customer.budget, Number(customer.guests || 100))).slice(0, 5);
+  let registeredShopsStr = "";
+  try {
+    const res = await fetch("/api/shops");
+    if (res.ok) {
+      const shops = await res.json();
+      if (shops && shops.length > 0) {
+        registeredShopsStr = "Registered shops on platform: " + JSON.stringify(shops.map((s:any) => ({
+          name: s.name,
+          location: s.location,
+          specialties: s.specialties,
+          baseQuote: s.baseQuote,
+          contact: s.socials
+        })));
+      }
+    }
+  } catch (err) {
+    // Ignore fetch errors
+  }
 
-  return {
-    supplier_matches: ranked,
-    optimization_strategy: "Rank by reliability, distance, and Metro Manila traffic buffer.",
-    inventory_categories: inventory.procurement_list?.map((item: any) => item.source_category) || [],
-    catering_shop_recommendations: cateringShops,
-  };
+  try {
+    if (!apiKey) throw new Error("No API key");
+    const response = await ai!.models.generateContent({
+      model: "gemini-2.0-flash-lite",
+      contents: `You are the CaterFlow Supplier Specialist. Event: ${customer.event_type || 'catering event'} for ${customer.guests || 100} guests. Location: ${customer.location}. Budget: ${customer.budget}. Procurement items: ${inventory.procurement_list?.length || 5}. ${registeredShopsStr} Recommend 3 local catering shops that specifically fit this budget and location (PRIORITIZE registered shops if they fit, otherwise invent realistic Filipino catering shop names). Also recommend 3 raw material suppliers. Include match scores and brief location-based reasons. Make recommendations specific to ${customer.location} and a ${customer.budget} budget.`,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            supplier_matches: {
+              type: Type.ARRAY,
+              items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, categories: { type: Type.STRING }, score: { type: Type.STRING }, reason: { type: Type.STRING } } }
+            },
+            catering_shop_recommendations: {
+              type: Type.ARRAY,
+              items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, area: { type: Type.STRING }, match_score: { type: Type.STRING }, reason: { type: Type.STRING }, contact: { type: Type.STRING } } }
+            },
+            optimization_strategy: { type: Type.STRING }
+          }
+        }
+      }
+    });
+    const parsed = parseAIJSON(response.text);
+    return {
+      supplier_matches: parsed.supplier_matches || [],
+      optimization_strategy: parsed.optimization_strategy || "Ranked by distance and reliability.",
+      inventory_categories: inventory.procurement_list?.map((item: any) => item.source_category) || [],
+      catering_shop_recommendations: parsed.catering_shop_recommendations || [],
+    };
+  } catch (e) {
+    const ranked = (await scoreSuppliers(customer.location, input)).slice(0, 5);
+    const cateringShops = (await recommendCateringShops(customer.location, input, customer.budget, Number(customer.guests || 100))).slice(0, 5);
+    return {
+      supplier_matches: ranked,
+      optimization_strategy: "Rank by reliability, distance.",
+      inventory_categories: inventory.procurement_list?.map((item: any) => item.source_category) || [],
+      catering_shop_recommendations: cateringShops,
+    };
+  }
 }
 
-function runLogisticsLeadAgent(customer: any, inventory: any, suppliers: any, weather: any) {
+async function runLogisticsLeadAgent(customer: any, inventory: any, suppliers: any, weather: any) {
   const guests = Number(customer.guests || 100);
-  const weatherBuffer = weather.risk_level === "high" ? 30 : 15;
-  const staffCount = Math.max(6, Math.ceil(guests / 25));
+  const staffCount = Math.max(4, Math.ceil(guests / 25));
+  const budgetNote = customer.budget ? ` Budget: ${customer.budget}.` : '';
+  const eventType = customer.event_type || 'event';
+  const location = customer.location || 'the venue';
+
+  try {
+    if (!apiKey) throw new Error('No API key');
+    const response = await ai!.models.generateContent({
+      model: 'gemini-2.0-flash-lite',
+      contents: `You are the CaterFlow Logistics Lead. Plan operations for a ${eventType} with ${guests} guests at ${location}.${budgetNote} Weather risk: ${weather.risk_level}. Estimated procurement weight: ${inventory.procurement_weight_kg || Math.ceil(guests * 0.46)} kg. Create a realistic T-minus timeline (at least 4 steps), staffing needs (be specific about roles and counts based on ${guests} guests), equipment list, and transport plan. Make each response unique and tailored to this specific event.`,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            timeline: {
+              type: Type.ARRAY,
+              items: { type: Type.OBJECT, properties: { time: { type: Type.STRING }, activity: { type: Type.STRING } } }
+            },
+            staffing_needs: { type: Type.STRING },
+            equipment_list: { type: Type.ARRAY, items: { type: Type.STRING } },
+            transport_plan: { type: Type.STRING }
+          }
+        }
+      }
+    });
+    const parsed = parseAIJSON(response.text);
+    return {
+      timeline: parsed.timeline || [],
+      staffing_needs: parsed.staffing_needs || `${staffCount} staff for ${guests} guests at ${eventType}.`,
+      equipment_list: parsed.equipment_list || ['Chafing dishes'],
+      transport_plan: parsed.transport_plan || 'Two-vehicle dispatch.',
+    };
+  } catch (e) {
+    return {
+      timeline: [{ time: 'T-24h', activity: 'Procure goods.' }, { time: 'T-4h', activity: 'Load vehicles.' }],
+      staffing_needs: `${staffCount} staff for ${guests} guests: event lead, ${Math.max(2, Math.ceil(guests / 30))} servers, kitchen crew, and logistics coordinator.`,
+      equipment_list: ['Chafing dishes', 'Warmers', 'Cold boxes', 'Tent kit'],
+      transport_plan: `${Math.max(1, Math.ceil(guests / 100))}-vehicle dispatch for ${guests} guests.`,
+    };
+  }
+}
+
+function parseMenuComposition(text = "") {
+  const norm = text.toLowerCase();
+  const autoDecide = /system|auto|bahala|decide|ikaw na|kayo na/i.test(norm);
+
+  const ulamMatch = norm.match(/(\d+)\s*(?:ulam|main|dish(?:es)?|viand|entree|course)/);
+  const dessertMatch = norm.match(/(\d+)\s*(?:dessert|pastry|cake|sweet|panghimagas)/);
+  const drinkMatch = norm.match(/(\d+)\s*(?:drink|beverage|juice|softdrink|soda|bev|inumin)/);
 
   return {
-    timeline: [
-      { time: "T-48h", activity: "Confirm guest count and supplier backups." },
-      { time: "T-24h", activity: "Procure dry goods and equipment." },
-      { time: "T-8h", activity: "Batch prep and cold-chain storage." },
-      { time: "T-4h", activity: "Load vehicles and check weather Plan B." },
-      { time: "T-3h", activity: "Traffic-aware dispatch." },
-      { time: "T-1h", activity: "Venue setup and buffet flow test." },
-    ],
-    staffing_needs: `${staffCount} staff including event lead and allergen marshal.`,
-    equipment_list: ["Chafing dishes", "Warmers", "Cold boxes", "Allergen labels", "Tent kit"],
-    transport_plan: "Two-vehicle dispatch: cold chain goods first, equipment second.",
+    main_dishes: ulamMatch ? Number(ulamMatch[1]) : (autoDecide ? null : 4),
+    desserts: dessertMatch ? Number(dessertMatch[1]) : (autoDecide ? null : 1),
+    drinks: drinkMatch ? Number(drinkMatch[1]) : (autoDecide ? null : 1),
+    auto_decide: autoDecide,
+    raw: text,
   };
 }
 
@@ -596,25 +815,104 @@ function runAccountantAgent(customer: any, menuData: any, inventory: any, suppli
   const guests = Number(customer.guests || 100);
   const budgetMeta = parseBudgetDetails(customer.budget);
   const budget = budgetMeta.value;
-  const foodCost = guests * 350;
-  const beverageCost = guests * 80;
-  const laborCost = Math.max(9000, guests * 95);
-  const equipmentCost = 10000;
-  
-  const totalCost = foodCost + beverageCost + laborCost + equipmentCost;
-  const targetQuote = Math.round(totalCost * 1.25);
-  const effectiveQuote = budget && budget > totalCost ? Math.min(targetQuote, budget) : targetQuote;
-  const margin = Math.round(((effectiveQuote - totalCost) / effectiveQuote) * 100);
+  const currency = budgetMeta.currency || "PHP";
+
+  // Parse menu composition to count items by type
+  const composition = parseMenuComposition(customer.menu_composition || "");
+  const actualMenu: any[] = menuData?.menu || [];
+
+  // Count actual menu items by tag category
+  const mainCount = actualMenu.filter(i =>
+    !i.tags?.some((t: string) => /dessert|drink|beverage|juice|soda/i.test(t))
+  ).length || composition.main_dishes || 4;
+
+  const dessertCount = actualMenu.filter(i =>
+    i.tags?.some((t: string) => /dessert|pastry|sweet/i.test(t))
+  ).length || composition.desserts || 1;
+
+  const drinkCount = actualMenu.filter(i =>
+    i.tags?.some((t: string) => /drink|beverage|juice|soda/i.test(t))
+  ).length || composition.drinks || 1;
+
+  // ── Currency-aware catering rate table (mid-range market rates per country) ──
+  // Rates: main dish cost per guest, dessert per guest, drink per guest,
+  //        staple/rice per guest, labor per staff per event, equipment per item, serviceware per guest
+  type RateKey = 'main' | 'dessert' | 'drink' | 'staple' | 'labor' | 'equipment' | 'serviceware';
+  const RATES_BY_CURRENCY: Record<string, Record<RateKey, number>> = {
+    PHP: { main: 165, dessert: 70,  drink: 60,  staple: 35, labor: 800,   equipment: 850,  serviceware: 45  },
+    USD: { main: 15,  dessert: 6,   drink: 5,   staple: 3,  labor: 150,   equipment: 80,   serviceware: 4   },
+    SGD: { main: 20,  dessert: 8,   drink: 7,   staple: 4,  labor: 180,   equipment: 100,  serviceware: 5   },
+    EUR: { main: 18,  dessert: 7,   drink: 6,   staple: 3,  labor: 160,   equipment: 95,   serviceware: 5   },
+    GBP: { main: 16,  dessert: 6,   drink: 5,   staple: 3,  labor: 150,   equipment: 90,   serviceware: 5   },
+    AED: { main: 55,  dessert: 22,  drink: 18,  staple: 10, labor: 450,   equipment: 300,  serviceware: 15  },
+    JPY: { main: 1800,dessert: 700, drink: 550, staple: 300,labor: 18000, equipment: 9000, serviceware: 450 },
+    CNY: { main: 60,  dessert: 22,  drink: 18,  staple: 10, labor: 600,   equipment: 400,  serviceware: 15  },
+    AUD: { main: 22,  dessert: 9,   drink: 7,   staple: 4,  labor: 200,   equipment: 110,  serviceware: 6   },
+    CAD: { main: 20,  dessert: 8,   drink: 7,   staple: 3,  labor: 180,   equipment: 100,  serviceware: 5   },
+    INR: { main: 600, dessert: 200, drink: 150, staple: 80, labor: 2500,  equipment: 2000, serviceware: 100 },
+    KRW: { main: 12000,dessert: 4500,drink: 3500,staple: 1500,labor: 80000,equipment:45000,serviceware:2000},
+  };
+  const R = RATES_BY_CURRENCY[currency] || RATES_BY_CURRENCY['PHP'];
+
+  const foodCost   = (mainCount * R.main * guests) + (R.staple * guests);
+  const dessertCost   = dessertCount * R.dessert * guests;
+  const beverageCost  = drinkCount   * R.drink   * guests;
+
+  // Labor: scales with guest count; minimum 5 staff
+  const baseStaff  = Math.max(5, Math.ceil(guests / 20));
+  const laborCost  = baseStaff * R.labor + (guests > 200 ? R.labor * 6 : 0);
+
+  // Equipment: chafing dishes/warmers per item; extra for large events
+  const totalItems    = mainCount + dessertCount + drinkCount;
+  const equipmentCost = Math.max(R.equipment * 6, totalItems * R.equipment) + (guests > 150 ? R.equipment * 4 : 0);
+
+  // Serviceware: plates, utensils, glasses — 20% breakage buffer
+  const servicewareCost = Math.ceil(guests * 1.2) * R.serviceware;
+
+  const totalCost = foodCost + dessertCost + beverageCost + laborCost + equipmentCost + servicewareCost;
+  const unitCost = Math.round(totalCost / guests);
+
+  // Recommended quote = cost + 20% margin for caterer profit
+  const recommendedQuote = Math.round(totalCost * 1.20);
+  const effectiveQuote = budget && budget >= totalCost ? Math.min(recommendedQuote, budget) : recommendedQuote;
+  const margin = effectiveQuote > 0 ? Math.round(((effectiveQuote - totalCost) / effectiveQuote) * 100) : 0;
+
+  const isFeasible = !budget || budget >= totalCost;
+  const budgetShortfall = budget && budget < totalCost ? totalCost - budget : 0;
 
   return {
-    optimized_quote: `${budgetMeta.currency} ${effectiveQuote.toLocaleString()}`,
-    unit_cost: `PHP ${Math.round(totalCost / guests).toLocaleString()} / guest`,
+    optimized_quote: `${currency} ${effectiveQuote.toLocaleString()}`,
+    unit_cost: `${currency} ${unitCost.toLocaleString()} / guest`,
     profit_margin: `${margin}%`,
-    status: budget && budget < totalCost ? "INFEASIBLE_BUDGET" : "ON_BUDGET",
-    pricing_strategy: "Protect margin while preserving weather and allergen controls.",
-    cost_breakdown: { food: foodCost, beverages: beverageCost, labor: laborCost, equipment: equipmentCost },
+    status: isFeasible ? "ON_BUDGET" : "INFEASIBLE_BUDGET",
+    budget_shortfall: budgetShortfall > 0 ? `${currency} ${budgetShortfall.toLocaleString()} under budget` : null,
+    pricing_strategy: isFeasible
+      ? `Budget is sufficient. Estimated cost per guest is ${currency} ${unitCost.toLocaleString()}, covering ${mainCount} main dish${mainCount !== 1 ? 'es' : ''}, ${dessertCount} dessert${dessertCount !== 1 ? 's' : ''}, and ${drinkCount} drink${drinkCount !== 1 ? ' type' : ' types'}.`
+      : `Budget of ${currency} ${budget?.toLocaleString()} is short by ${currency} ${budgetShortfall.toLocaleString()}. Consider reducing main dishes from ${mainCount} to ${Math.max(2, mainCount - 1)}, or reducing guest count.`,
+    cost_breakdown: {
+      main_dishes: foodCost,
+      desserts: dessertCost,
+      beverages: beverageCost,
+      labor: laborCost,
+      equipment: equipmentCost,
+      serviceware: servicewareCost,
+    },
+    menu_item_counts: {
+      main_dishes: mainCount,
+      desserts: dessertCount,
+      drinks: drinkCount,
+      total: totalItems,
+    },
+    rates_used: {
+      main_per_guest: `${currency} ${R.main} × ${mainCount} dishes × ${guests} guests`,
+      dessert_per_guest: `${currency} ${R.dessert} × ${dessertCount} desserts × ${guests} guests`,
+      drink_per_guest: `${currency} ${R.drink} × ${drinkCount} drinks × ${guests} guests`,
+      labor: `${currency} ${R.labor} × ${baseStaff} staff`,
+      currency_market: `Rates based on ${currency} catering market standards`,
+    },
   };
 }
+
 
 function runMonitoringAgent(memory: any) {
   const qa_checks = [
@@ -641,18 +939,22 @@ function enrichCustomer(customer: any, input: string) {
   return {
     event_type: customer.event_type || inferEventType(input),
     guests: Number(customer.guests || customer.guest_count || inferGuests(input) || 100),
-    budget: customer.budget || inferBudgetText(input) || "PHP 250,000",
-    location: customer.location || inferLocation(input) || "Metro Manila",
-    date: customer.date || inferDate(input) || "Date to confirm",
+    budget: customer.budget || inferBudgetText(input) || 'Budget TBD',
+    location: customer.location || inferLocation(input) || 'Metro Manila',
+    date: customer.date || inferDate(input) || 'Date to confirm',
     dietary_needs: customer.dietary_needs || inferDietary(input),
     cuisine_preference: customer.cuisine_preference || inferCuisine(input),
     service_style: customer.service_style || inferServiceStyle(input),
     special_requests: customer.special_requests || input,
     food_choice_mode: customer.food_choice_mode,
     specific_food_items: customer.specific_food_items,
+    menu_composition: customer.menu_composition,
+    food_style_preference: customer.food_style_preference,
+    portion_control_mode: customer.portion_control_mode,
     cultural_profile: inferCulturalProfile(input),
   };
 }
+
 
 function parseCustomerFallback(input: string) {
   return {
@@ -690,34 +992,38 @@ function parseBudget(value = "") {
   return digits ? Number(digits) : 0;
 }
 
-function validateAnswerDeterministically(question: string, answer: string, preferredLanguage: string) {
+function validateAnswerDeterministically(questionKey: string, questionText: string, answer: string, preferredLanguage: string) {
   const lang = (preferredLanguage || "english").toLowerCase();
   if (!answer || answer.length < 2) {
-    return { valid: false, message: "Please give a bit more detail so I can continue." };
+    return { valid: false, message: "Please give a bit more detail so I can continue.", confident: true };
   }
 
   if (/^(.)\1{4,}$/.test(answer) || /asdf|qwerty|zxczxc|lorem|12345/i.test(answer)) {
-    return { valid: false, message: "That looks unclear. Please send a meaningful answer so I can proceed." };
+    return { valid: false, message: "That looks unclear. Please send a meaningful answer so I can proceed.", confident: true };
   }
 
   const clean = answer.replace(/[\s\p{P}\p{S}]/gu, "");
   if (clean.length >= 6 && !/[aeiou0-9]/i.test(clean) && !lang.includes("chinese")) {
-    return { valid: false, message: "I could not understand that response. Please answer in words or numbers." };
+    return { valid: false, message: "I could not understand that response. Please answer in words or numbers.", confident: true };
   }
 
-  if (/what language do you prefer/i.test(question) && !/[a-zA-Z\u00C0-\u024F]{3,}/.test(answer)) {
-    return { valid: false, message: "Please provide a language name like English, Tagalog, or Spanish." };
+  if (questionKey === 'guest_count') {
+    const hasNumber = /\d+/.test(answer);
+    if (!hasNumber) return { valid: false, message: "Please include the guest count (number).", confident: true };
+    if (answer.trim().match(/^\d+$/)) return { valid: true, confident: true };
   }
 
-  if (/how many guests|guests are you expecting/i.test(question) && !/\d+/.test(answer)) {
-    return { valid: false, message: "Please include the guest count (number)." };
+  if (questionKey === 'budget') {
+    const hasNumber = /\d/.test(answer);
+    if (!hasNumber) return { valid: false, message: "Please include a numeric budget amount.", confident: true };
   }
 
-  if (/budget/i.test(question) && !/\d/.test(answer)) {
-    return { valid: false, message: "Please include a numeric budget amount." };
+  // If it's a very simple answer and we are not in a complex question
+  if (answer.length < 15 && !/food|cuisine|dietary/i.test(questionText)) {
+     return { valid: true, confident: true };
   }
 
-  return { valid: true };
+  return { valid: true, confident: false };
 }
 
 function inferLocation(input: string) {
@@ -758,16 +1064,70 @@ function inferServiceStyle(input: string) {
   return "Buffet with staffed stations";
 }
 
-function imageForIndex(index: number) {
-  const images = [
-    "https://images.unsplash.com/photo-1529692236671-f1f6cf9683ba?auto=format&fit=crop&q=80&w=600&h=420",
-    "https://images.unsplash.com/photo-1512058564366-18510be2db19?auto=format&fit=crop&q=80&w=600&h=420",
-    "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&q=80&w=600&h=420",
-    "https://images.unsplash.com/photo-1555939594-58d7cb561ad1?auto=format&fit=crop&q=80&w=600&h=420",
-    "https://images.unsplash.com/photo-1562967916-eb82221dfb92?auto=format&fit=crop&q=80&w=600&h=420",
-    "https://images.unsplash.com/photo-1551024506-0bccd828d307?auto=format&fit=crop&q=80&w=600&h=420",
+/**
+ * Maps a dish name to an accurate food photo using keyword-based Unsplash search.
+ * Uses multiple fallback strategies to find the most relevant image.
+ */
+export function getDishImage(dishName: string): string {
+  const name = (dishName || '').toLowerCase();
+
+  // Filipino dishes
+  if (/lechon|roast pork|liempo/.test(name)) return 'https://images.unsplash.com/photo-1555939594-58d7cb561ad1?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/adobo/.test(name)) return 'https://images.unsplash.com/photo-1604908176997-125f25cc6f3d?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/sinigang/.test(name)) return 'https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/kare.kare/.test(name)) return 'https://images.unsplash.com/photo-1626685812820-d0fa8f5cfb2b?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/inasal|grilled chicken/.test(name)) return 'https://images.unsplash.com/photo-1532550907401-a500c9a57435?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/pancit|noodle/.test(name)) return 'https://images.unsplash.com/photo-1569050467447-ce54b3bbc37d?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/lumpia|spring roll/.test(name)) return 'https://images.unsplash.com/photo-1544025162-d76694265947?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/paella|rice dish/.test(name)) return 'https://images.unsplash.com/photo-1534422298391-e4f8c172dddb?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/kaldereta|caldereta/.test(name)) return 'https://images.unsplash.com/photo-1607330289024-1535c6b4e1c1?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/menudo/.test(name)) return 'https://images.unsplash.com/photo-1547592166-23ac45744acd?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/tinola/.test(name)) return 'https://images.unsplash.com/photo-1548943487-a2e4e43b4853?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/chopsuey|chop suey/.test(name)) return 'https://images.unsplash.com/photo-1512058564366-18510be2db19?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/pork|baboy/.test(name)) return 'https://images.unsplash.com/photo-1598103442097-8b74394b95c2?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/chicken|manok/.test(name)) return 'https://images.unsplash.com/photo-1527477396000-e27163b481c2?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/beef|baka|bistek/.test(name)) return 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/seafood|shrimp|hipon|fish|isda|tanigue|bangus|salmon/.test(name)) return 'https://images.unsplash.com/photo-1559737558-2f5a35f4523b?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/vegetable|gulay|pinakbet/.test(name)) return 'https://images.unsplash.com/photo-1512058564366-18510be2db19?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/soup|sabaw/.test(name)) return 'https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&q=80&w=600&h=420';
+
+  // Desserts
+  if (/leche flan|flan/.test(name)) return 'https://images.unsplash.com/photo-1488477181946-6428a0291777?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/halo.halo/.test(name)) return 'https://images.unsplash.com/photo-1563805042-7684c019e1cb?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/biko|kakanin|rice cake/.test(name)) return 'https://images.unsplash.com/photo-1551024506-0bccd828d307?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/cake|torta/.test(name)) return 'https://images.unsplash.com/photo-1578985545062-69928b1d9587?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/pudding|panna cotta|verrine/.test(name)) return 'https://images.unsplash.com/photo-1488477181946-6428a0291777?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/dessert|sweet|pastry|panghimagas/.test(name)) return 'https://images.unsplash.com/photo-1551024506-0bccd828d307?auto=format&fit=crop&q=80&w=600&h=420';
+
+  // Beverages
+  if (/calamansi|lemonade|juice/.test(name)) return 'https://images.unsplash.com/photo-1621506289937-a8e4df240d0b?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/coffee/.test(name)) return 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/tea/.test(name)) return 'https://images.unsplash.com/photo-1556679343-c7306c1976bc?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/beverage|drink|buko|coconut/.test(name)) return 'https://images.unsplash.com/photo-1544145945-f90425340c7e?auto=format&fit=crop&q=80&w=600&h=420';
+
+  // International
+  if (/pasta|spaghetti|carbonara/.test(name)) return 'https://images.unsplash.com/photo-1563379926898-05f4575a45d8?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/salad/.test(name)) return 'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/sandwich|burger/.test(name)) return 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/pizza/.test(name)) return 'https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?auto=format&fit=crop&q=80&w=600&h=420';
+  if (/sushi|japanese/.test(name)) return 'https://images.unsplash.com/photo-1579871494447-9811cf80d66c?auto=format&fit=crop&q=80&w=600&h=420';
+
+  // Generic catering food by index fallback
+  const fallbacks = [
+    'https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&q=80&w=600&h=420',
+    'https://images.unsplash.com/photo-1498837167922-ddd27525d352?auto=format&fit=crop&q=80&w=600&h=420',
+    'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&q=80&w=600&h=420',
+    'https://images.unsplash.com/photo-1555939594-58d7cb561ad1?auto=format&fit=crop&q=80&w=600&h=420',
+    'https://images.unsplash.com/photo-1562967916-eb82221dfb92?auto=format&fit=crop&q=80&w=600&h=420',
+    'https://images.unsplash.com/photo-1529692236671-f1f6cf9683ba?auto=format&fit=crop&q=80&w=600&h=420',
   ];
-  return images[index % images.length];
+  // Use dish name hash for consistent fallback
+  const hash = dishName.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+  return fallbacks[hash % fallbacks.length];
+}
+
+function imageForIndex(index: number) {
+  return getDishImage(`dish-${index}`);
 }
 
 async function runContingencyAgent(prompt: string, memory: any) {
