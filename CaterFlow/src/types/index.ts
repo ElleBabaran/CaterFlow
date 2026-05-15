@@ -10,6 +10,13 @@ export interface Message {
   agent?: string;
   qKey?: string;
   isWeatherChoice?: boolean;
+  isWeatherForecast?: boolean;
+  weatherData?: any;
+  weatherSummary?: string;
+  weatherLocation?: string;
+  isMenuCompositionChoice?: boolean;
+  isFoodChoiceMode?: boolean;
+  isPortionControlMode?: boolean;
   timestamp: Date;
 }
 

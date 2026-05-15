@@ -33,7 +33,8 @@ import {
   Edit3,
   Store,
   Inbox,
-  ShoppingBag
+  ShoppingBag,
+  QrCode
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -48,6 +49,7 @@ import {
   Legend
 } from 'recharts';
 import { auth, signInWithGoogle, logout, loginWithEmail, signupWithEmail, WorkspaceRole } from './lib/firebase';
+import { MessageBubble } from './components/chat/MessageBubble';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { processIntake, orchestrateCatering, validateUserResponse } from './services/orchestrator';
 import { mongoService } from './services/mongodb';
@@ -81,6 +83,8 @@ interface Message {
   qKey?: string;
   timestamp: Date;
   isWeatherChoice?: boolean;
+  isWeatherForecast?: boolean;
+  weatherData?: any;
   isMenuCompositionChoice?: boolean;
   isFoodChoiceMode?: boolean;
   isPortionControlMode?: boolean;
@@ -203,6 +207,7 @@ export default function App() {
   const [currentStepIndex, setCurrentStepIndex] = useState(-1);
   const [history, setHistory] = useState<any[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [workspaceRole, setWorkspaceRole] = useState<WorkspaceRole>('customer');
   const [signupRole, setSignupRole] = useState<WorkspaceRole>('customer');
@@ -231,6 +236,7 @@ export default function App() {
 
   const [showShopDetails, setShowShopDetails] = useState<string | null>(null);
   const [isConversationSaved, setIsConversationSaved] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
   const [isWaitingForWeather, setIsWaitingForWeather] = useState(false);
 
@@ -279,7 +285,6 @@ export default function App() {
     setIsWaitingForWeather(false);
     setEventData(prev => ({ ...prev, base_on_weather: choice }));
 
-    // Remove buttons and add user message
     setMessages(prev => {
       const filtered = prev.map(m => m.isWeatherChoice ? { ...m, isWeatherChoice: false } : m);
       return [...filtered, {
@@ -292,7 +297,6 @@ export default function App() {
       }];
     });
 
-    // Advance
     const nextIdx = qIndex + 1;
     if (nextIdx < QUESTIONS.length) {
       setTimeout(() => {
@@ -316,7 +320,6 @@ export default function App() {
       const profile = await mongoService.fetchUser(activeUser.uid);
 
       if (profile && profile.role) {
-        // Existing user — restore their saved role
         setWorkspaceRole(profile.role);
         setSignupRole(profile.role);
         if (profile.role === 'admin') setDashboardView('admin-inbox');
@@ -325,12 +328,10 @@ export default function App() {
         return;
       }
 
-      // New Google user — prompt for role selection before saving
       setPendingGoogleUser(activeUser);
       setShowRolePicker(true);
     } catch (err) {
       console.error("Error loading user role from MongoDB:", err);
-      // On error, still allow access as customer
       setWorkspaceRole('customer');
       setDashboardView('conversation');
     }
@@ -377,6 +378,23 @@ export default function App() {
   }, [messages, ttsEnabled]);
 
   useEffect(() => {
+    if (messages.length > 1 || Object.keys(eventData).length > 0) {
+      setHasUnsavedChanges(true);
+    }
+  }, [messages, eventData]);
+
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges) {
+        e.preventDefault();
+        e.returnValue = 'You have unsaved changes. Are you sure you want to leave?';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [hasUnsavedChanges]);
+
+  useEffect(() => {
     if (chatScrollRef.current) {
       requestAnimationFrame(() => {
         chatScrollRef.current?.scrollTo({
@@ -394,7 +412,6 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
       if (u) {
-        // Only load role if we're not in the middle of a signup/role-selection flow
         if (!showRolePicker && !loading && !skipRoleLoad) {
           loadUserRole(u);
           fetchHistory(u.uid);
@@ -405,13 +422,28 @@ export default function App() {
       }
       setLoading(false);
     });
-    
-  if (publicOrderId) {
-    return <PublicOrderView orderId={publicOrderId} />;
-  }
 
-  return () => unsubscribe();
+    if (publicOrderId) {
+      return <PublicOrderView orderId={publicOrderId} />;
+    }
+
+    return () => unsubscribe();
   }, [messages.length]);
+
+  // DEBOUNCED AUTO-SAVE
+  useEffect(() => {
+    if (!user || messages.length < 2) return;
+    
+    setSaveStatus('saving');
+    const timer = setTimeout(() => {
+      saveConversation().then(() => {
+        setSaveStatus('saved');
+        setTimeout(() => setSaveStatus('idle'), 2000);
+      }).catch(() => setSaveStatus('error'));
+    }, 1500); // Wait 1.5s after last change
+
+    return () => clearTimeout(timer);
+  }, [messages, eventData, user?.uid]);
 
   const handleVoiceInput = () => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -466,12 +498,12 @@ export default function App() {
       }
     }
 
+    const isLanguageStep = currentQuestion.key === 'preferred_language';
     const newEventData = { ...eventData, [currentQuestion.key]: refinedAmount };
 
     if (currentQuestion.key === 'budget') {
       const hasCurrency = hasCurrencyMarker(refinedAmount);
       if (!hasCurrency && /^\d+$/.test(refinedAmount.replace(/[,. ]/g, ''))) {
-        // Save the numeric budget before asking for currency so next answer can combine them
         setEventData(newEventData);
         setMessages([...newMessages, {
           id: `bot-currency-${Date.now()}`,
@@ -479,6 +511,7 @@ export default function App() {
           content: "I've noted the amount! Just to be precise, which currency are you using? (e.g., $, ₱, USD, PHP, Pesos)",
           timestamp: new Date()
         }]);
+        saveConversation();
         return;
       }
     }
@@ -488,7 +521,6 @@ export default function App() {
     if (qIndex < QUESTIONS.length - 1) {
       setIsProcessing(true);
 
-      // Pre-fetch weather as soon as location is known (fire-and-forget, will be cached)
       if (currentQuestion.key === 'event_location' && userText.length > 2) {
         import('./services/orchestrator').then(m => {
           m.prefetchWeather(userText, newEventData.event_date || 'TBD', newEventData.preferred_language || 'english');
@@ -496,16 +528,14 @@ export default function App() {
       }
 
       let nextIdx = qIndex + 1;
-      const tempNextQuestionText = getQuestionText(nextIdx, newEventData.preferred_language);
 
-      // 1. Process Intake — fast-path skips AI for simple/short answers
-      const intakeResult = await processIntake(userText, currentQuestion.key, currentQuestion.text, newEventData.preferred_language);
+      const processingLanguage = isLanguageStep ? (eventData.preferred_language || 'english') : newEventData.preferred_language;
+      const intakeResult = await processIntake(userText, currentQuestion.key, currentQuestion.text, processingLanguage);
 
       const intent = intakeResult.intent;
       const validation = intakeResult.validation;
       const reaction = intakeResult.reaction?.text;
 
-      // 1.5 Handle text-based weather choice if waiting
       if (isWaitingForWeather) {
         const isYes = /yes|oo|sige|yup|sure|game|okay|ok/i.test(userText);
         const isNo = /no|hindi|ayoko|huwag|don't|stop/i.test(userText);
@@ -515,7 +545,6 @@ export default function App() {
         }
       }
 
-      // 2. Multi-item collection for specific food items
       if (currentQuestion.key === 'specific_food_items' && intent.type === 'ANSWER') {
         const existing = eventData.specific_food_items || "";
         const updatedFood = existing ? `${existing}, ${userText}` : userText;
@@ -532,7 +561,6 @@ export default function App() {
         return;
       }
 
-      // 2b. Multi-item collection for food style preference (grilled, fried, etc.)
       if (currentQuestion.key === 'food_style_preference' && intent.type === 'ANSWER') {
         const existing = eventData.food_style_preference || "";
         const updated = existing ? `${existing}, ${userText}` : userText;
@@ -542,8 +570,8 @@ export default function App() {
         const followUp = lang === 'tagalog'
           ? "Noted! May iba pa bang cooking style na gusto mo? (o sabihing 'tapos na')"
           : lang === 'spanish'
-          ? "Anotado! Algún otro estilo de cocina? (o di 'listo')"
-          : "Got it! Any other cooking styles you'd like? (or say 'done')";
+            ? "Anotado! Algún otro estilo de cocina? (o di 'listo')"
+            : "Got it! Any other cooking styles you'd like? (or say 'done')";
 
         setIsProcessing(false);
         setMessages(prev => [...prev, {
@@ -556,8 +584,6 @@ export default function App() {
         return;
       }
 
-
-      // If user says "DONE" at the food step, we advance
       if (currentQuestion.key === 'specific_food_items' && intent.type === 'DONE') {
         nextIdx = qIndex + 1;
       } else if (intent.type === 'DONE') {
@@ -573,7 +599,6 @@ export default function App() {
         }
       }
 
-      // 3. Handle weather (Blocking now)
       const isDateStep = currentQuestion.key === 'event_date' && eventData.event_location && !isWaitingForWeather;
       if (isDateStep && validation.valid) {
         setIsProcessing(true);
@@ -581,7 +606,6 @@ export default function App() {
         import('./services/orchestrator').then(async m => {
           const weather = await m.predictWeather(eventData.event_location, userText, newEventData.preferred_language);
           if (weather) {
-            // 1. Show the bot's analytical reaction first
             if (reaction) {
               setMessages(prev => [...prev, {
                 id: `bot-react-${Date.now()}`,
@@ -591,22 +615,26 @@ export default function App() {
               }]);
             }
 
-            // 2. Show weather forecast
-            const weatherMsg = `🌤️ **Weather Forecast:** ${weather.summary}\n${(weather.recommendations || []).join("\n")}`;
             setMessages(prev => [...prev, {
               id: `bot-weather-${Date.now()}`,
               role: 'bot',
-              content: weatherMsg,
+              content: weather.summary,
+              weatherData: weather.raw_data,
+              weatherLocation: eventData.event_location,
+              isWeatherForecast: true,
               timestamp: new Date()
             }]);
 
-            // 3. Ask the special question with buttons
+            const weatherChoiceText = eventData.preferred_language === 'tagalog'
+              ? "Iba-base ba natin yung mga food suggestion sa forecast na ito?"
+              : "Should we base the food suggestions on this weather forecast?";
+            
+            const mm = await import('./services/orchestrator');
+            const translatedChoice = await mm.translateText(weatherChoiceText, newEventData.preferred_language);
             setMessages(prev => [...prev, {
               id: `bot-weather-choice-${Date.now()}`,
               role: 'bot',
-              content: eventData.preferred_language === 'tagalog'
-                ? "Iba-base ba natin yung mga food suggestion sa forecast na ito?"
-                : "Should we base the food suggestions on this weather forecast?",
+              content: translatedChoice,
               isWeatherChoice: true,
               timestamp: new Date()
             }]);
@@ -614,49 +642,62 @@ export default function App() {
           }
           setIsProcessing(false);
         });
-        return; // STOP normal progression
+        return;
       }
 
       if (intent.type === 'LANGUAGE_CHANGE') {
         const newLang = normalizeLanguage(intent.value || 'english');
-        setEventData(prev => ({ ...prev, preferred_language: newLang }));
+        
+        const updatedEventData = { ...newEventData, preferred_language: newLang };
+        setEventData(updatedEventData);
 
-        let prefix = "Sure, I'll speak in English! ";
+        const m = await import('./services/orchestrator');
+        
+        let prefix = `Sure, I'll speak in ${newLang.charAt(0).toUpperCase() + newLang.slice(1)}! `;
         if (newLang === 'tagalog') prefix = "Sige po, magta-Tagalog na ako. ";
         else if (newLang === 'spanish') prefix = "¡Claro! Hablaré en español. ";
         else if (newLang === 'japanese') prefix = "承知いたしました。日本語でお話しします。 ";
         else if (newLang === 'chinese') prefix = "好的，我会用中文跟您交流！ ";
+        else if (newLang === 'indonesian') prefix = "Baik, saya akan berbicara dalam Bahasa Indonesia. ";
+        else if (newLang === 'korean') prefix = "네, 한국어로 말씀드리겠습니다. ";
+
+        const translatedPrefix = await m.translateText(prefix, newLang);
 
         if (currentQuestion.key === 'preferred_language') {
-          // If they are answering the first question, advance to the next question instead of repeating it
-          setTimeout(() => {
+          setTimeout(async () => {
             const nextIdxVal = qIndex + 1;
             setQIndex(nextIdxVal);
+            const questionText = getQuestionText(nextIdxVal, newLang);
+            const localizedQuestion = await m.translateText(questionText, newLang);
+
             setMessages(prev => [...prev, {
               id: `bot-lang-${Date.now()}`,
               role: 'bot',
-              content: `${prefix}\n\n${getQuestionText(nextIdxVal, newLang)}`,
+              content: `${translatedPrefix}\n\n${localizedQuestion}`,
               isMenuCompositionChoice: QUESTIONS[nextIdxVal].key === 'menu_composition',
               isFoodChoiceMode: QUESTIONS[nextIdxVal].key === 'food_choice_mode',
               isPortionControlMode: QUESTIONS[nextIdxVal].key === 'portion_control_mode',
               timestamp: new Date()
             }]);
-            setIsProcessing(false);
             saveConversation();
+            setIsProcessing(false);
           }, 300);
           return;
         }
 
         const repeatedQuestion = getQuestionText(qIndex, newLang);
+        const localizedRepeated = await m.translateText(repeatedQuestion, newLang);
+
         setMessages(prev => [...prev, {
           id: `bot-lang-${Date.now()}`,
           role: 'bot',
-          content: `${prefix}${repeatedQuestion}`,
+          content: `${translatedPrefix}${localizedRepeated}`,
           isMenuCompositionChoice: currentQuestion.key === 'menu_composition',
           isFoodChoiceMode: currentQuestion.key === 'food_choice_mode',
           isPortionControlMode: currentQuestion.key === 'portion_control_mode',
           timestamp: new Date()
         }]);
+        saveConversation();
         setIsProcessing(false);
         return;
       }
@@ -669,49 +710,61 @@ export default function App() {
           return;
         }
 
+        const m = await import('./services/orchestrator');
         const fallbackMsg = eventData.preferred_language === 'tagalog'
           ? "Pasensya na, kaya ko lang tumulong sa catering planning sa ngayon."
           : "I'm sorry, I can only help with catering planning right now.";
+        
+        const localizedFallback = await m.translateText(fallbackMsg, newEventData.preferred_language);
+        const localizedQuestion = await m.translateText(currentQuestion.text, newEventData.preferred_language);
 
         setMessages(prev => [...prev, {
           id: `bot-gen-${Date.now()}`,
           role: 'bot',
-          content: reaction ? `${reaction}\n\n${currentQuestion.text}` : `${fallbackMsg}\n\n${currentQuestion.text}`,
+          content: reaction ? `${reaction}\n\n${localizedQuestion}` : `${localizedFallback}\n\n${localizedQuestion}`,
           timestamp: new Date()
         }]);
+        saveConversation();
         setIsProcessing(false);
         return;
       }
 
       if (!validation.valid) {
+        const m = await import('./services/orchestrator');
+        const langToUse = eventData.preferred_language || 'english';
+        const localizedQuestion = await m.translateText(currentQuestion.text, langToUse);
+        
         setMessages(prev => [...prev, {
           id: `bot-err-${Date.now()}`,
           role: 'bot',
-          content: `${validation.message || "Please provide a more specific answer."}\n\n${currentQuestion.text}`,
+          content: `${validation.message || "Please provide a more specific answer."}\n\n${localizedQuestion}`,
           timestamp: new Date()
         }]);
+        saveConversation();
         setIsProcessing(false);
         return;
       }
 
-      const actualNextQuestionText = getQuestionText(nextIdx, newEventData.preferred_language);
-      const botMessage = reaction ? `${reaction}\n\n${actualNextQuestionText}` : actualNextQuestionText;
+      import('./services/orchestrator').then(async m => {
+        const actualNextQuestionText = getQuestionText(nextIdx, newEventData.preferred_language);
+        const localizedNextQuestion = await m.translateText(actualNextQuestionText, newEventData.preferred_language);
+        const botMessage = reaction ? `${reaction}\n\n${localizedNextQuestion}` : localizedNextQuestion;
 
-      setTimeout(() => {
-        setQIndex(nextIdx);
-        setMessages(prev => [...prev, {
-          id: `bot-q-${Date.now()}`,
-          role: 'bot',
-          content: botMessage,
-          isMenuCompositionChoice: QUESTIONS[nextIdx].key === 'menu_composition',
-          isFoodChoiceMode: QUESTIONS[nextIdx].key === 'food_choice_mode',
-          isPortionControlMode: QUESTIONS[nextIdx].key === 'portion_control_mode',
-          timestamp: new Date()
-        }]);
-        setIsProcessing(false);
-        // Auto-save progress
-        saveConversation();
-      }, 200);
+        setTimeout(() => {
+          setQIndex(nextIdx);
+          setMessages(prev => [...prev, {
+            id: `bot-q-${Date.now()}`,
+            role: 'bot',
+            content: botMessage,
+            isMenuCompositionChoice: QUESTIONS[nextIdx].key === 'menu_composition',
+            isFoodChoiceMode: QUESTIONS[nextIdx].key === 'food_choice_mode',
+            isPortionControlMode: QUESTIONS[nextIdx].key === 'portion_control_mode',
+            timestamp: new Date()
+          }]);
+          saveConversation();
+          setIsProcessing(false);
+        }, 200);
+      });
     } else {
       if (isConfirming || showSummary) {
         const updatedSpecial = `${newEventData.special_requests || ""}\nAdditional info: ${userText}`.trim();
@@ -727,13 +780,12 @@ export default function App() {
             content: "Got it! I've added that to your request. Here is the updated summary:",
             timestamp: new Date()
           }]);
+          saveConversation();
           setIsProcessing(false);
         }, 200);
         return;
       }
 
-      // If results are already showing (history loaded or previous plan) and user types
-      // something that isn't about refining the plan, offer to start a new plan
       if (!isChatting || steps.length > 0) {
         const isNewPlanRequest = /new|restart|ulit|bago|start|another|fresh/i.test(userText);
         if (isNewPlanRequest || (!isConfirming && !showSummary)) {
@@ -750,1500 +802,1529 @@ export default function App() {
         content: "I've gathered all the details! Please review the summary below. Is everything correct, or would you like to add anything else?",
         timestamp: new Date()
       }]);
+      saveConversation();
     }
   };
 
-  const handleConfirmOrder = async () => {
-    setIsConfirming(false);
-    setShowSummary(false);
-    setIsChatting(false);
-    setIsProcessing(true);
-    setSteps([]);
-    setCurrentStepIndex(-1);
+const handleConfirmOrder = async () => {
+  setIsConfirming(false);
+  setShowSummary(false);
+  setIsChatting(false);
+  setIsProcessing(true);
+  setSteps([]);
+  setCurrentStepIndex(-1);
 
-    const fullPrompt = Object.entries(eventData)
-      .map(([k, v]) => `${k.replace('_', ' ')}: ${v}`)
-      .join(', ');
+  const fullPrompt = Object.entries(eventData)
+    .map(([k, v]) => `${k.replace('_', ' ')}: ${v}`)
+    .join(', ');
+
+  setMessages(prev => [...prev, {
+    id: `sys-proc-${Date.now()}`,
+    role: 'system',
+    content: "🤖 Activating all AI agents. Collaboration in progress...",
+    timestamp: new Date()
+  }]);
+
+  try {
+    const result = await orchestrateCatering(fullPrompt, (step) => {
+      setSteps(prev => [...prev, step]);
+      setCurrentStepIndex(prev => prev + 1);
+
+      if (step.agent.includes('Head Chef') && step.data.menu) {
+        setLocalMenu(step.data.menu);
+      }
+      if (step.agent.includes('Inventory') && step.data.procurement_list) {
+        setLocalInventory(step.data.procurement_list);
+      }
+      if (step.agent.includes('Logistics') && step.data.timeline) {
+        setLocalTimeline(step.data.timeline);
+        setStaffTasks(step.data.timeline.map((t: any) => ({ ...t, completed: false })));
+      }
+    }, useFoundry);
+
+    if (result.success) {
+      if (user) {
+        const eventRecord = sanitizeForFirestore({
+          userId: user.uid,
+          type: 'plan',
+          rawInput: fullPrompt,
+          messages: serializeMessages(),
+          qIndex,
+          eventData: eventData,
+          steps: [
+            { agent: "Phase 1: Concierge (User Intent)", data: result.data.customer || {} },
+            { agent: "Knowledge Base & RAG Agent", data: result.data.knowledge || {} },
+            { agent: "Dietary & Allergens Specialist", data: result.data.dietary || {} },
+            { agent: "Weather Intelligence", data: result.data.weather || {} },
+            { agent: "Phase 2: Head Chef (Menu Design)", data: result.data.menu || {} },
+            { agent: "Inventory & Procurement Specialist", data: result.data.inventory || {} },
+            { agent: "Supplier Intelligence Specialist", data: result.data.suppliers || {} },
+            { agent: "Phase 4: Logistics Lead (Execution)", data: result.data.logistics || {} },
+            { agent: "Phase 3: Accountant (Cost Optimization)", data: result.data.pricing || {} },
+            { agent: "Shared Memory Ledger", data: result.data.sharedMemoryLedger || {} },
+            { agent: "System Monitoring & QA", data: result.data.monitoring || {} }
+          ],
+          updatedAt: new Date().toISOString(),
+          createdAt: new Date().toISOString()
+        });
+        try {
+          if (activeConversationId) {
+            await mongoService.updateEvent(activeConversationId, eventRecord);
+          } else {
+            const saved = await mongoService.saveEvent(eventRecord);
+            setActiveConversationId(saved._id || saved.id);
+          }
+          fetchHistory(user.uid);
+        } catch (err) {
+          console.error("Error auto-saving to MongoDB:", err);
+        }
+      }
+    }
+  } catch (error: any) {
+    console.error("Orchestration error:", error);
+    let errorMsg = error?.message || "Critical error in AI Orchestration. Connection severed.";
+
+    if (errorMsg.includes("429") || errorMsg.includes("quota")) {
+      errorMsg = "AI planning service is busy. Please try again in 60 seconds.";
+    } else if (errorMsg.includes("503") || errorMsg.includes("high demand")) {
+      errorMsg = "AI Models under heavy load. Please retry in a few moments.";
+    }
 
     setMessages(prev => [...prev, {
-      id: `sys-proc-${Date.now()}`,
-      role: 'system',
-      content: "🤖 Activating all AI agents. Collaboration in progress...",
+      id: `bot-err-${Date.now()}`,
+      role: 'bot',
+      content: `⚠️ ALERT: ${errorMsg}`,
       timestamp: new Date()
     }]);
+  } finally {
+    setIsProcessing(false);
+  }
+};
 
-    try {
-      const result = await orchestrateCatering(fullPrompt, (step) => {
-        setSteps(prev => [...prev, step]);
-        setCurrentStepIndex(prev => prev + 1);
+const updateEventDataField = (key: string, value: string) => {
+  setEventData((prev: any) => ({ ...prev, [key]: value }));
+};
 
-        if (step.agent.includes('Head Chef') && step.data.menu) {
-          setLocalMenu(step.data.menu);
-        }
-        if (step.agent.includes('Inventory') && step.data.procurement_list) {
-          setLocalInventory(step.data.procurement_list);
-        }
-        if (step.agent.includes('Logistics') && step.data.timeline) {
-          setLocalTimeline(step.data.timeline);
-          setStaffTasks(step.data.timeline.map((t: any) => ({ ...t, completed: false })));
-        }
-      }, useFoundry);
+const loadFromHistory = (item: any) => {
+  setActiveConversationId(item.id);
+  if (item.messages?.length > 0) {
+    setMessages(item.messages.map((msg: any) => ({
+      ...msg,
+      timestamp: msg.timestamp?.toDate ? msg.timestamp.toDate() : new Date(msg.timestamp || Date.now())
+    })));
+  }
+  setSteps(item.steps || []);
+  setEventData(item.eventData || {});
+  setQIndex(item.qIndex || 0);
+  setIsChatting(!item.steps?.length);
+  setShowHistory(false);
+  setCurrentStepIndex(item.steps?.length || -1);
+};
 
-      if (result.success) {
-        if (user) {
-          const eventRecord = sanitizeForFirestore({
-            userId: user.uid,
-            type: 'plan',
-            rawInput: fullPrompt,
-            messages: serializeMessages(),
-            qIndex,
-            eventData: eventData,
-            steps: [
-              { agent: "Phase 1: Concierge (User Intent)", data: result.data.customer || {} },
-              { agent: "Knowledge Base & RAG Agent", data: result.data.knowledge || {} },
-              { agent: "Dietary & Allergens Specialist", data: result.data.dietary || {} },
-              { agent: "Weather Intelligence", data: result.data.weather || {} },
-              { agent: "Phase 2: Head Chef (Menu Design)", data: result.data.menu || {} },
-              { agent: "Inventory & Procurement Specialist", data: result.data.inventory || {} },
-              { agent: "Supplier Intelligence Specialist", data: result.data.suppliers || {} },
-              { agent: "Phase 4: Logistics Lead (Execution)", data: result.data.logistics || {} },
-              { agent: "Phase 3: Accountant (Cost Optimization)", data: result.data.pricing || {} },
-              { agent: "Shared Memory Ledger", data: result.data.sharedMemoryLedger || {} },
-              { agent: "System Monitoring & QA", data: result.data.monitoring || {} }
-            ],
-            updatedAt: new Date().toISOString(),
-            createdAt: new Date().toISOString()
-          });
-          try {
-            if (activeConversationId) {
-              await mongoService.updateEvent(activeConversationId, eventRecord);
-            } else {
-              const saved = await mongoService.saveEvent(eventRecord);
-              setActiveConversationId(saved._id || saved.id);
-            }
-            fetchHistory(user.uid);
-          } catch (err) {
-            console.error("Error auto-saving to MongoDB:", err);
-          }
-        }
-      }
-    } catch (error: any) {
-      console.error("Orchestration error:", error);
-      let errorMsg = error?.message || "Critical error in AI Orchestration. Connection severed.";
 
-      if (errorMsg.includes("429") || errorMsg.includes("quota")) {
-        errorMsg = "AI planning service is busy. Please try again in 60 seconds.";
-      } else if (errorMsg.includes("503") || errorMsg.includes("high demand")) {
-        errorMsg = "AI Models under heavy load. Please retry in a few moments.";
-      }
+const restartChat = () => {
+  setActiveConversationId(null);
+  setEditingMessageId(null);
+  setEditingText("");
+  setMessages([{ id: 'bot-start', role: 'bot', content: getQuestionText(0), timestamp: new Date() }]);
+  setQIndex(0);
+  setEventData({});
+  setIsChatting(true);
+  setSteps([]);
+  setCurrentStepIndex(-1);
+};
 
-      setMessages(prev => [...prev, {
-        id: `bot-err-${Date.now()}`,
+const serializeMessages = () => messages.map((msg) => ({
+  ...msg,
+  timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : new Date().toISOString()
+}));
+
+const saveConversation = async () => {
+  if (!user) return;
+  const firstUserMessage = messages.find(msg => msg.role === 'user')?.content || 'Untitled catering conversation';
+  const payload = sanitizeForFirestore({
+    userId: user.uid,
+    type: steps.length > 0 ? 'plan' : 'conversation',
+    rawInput: firstUserMessage,
+    messages: serializeMessages(),
+    qIndex,
+    eventData,
+    steps,
+  });
+
+  try {
+    if (activeConversationId) {
+      await mongoService.updateEvent(activeConversationId, payload);
+    } else {
+      const saved = await mongoService.saveEvent(payload);
+      setActiveConversationId(saved._id || saved.id);
+    }
+    setHasUnsavedChanges(false);
+    fetchHistory(user.uid);
+  } catch (err) {
+    console.error("Error saving to MongoDB:", err);
+  }
+};
+
+const deleteConversation = async (id?: string) => {
+  const targetId = id || activeConversationId;
+  if (!targetId || !user) return;
+  try {
+    await mongoService.deleteEvent(targetId);
+    if (targetId === activeConversationId) restartChat();
+    fetchHistory(user.uid);
+  } catch (err) {
+    console.error("Error deleting from MongoDB:", err);
+  }
+};
+
+const startEditMessage = (msg: Message) => {
+  setEditingMessageId(msg.id);
+  setEditingText(msg.content);
+};
+
+const commitEditMessage = async () => {
+  if (!editingMessageId || !editingText.trim()) return;
+
+  const editedMsg = messages.find(m => m.id === editingMessageId);
+  const newText = editingText.trim();
+
+  if (editedMsg && editedMsg.qKey) {
+    const q = QUESTIONS.find(q => q.key === editedMsg.qKey);
+    setIsProcessing(true);
+
+    const currentNextQ = getQuestionText(qIndex, eventData.preferred_language);
+    const intake = await processIntake(newText, q?.key || "", q?.text || "", eventData.preferred_language);
+
+    const intent = intake.intent;
+    const validation = intake.validation;
+    const reaction = intake.reaction?.text || "";
+
+    if (intent.type === 'LANGUAGE_CHANGE') {
+      const newLang = normalizeLanguage(intent.value || 'english');
+      setEventData(prev => ({ ...prev, preferred_language: newLang }));
+      const repeatedQuestion = getQuestionText(qIndex, newLang);
+
+      let prefix = "Sure, I'll speak in English from now on! ";
+      if (newLang === 'tagalog') prefix = "Sige po, magta-Tagalog na ako simula ngayon. ";
+      else if (newLang === 'spanish') prefix = "¡Claro! Hablaré en español desde ahora. ";
+      else if (newLang === 'japanese') prefix = "承知いたしました。これからは日本語でお話しします。 ";
+      else if (newLang === 'chinese') prefix = "好的，从现在开始我会用中文跟您交流！ ";
+
+      setMessages(prev => [...prev.map(m => m.id === editingMessageId ? { ...m, content: newText } : m), {
+        id: `bot-edit-lang-${Date.now()}`,
         role: 'bot',
-        content: `⚠️ ALERT: ${errorMsg}`,
+        content: `${prefix}${repeatedQuestion}`,
         timestamp: new Date()
       }]);
-    } finally {
+
       setIsProcessing(false);
+      setEditingMessageId(null);
+      setEditingText("");
+      saveConversation();
+      return;
     }
-  };
 
-  const updateEventDataField = (key: string, value: string) => {
-    setEventData((prev: any) => ({ ...prev, [key]: value }));
-  };
-
-  const loadFromHistory = (item: any) => {
-    setActiveConversationId(item.id);
-    if (item.messages?.length > 0) {
-      setMessages(item.messages.map((msg: any) => ({
-        ...msg,
-        timestamp: msg.timestamp?.toDate ? msg.timestamp.toDate() : new Date(msg.timestamp || Date.now())
-      })));
+    if (!validation.valid) {
+      setMessages(prev => [...prev, {
+        id: `bot-edit-err-${Date.now()}`,
+        role: 'bot',
+        content: `⚠️ ${validation.message}`,
+        timestamp: new Date()
+      }]);
+    } else {
+      const newEventData = { ...eventData, [editedMsg.qKey!]: newText };
+      setMessages(prev => [...prev.map(m => m.id === editingMessageId ? { ...m, content: newText } : m), {
+        id: `bot-edit-ok-${Date.now()}`,
+        role: 'bot',
+        content: reaction || (eventData.preferred_language === 'tagalog' ? "Sige po, na-update ko na." : "Got it! I've updated that for you."),
+        timestamp: new Date()
+      }]);
+      setEventData(newEventData);
     }
-    setSteps(item.steps || []);
-    setEventData(item.eventData || {});
-    setQIndex(item.qIndex || 0);
-    setIsChatting(!item.steps?.length);
-    setShowHistory(false);
-    setCurrentStepIndex(item.steps?.length || -1);
-  };
+    setIsProcessing(false);
+  }
 
-  
-  const handleSaveConversation = async () => {
-    if (!activeConversationId) return;
-    try {
-      await fetch(`/api/events/${activeConversationId}/save-prompt`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`,
-          'Content-Type': 'application/json'
-        }
+  setMessages(prev => prev.map(msg => msg.id === editingMessageId ? { ...msg, content: newText } : msg));
+  setEditingMessageId(null);
+  setEditingText("");
+
+  saveConversation();
+};
+
+const filteredHistory = (Array.isArray(history) ? history : []).filter((item) => {
+  const needle = historySearch.trim().toLowerCase();
+  if (!needle) return true;
+  const haystack = [
+    item.rawInput,
+    item.type,
+    ...(item.messages || []).map((msg: any) => msg.content),
+    ...(item.steps || []).map((step: any) => `${step.agent} ${JSON.stringify(step.data || {})}`)
+  ].join(' ').toLowerCase();
+  return haystack.includes(needle);
+});
+
+const exportBlueprint = () => {
+  const blueprint = {
+    exportedAt: new Date().toISOString(),
+    customer: steps.find(s => s.agent.includes('Concierge'))?.data,
+    menu: steps.find(s => s.agent.includes('Head Chef'))?.data,
+    inventory: steps.find(s => s.agent.includes('Inventory'))?.data,
+    suppliers: steps.find(s => s.agent.includes('Supplier'))?.data,
+    logistics: steps.find(s => s.agent.includes('Logistics'))?.data,
+    pricing: steps.find(s => s.agent.includes('Accountant'))?.data,
+    monitoring: steps.find(s => s.agent.includes('Monitoring'))?.data,
+    agentTrace: steps.map(step => ({ agent: step.agent, keys: Object.keys(step.data || {}) }))
+  };
+  const blob = new Blob([JSON.stringify(blueprint, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `caterflow-blueprint-${Date.now()}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
+const buildSummaryRows = () => {
+  const customer = steps.find(s => s.agent.includes('Concierge'))?.data || {};
+  const menu = steps.find(s => s.agent.includes('Head Chef'))?.data || {};
+  const inventory = steps.find(s => s.agent.includes('Inventory'))?.data || {};
+  const suppliers = steps.find(s => s.agent.includes('Supplier'))?.data || {};
+  const logistics = steps.find(s => s.agent.includes('Logistics'))?.data || {};
+  const monitoring = steps.find(s => s.agent.includes('Monitoring'))?.data || {};
+  return [
+    ['Event Type', customer.event_type || '--'],
+    ['Guests', customer.guests || '--'],
+    ['Budget', customer.budget || eventData.budget || '--'],
+    ['Location', customer.location || eventData.event_location || '--'],
+    ['Menu Items', (menu.menu || []).map((item: any) => item.dish).join('; ') || '--'],
+    ['Procurement Weight', inventory.procurement_weight_kg ? `${inventory.procurement_weight_kg} kg` : '--'],
+    ['Recommended Catering Shops', (suppliers.catering_shop_recommendations || []).slice(0, 3).map((shop: any) => `${shop.name} (${shop.match_score})`).join('; ') || '--'],
+    ['Staffing', logistics.staffing_needs || '--'],
+    ['Readiness', monitoring.execution_readiness ? `${monitoring.execution_readiness}%` : '--'],
+    ['Status', monitoring.overall_status || '--'],
+  ];
+};
+
+const exportSummaryTable = () => {
+  const rows = buildSummaryRows();
+  const csv = ['Metric,Value', ...rows.map(([label, value]) => `"${String(label).replace(/"/g, '""')}","${String(value).replace(/"/g, '""')}"`)].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `caterflow-summary-${Date.now()}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
+const findStepData = (needles: string | string[]) => {
+  const matchers = Array.isArray(needles) ? needles : [needles];
+  return steps.find((step) => matchers.some((needle) => step.agent.includes(needle)))?.data || {};
+};
+
+const customerStep = findStepData('Concierge');
+const menuStep = findStepData('Head Chef');
+const inventoryStep = findStepData('Inventory');
+const supplierStep = findStepData('Supplier');
+const weatherStep = findStepData('Weather');
+const logisticsStep = findStepData('Logistics');
+const pricingStep = findStepData('Accountant');
+const monitoringStep = findStepData(['System Monitoring', 'Monitoring']);
+const nextBestActions = [
+  ...(weatherStep.recommendations || []),
+  ...(monitoringStep.qa_checks || []),
+  ...(logisticsStep.timeline || []).slice(0, 2).map((item: any) => item.activity || item.event || item.note).filter(Boolean),
+].filter(Boolean);
+
+const visibleSteps = steps.filter((step) => {
+  if (reportView === 'all') return true;
+  if (reportView === 'menu') return ['Concierge', 'RAG', 'Dietary', 'Head Chef', 'Weather', 'Contingency'].some(name => step.agent.includes(name));
+  if (reportView === 'logistics') return ['Inventory', 'Supplier', 'Weather', 'Logistics', 'Sustainability', 'Monitoring'].some(name => step.agent.includes(name));
+  return ['Accountant', 'Supplier', 'Monitoring', 'Shared Memory'].some(name => step.agent.includes(name));
+});
+
+const handleEmailAuth = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setAuthError('');
+  setLoading(true);
+  try {
+    if (authMode === 'login') {
+      await loginWithEmail(email, password);
+    } else {
+      if (!name.trim()) throw new Error("Name is required");
+      setSkipRoleLoad(true);
+      const userCredential = await signupWithEmail(email, password, name, signupRole);
+
+      await mongoService.saveUser({
+        uid: userCredential.user.uid,
+        email: userCredential.user.email,
+        name,
+        role: signupRole
       });
-      setIsConversationSaved(true);
-      alert("Conversation saved to your history!");
-    } catch (err) {
-      console.error("Save failed:", err);
+
+      setWorkspaceRole(signupRole);
+      if (signupRole === 'admin') setDashboardView('admin-inbox');
+      else if (signupRole === 'staff') setDashboardView('operations');
+      setSkipRoleLoad(false);
     }
-  };
-
-  const handleRestartWithPrompt = () => {
-    if (!isConversationSaved && messages.length > 2) {
-      if (window.confirm("Do you want to save this conversation before clearing?")) {
-        handleSaveConversation().then(restartChat);
-        return;
-      }
-    }
-    restartChat();
-  };
-
-  const restartChat = () => {
-    setActiveConversationId(null);
-    setEditingMessageId(null);
-    setEditingText("");
-    setMessages([{ id: 'bot-start', role: 'bot', content: getQuestionText(0), timestamp: new Date() }]);
-    setQIndex(0);
-    setEventData({});
-    setIsChatting(true);
-    setSteps([]);
-    setCurrentStepIndex(-1);
-  };
-
-  const serializeMessages = () => messages.map((msg) => ({
-    ...msg,
-    timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : new Date().toISOString()
-  }));
-
-  const saveConversation = async () => {
-    if (!user) return;
-    const firstUserMessage = messages.find(msg => msg.role === 'user')?.content || 'Untitled catering conversation';
-    const payload = sanitizeForFirestore({
-      userId: user.uid,
-      type: steps.length > 0 ? 'plan' : 'conversation',
-      rawInput: firstUserMessage,
-      messages: serializeMessages(),
-      qIndex,
-      eventData,
-      steps,
-    });
-
-    try {
-      if (activeConversationId) {
-        await mongoService.updateEvent(activeConversationId, payload);
-      } else {
-        const saved = await mongoService.saveEvent(payload);
-        setActiveConversationId(saved._id || saved.id);
-      }
-      fetchHistory(user.uid);
-    } catch (err) {
-      console.error("Error saving to MongoDB:", err);
-    }
-  };
-
-  const deleteConversation = async (id?: string) => {
-    const targetId = id || activeConversationId;
-    if (!targetId || !user) return;
-    try {
-      await mongoService.deleteEvent(targetId);
-      if (targetId === activeConversationId) restartChat();
-      fetchHistory(user.uid);
-    } catch (err) {
-      console.error("Error deleting from MongoDB:", err);
-    }
-  };
-
-  const startEditMessage = (msg: Message) => {
-    setEditingMessageId(msg.id);
-    setEditingText(msg.content);
-  };
-
-  const commitEditMessage = async () => {
-    if (!editingMessageId || !editingText.trim()) return;
-
-    const editedMsg = messages.find(m => m.id === editingMessageId);
-    const newText = editingText.trim();
-
-    if (editedMsg && editedMsg.qKey) {
-      const q = QUESTIONS.find(q => q.key === editedMsg.qKey);
-      setIsProcessing(true);
-
-      const currentNextQ = getQuestionText(qIndex, eventData.preferred_language);
-      const intake = await processIntake(newText, q?.key || "", q?.text || "", eventData.preferred_language);
-
-      const intent = intake.intent;
-      const validation = intake.validation;
-      const reaction = intake.reaction?.text || "";
-
-      if (intent.type === 'LANGUAGE_CHANGE') {
-        const newLang = normalizeLanguage(intent.value || 'english');
-        setEventData(prev => ({ ...prev, preferred_language: newLang }));
-        const repeatedQuestion = getQuestionText(qIndex, newLang);
-
-        let prefix = "Sure, I'll speak in English from now on! ";
-        if (newLang === 'tagalog') prefix = "Sige po, magta-Tagalog na ako simula ngayon. ";
-        else if (newLang === 'spanish') prefix = "¡Claro! Hablaré en español desde ahora. ";
-        else if (newLang === 'japanese') prefix = "承知いたしました。これからは日本語でお話しします。 ";
-        else if (newLang === 'chinese') prefix = "好的，从现在开始我会用中文跟您交流！ ";
-
-        setMessages(prev => [...prev.map(m => m.id === editingMessageId ? { ...m, content: newText } : m), {
-          id: `bot-edit-lang-${Date.now()}`,
-          role: 'bot',
-          content: `${prefix}${repeatedQuestion}`,
-          timestamp: new Date()
-        }]);
-
-        setIsProcessing(false);
-        setEditingMessageId(null);
-        setEditingText("");
-        saveConversation();
-        return;
-      }
-
-      if (!validation.valid) {
-        setMessages(prev => [...prev, {
-          id: `bot-edit-err-${Date.now()}`,
-          role: 'bot',
-          content: `⚠️ ${validation.message}`,
-          timestamp: new Date()
-        }]);
-      } else {
-        const newEventData = { ...eventData, [editedMsg.qKey!]: newText };
-        setMessages(prev => [...prev.map(m => m.id === editingMessageId ? { ...m, content: newText } : m), {
-          id: `bot-edit-ok-${Date.now()}`,
-          role: 'bot',
-          content: reaction || (eventData.preferred_language === 'tagalog' ? "Sige po, na-update ko na." : "Got it! I've updated that for you."),
-          timestamp: new Date()
-        }]);
-        setEventData(newEventData);
-      }
-      setIsProcessing(false);
-    }
-
-    setMessages(prev => prev.map(msg => msg.id === editingMessageId ? { ...msg, content: newText } : msg));
-    setEditingMessageId(null);
-    setEditingText("");
-
-    // Persist changes to database immediately
-    saveConversation();
-  };
-
-  const filteredHistory = (Array.isArray(history) ? history : []).filter((item) => {
-    const needle = historySearch.trim().toLowerCase();
-    if (!needle) return true;
-    const haystack = [
-      item.rawInput,
-      item.type,
-      ...(item.messages || []).map((msg: any) => msg.content),
-      ...(item.steps || []).map((step: any) => `${step.agent} ${JSON.stringify(step.data || {})}`)
-    ].join(' ').toLowerCase();
-    return haystack.includes(needle);
-  });
-
-  const exportBlueprint = () => {
-    const blueprint = {
-      exportedAt: new Date().toISOString(),
-      customer: steps.find(s => s.agent.includes('Concierge'))?.data,
-      menu: steps.find(s => s.agent.includes('Head Chef'))?.data,
-      inventory: steps.find(s => s.agent.includes('Inventory'))?.data,
-      suppliers: steps.find(s => s.agent.includes('Supplier'))?.data,
-      logistics: steps.find(s => s.agent.includes('Logistics'))?.data,
-      pricing: steps.find(s => s.agent.includes('Accountant'))?.data,
-      monitoring: steps.find(s => s.agent.includes('Monitoring'))?.data,
-      agentTrace: steps.map(step => ({ agent: step.agent, keys: Object.keys(step.data || {}) }))
-    };
-    const blob = new Blob([JSON.stringify(blueprint, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `caterflow-blueprint-${Date.now()}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const buildSummaryRows = () => {
-    const customer = steps.find(s => s.agent.includes('Concierge'))?.data || {};
-    const menu = steps.find(s => s.agent.includes('Head Chef'))?.data || {};
-    const inventory = steps.find(s => s.agent.includes('Inventory'))?.data || {};
-    const suppliers = steps.find(s => s.agent.includes('Supplier'))?.data || {};
-    const logistics = steps.find(s => s.agent.includes('Logistics'))?.data || {};
-    const monitoring = steps.find(s => s.agent.includes('Monitoring'))?.data || {};
-    return [
-      ['Event Type', customer.event_type || '--'],
-      ['Guests', customer.guests || '--'],
-      ['Budget', customer.budget || eventData.budget || '--'],
-      ['Location', customer.location || eventData.event_location || '--'],
-      ['Menu Items', (menu.menu || []).map((item: any) => item.dish).join('; ') || '--'],
-      ['Procurement Weight', inventory.procurement_weight_kg ? `${inventory.procurement_weight_kg} kg` : '--'],
-      ['Recommended Catering Shops', (suppliers.catering_shop_recommendations || []).slice(0, 3).map((shop: any) => `${shop.name} (${shop.match_score})`).join('; ') || '--'],
-      ['Staffing', logistics.staffing_needs || '--'],
-      ['Readiness', monitoring.execution_readiness ? `${monitoring.execution_readiness}%` : '--'],
-      ['Status', monitoring.overall_status || '--'],
-    ];
-  };
-
-  const exportSummaryTable = () => {
-    const rows = buildSummaryRows();
-    const csv = ['Metric,Value', ...rows.map(([label, value]) => `"${String(label).replace(/"/g, '""')}","${String(value).replace(/"/g, '""')}"`)].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `caterflow-summary-${Date.now()}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const findStepData = (needles: string | string[]) => {
-    const matchers = Array.isArray(needles) ? needles : [needles];
-    return steps.find((step) => matchers.some((needle) => step.agent.includes(needle)))?.data || {};
-  };
-
-  const customerStep = findStepData('Concierge');
-  const menuStep = findStepData('Head Chef');
-  const inventoryStep = findStepData('Inventory');
-  const supplierStep = findStepData('Supplier');
-  const weatherStep = findStepData('Weather');
-  const logisticsStep = findStepData('Logistics');
-  const pricingStep = findStepData('Accountant');
-  const monitoringStep = findStepData(['System Monitoring', 'Monitoring']);
-  const nextBestActions = [
-    ...(weatherStep.recommendations || []),
-    ...(monitoringStep.qa_checks || []),
-    ...(logisticsStep.timeline || []).slice(0, 2).map((item: any) => item.activity || item.event || item.note).filter(Boolean),
-  ].filter(Boolean);
-
-  const visibleSteps = steps.filter((step) => {
-    if (reportView === 'all') return true;
-    if (reportView === 'menu') return ['Concierge', 'RAG', 'Dietary', 'Head Chef', 'Weather', 'Contingency'].some(name => step.agent.includes(name));
-    if (reportView === 'logistics') return ['Inventory', 'Supplier', 'Weather', 'Logistics', 'Sustainability', 'Monitoring'].some(name => step.agent.includes(name));
-    return ['Accountant', 'Supplier', 'Monitoring', 'Shared Memory'].some(name => step.agent.includes(name));
-  });
-
-  const handleEmailAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError('');
-    setLoading(true);
-    try {
-      if (authMode === 'login') {
-        await loginWithEmail(email, password);
-      } else {
-        if (!name.trim()) throw new Error("Name is required");
-        setSkipRoleLoad(true);
-        const userCredential = await signupWithEmail(email, password, name, signupRole);
-
-        // Explicitly sync to MongoDB backend
-        await mongoService.saveUser({
-          uid: userCredential.user.uid,
-          email: userCredential.user.email,
-          name,
-          role: signupRole
-        });
-
-        setWorkspaceRole(signupRole);
-        if (signupRole === 'admin') setDashboardView('admin-inbox');
-        else if (signupRole === 'staff') setDashboardView('operations');
-        setSkipRoleLoad(false);
-      }
-    } catch (err: any) {
-      setAuthError(err.message || "Authentication failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  if (loading) {
-    return (
-      <div className="h-screen w-full flex items-center justify-center transition-colors duration-300">
-        <Loader2 className="w-8 h-8 animate-spin text-emerald-500 shadow-[0_0_15px_rgba(139,92,246,0.5)]" />
-      </div>
-    );
+  } catch (err: any) {
+    setAuthError(err.message || "Authentication failed");
+  } finally {
+    setLoading(false);
   }
+};
 
-  // Google sign-in role picker — shown for new Google users only
-  if (showRolePicker) {
-    return (
-      <div className="h-screen w-full flex items-center justify-center bg-gradient-to-br from-slate-50 to-emerald-50 p-4">
-        <div className="bg-white rounded-3xl shadow-2xl border border-slate-100 p-8 w-full max-w-md space-y-6">
-          <div className="text-center space-y-2">
-            <div className="w-14 h-14 rounded-2xl bg-emerald-50 border border-emerald-100 flex items-center justify-center mx-auto">
-              <Users className="w-7 h-7 text-emerald-600" />
-            </div>
-            <h2 className="text-lg font-black text-slate-900 uppercase tracking-widest">Choose Your Role</h2>
-            <p className="text-xs text-slate-500 leading-relaxed">
-              Welcome, <span className="font-bold text-slate-700">{pendingGoogleUser?.displayName || pendingGoogleUser?.email}</span>!<br />
-              Select how you'll use CaterFlow.
-            </p>
-          </div>
-          <div className="grid grid-cols-1 gap-3">
-            {([
-              ['customer', 'Customer', 'Submit event briefs, review menus, track your plan'],
-              ['admin', 'Admin / Owner', 'Owner dashboard, pricing controls, supplier decisions'],
-              ['staff', 'Staff', 'Prep board, dispatch coordination, execution tasks'],
-            ] as const).map(([role, title, copy]) => (
-              <button
-                key={role}
-                type="button"
-                onClick={() => setSignupRole(role as WorkspaceRole)}
-                className={`rounded-2xl border p-4 text-left transition ${signupRole === role
-                    ? 'border-emerald-600 bg-emerald-50 shadow-sm'
-                    : 'border-slate-200 bg-white hover:border-emerald-200'
-                  }`}
-              >
-                <p className={`text-xs font-black uppercase tracking-[0.18em] ${signupRole === role ? 'text-emerald-800' : 'text-slate-700'
-                  }`}>{title}</p>
-                <p className="mt-1 text-[10px] leading-4 text-slate-500">{copy}</p>
-              </button>
-            ))}
-          </div>
-          <button
-            onClick={handleGoogleRoleConfirm}
-            className="w-full min-h-12 bg-emerald-700 hover:bg-emerald-800 text-white font-black transition-all active:scale-[0.98] shadow-xl shadow-emerald-800/20 uppercase text-xs tracking-[0.18em] rounded-2xl"
-          >
-            Continue as {signupRole.charAt(0).toUpperCase() + signupRole.slice(1)}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (!user && !showLogin) {
-    return <LandingPage onStart={() => setShowLogin(true)} />;
-  }
-
-  if (!user) {
-    return (
-      <div className="login-shell min-h-screen w-full p-5 relative overflow-hidden transition-colors duration-300">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(242,184,75,0.22),transparent_32%),linear-gradient(120deg,rgba(251,247,238,0.96),rgba(251,247,238,0.78))] pointer-events-none" />
-        <div className="relative z-20 mx-auto mb-5 flex max-w-6xl items-center justify-between">
-          <BrandLogo />
-          <button
-            type="button"
-            onClick={() => setShowLogin(false)}
-            className="rounded-full border border-slate-200 bg-white/80 px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-slate-600 shadow-sm backdrop-blur transition hover:bg-white hover:text-emerald-800"
-          >
-            Back
-          </button>
-        </div>
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="relative z-10 mx-auto grid max-w-6xl overflow-hidden rounded-[2rem] border border-white/70 bg-white/82 shadow-2xl shadow-slate-950/15 backdrop-blur-xl lg:grid-cols-[1.08fr_0.92fr]"
-        >
-          <section className="relative hidden min-h-[660px] overflow-hidden p-8 lg:block">
-            <img
-              src="https://images.unsplash.com/photo-1555244162-803834f70033?auto=format&fit=crop&q=85&w=1200"
-              alt="Catering prep table"
-              className="absolute inset-0 h-full w-full object-cover"
-            />
-            <div className="absolute inset-0 bg-gradient-to-t from-slate-950/88 via-slate-950/24 to-transparent" />
-            <div className="relative z-10 flex h-full flex-col justify-between">
-              <div className="inline-flex w-fit items-center gap-2 rounded-full bg-white/90 px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-emerald-800 backdrop-blur">
-                <span className="h-2 w-2 rounded-full bg-tomato"></span>
-                Event ops workspace
-              </div>
-              <div className="max-w-xl space-y-5 text-white">
-                <h2 className="text-5xl font-black leading-[0.95] tracking-[-0.03em]">From client brief to service-ready plan.</h2>
-                <p className="max-w-md text-sm leading-7 text-white/78">
-                  Sign in to coordinate menu planning, procurement, logistics, pricing, and risk monitoring with your AI catering team.
-                </p>
-                <div className="grid grid-cols-3 gap-3 pt-3">
-                  {[
-                    ["Menu", "portion plan"],
-                    ["Stock", "procurement"],
-                    ["Ops", "timeline"],
-                  ].map(([title, subtitle]) => (
-                    <div key={title} className="rounded-2xl border border-white/20 bg-white/14 p-4 backdrop-blur">
-                      <p className="text-sm font-black">{title}</p>
-                      <p className="text-[10px] uppercase tracking-widest text-white/60">{subtitle}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section className="p-6 sm:p-10 lg:p-12 text-slate-900 flex flex-col justify-center">
-            <div className="mb-8 space-y-3">
-              <div className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-emerald-800">
-                Secure access
-              </div>
-              <div>
-                <h1 className="text-4xl font-black tracking-[-0.03em] text-slate-950">
-                  {authMode === 'login' ? 'Welcome back.' : 'Create your workspace.'}
-                </h1>
-                <p className="mt-2 text-sm leading-6 text-slate-500">
-                  {authMode === 'login'
-                    ? 'Continue building catering plans with your saved event history.'
-                    : 'Set up your CaterFlow account and start planning your first event.'}
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-6">
-              <form onSubmit={handleEmailAuth} className="space-y-4">
-                {authMode === 'signup' && (
-                  <>
-                    <div className="space-y-1">
-                      <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Full Name</label>
-                      <input
-                        type="text"
-                        placeholder="EX: JOHN DOE"
-                        value={name}
-                        onChange={(e) => setName(e.target.value)}
-                        className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none shadow-sm"
-                        required
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Workspace Role</label>
-                      <div className="grid grid-cols-2 gap-3">
-                        {[
-                          ['customer', 'Customer', 'Submit event brief, review menu, track plan'],
-                          ['admin', 'Admin', 'Owner dashboard, pricing, supplier decisions'],
-                          ['staff', 'Staff', 'Prep board, dispatch, execution tasks'],
-                        ].map(([role, title, copy]) => (
-                          <button
-                            key={role}
-                            type="button"
-                            onClick={() => setSignupRole(role as WorkspaceRole)}
-                            className={`rounded-2xl border p-4 text-left transition ${signupRole === role ? 'border-emerald-600 bg-emerald-50 shadow-sm' : 'border-slate-200 bg-white hover:border-emerald-200'}`}
-                          >
-                            <p className={`text-xs font-black uppercase tracking-[0.18em] ${signupRole === role ? 'text-emerald-800' : 'text-slate-700'}`}>{title}</p>
-                            <p className="mt-2 text-[10px] leading-4 text-slate-500">{copy}</p>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </>
-                )}
-                <div className="space-y-1">
-                  <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Email Address</label>
-                  <input
-                    type="email"
-                    placeholder="USER@DOMAIN.COM"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none shadow-sm"
-                    required
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Password</label>
-                  <input
-                    type="password"
-                    placeholder="••••••••"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none shadow-sm"
-                    required
-                  />
-                </div>
-
-                {authError && (
-                  <div className="bg-pink-500/10 p-4 border border-pink-500/30 mb-4 animate-shake">
-                    <p className="text-[11px] text-pink-400 font-mono font-bold uppercase">{authError}</p>
-                    {authError.includes('operation-not-allowed') && (
-                      <p className="text-[10px] text-pink-400/80 mt-2 lowercase font-mono leading-relaxed">
-                        CRITICAL: Email/Password login is locked. Enable it in Firebase Console (Auth &gt; Sign-in Method) or use Google Access.
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                <button
-                  type="submit"
-                  className="w-full min-h-14 bg-emerald-700 hover:bg-emerald-800 text-white font-black transition-all active:scale-[0.98] shadow-xl shadow-emerald-800/20 uppercase text-xs tracking-[0.18em] rounded-2xl"
-                >
-                  {authMode === 'login' ? 'Secure Login' : 'Create Account'}
-                </button>
-              </form>
-
-              <div className="relative py-1">
-                <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-200"></div></div>
-                <div className="relative flex justify-center text-[8px] uppercase tracking-[0.3em]"><span className="bg-white px-3 text-slate-400 font-bold">or continue with</span></div>
-              </div>
-
-              <button
-                onClick={signInWithGoogle}
-                className="w-full min-h-14 bg-white border border-slate-200 text-slate-700 rounded-2xl font-black flex items-center justify-center gap-3 hover:bg-slate-50 transition-all active:scale-[0.98] text-xs uppercase tracking-[0.18em] shadow-sm"
-              >
-                <img src="https://www.google.com/favicon.ico" className="w-3 h-3" alt="Google" />
-                Continue with Google
-              </button>
-
-              <p className="text-center text-[10px] text-slate-500 uppercase tracking-widest font-bold pt-1">
-                {authMode === 'login' ? "New operator?" : "Already registered?"}{" "}
-                <button
-                  onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
-                  className="text-emerald-700 font-bold hover:text-emerald-900 transition-colors underline decoration-emerald-500/30"
-                >
-                  {authMode === 'login' ? 'Sign Up' : 'Return to Login'}
-                </button>
-              </p>
-            </div>
-          </section>
-        </motion.div>
-      </div>
-    );
-  }
-
-
-  const showConversation = dashboardView === 'conversation' || dashboardView === 'summary';
-  const showOperations = dashboardView === 'operations' || dashboardView === 'summary';
-  const showFinance = dashboardView === 'finance' || dashboardView === 'summary';
-
+if (loading) {
   return (
-    <div className={`app-shell flex flex-col h-screen w-full font-sans overflow-hidden transition-all duration-500 ${highContrast ? 'high-contrast' : ''
-      } ${workspaceRole === 'admin' ? 'admin-theme bg-[var(--bg-color)]' : workspaceRole === 'staff' ? 'staff-theme bg-[#fffbeb]' : 'customer-theme bg-[#fbf7ee]'}`}>
+    <div className="h-screen w-full flex items-center justify-center transition-colors duration-300">
+      <Loader2 className="w-8 h-8 animate-spin text-emerald-500 shadow-[0_0_15px_rgba(139,92,246,0.5)]" />
+    </div>
+  );
+}
 
-      {workspaceRole === 'admin' ? (
-        <div className="flex-1 flex flex-col overflow-hidden bg-[var(--bg-color)]">
-          {/* Admin Header */}
-          <header className="h-14 bg-[var(--header-bg)] flex items-center justify-between px-6 flex-shrink-0 z-30 border-b border-[var(--border-color)]">
-            <div className="flex items-center space-x-3">
-              <div className="w-8 h-8 bg-[var(--accent-color)] rounded-xl flex items-center justify-center font-bold text-lg text-white">C</div>
-              <h1 className="text-sm font-bold tracking-[0.08em] text-[var(--text-color)]">CaterFlow <span className="text-slate-500 font-normal text-[10px] ml-2 uppercase tracking-[0.18em]">Admin Portal</span></h1>
-            </div>
-            <div className="flex items-center space-x-4">
-              <div className="flex items-center gap-3 pl-4 border-l border-[var(--border-color)]">
-                <img src={user.photoURL || undefined} className="w-6 h-6 rounded-full border border-[var(--border-color)]" alt="User" />
-                <button onClick={() => auth.signOut()} className="text-slate-500 hover:text-rose-500 transition-colors">
-                  <LogOut className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          </header>
-
-          <div className="flex-1 flex overflow-hidden">
-            {/* Admin Sidebar */}
-            <aside className="w-64 bg-[var(--header-bg)] border-r border-[var(--border-color)] flex flex-col p-4 space-y-2">
-              {[
-                ['admin-inbox', 'Inbox / Chats', Inbox],
-                ['shop-setup', 'My Catering Shop', Store],
-                ['summary', 'Planning Hub', ClipboardList],
-                ['admin-dashboard', 'Business Analytics', BarChart3],
-                ['finance', 'Financials', DollarSign],
-              ].map(([key, label, Icon]: any) => (
-                <button
-                  key={key}
-                  onClick={() => setDashboardView(key as any)}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all ${dashboardView === key ? 'bg-[var(--accent-color)] text-slate-950 shadow-lg shadow-[var(--accent-color)]/20' : 'text-slate-400 hover:bg-white/5'
-                    }`}
-                >
-                  <Icon className="w-4 h-4" />
-                  {label}
-                </button>
-              ))}
-
-              <div className="mt-auto pt-4 border-t border-[var(--border-color)]">
-                <div className="p-4 bg-[var(--accent-color)]/5 border border-[var(--accent-color)]/10 rounded-2xl">
-                  <p className="text-[10px] font-black text-[var(--accent-color)] uppercase tracking-widest mb-1">Owner Mode</p>
-                  <p className="text-[9px] text-slate-500 leading-relaxed font-medium">You are managing your catering business operations.</p>
-                </div>
-              </div>
-            </aside>
-
-            {/* Admin Content */}
-            <main className="flex-1 bg-[var(--bg-color)] overflow-y-auto p-8">
-              <AnimatePresence mode="wait">
-                {dashboardView === 'admin-inbox' && (
-                  <AdminInbox
-                    plans={[]}
-                    adminUid={user.uid}
-                    adminName={user.displayName || 'Admin'}
-                    onSendMessage={async (planId, text) => {
-                      console.log(`Sending to ${planId}: ${text}`);
-                    }}
-                    onUpdateStatus={(id, status) => {
-                      console.log(`Status of ${id} changed to ${status}`);
-                    }}
-                  />
-                )}
-                {dashboardView === 'shop-setup' && (
-                  <AdminShopSetup
-                    profile={shopProfile}
-                    onSave={async (data) => {
-                      const saved = await mongoService.saveShop(data);
-                      setShopProfile(saved);
-                    }}
-                  />
-                )}
-                {dashboardView === 'admin-dashboard' && (
-                  <AdminDashboard
-                    inventory={localInventory}
-                    pricing={pricingStep}
-                  />
-                )}
-                
-                {dashboardView === 'discovery' && (
-                  <ShopDiscovery 
-                    eventData={eventData} 
-                    onSelectShop={(id) => setShowShopDetails(id)} 
-                  />
-                )}
-                {dashboardView === 'marketplace-chat' && selectedShop && (
-                  <div className="space-y-6">
-                    <MarketplaceChat 
-                      eventId={activeConversationId || ''} 
-                      shop={selectedShop} 
-                      currentUser={user}
-                      eventData={eventData}
-                      menuItems={localMenu}
-                    />
-                    <div className="flex justify-center">
-                      <button 
-                        onClick={() => setDashboardView('qr')}
-                        className="px-8 py-4 bg-white border border-slate-200 rounded-2xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-emerald-600 hover:border-emerald-200 transition-all shadow-sm flex items-center gap-2"
-                      >
-                        <QrCode className="w-4 h-4" />
-                        Generate Order QR Code
-                      </button>
-                    </div>
-                  </div>
-                )}
-                {dashboardView === 'qr' && activeConversationId && (
-                  <div className="py-10">
-                    <OrderQR orderId={activeConversationId} orderData={{ menu: localMenu, event: eventData }} />
-                    <div className="mt-8 text-center">
-                      <button onClick={() => setDashboardView('marketplace-chat')} className="text-xs font-bold text-slate-400 hover:text-slate-600 uppercase tracking-widest">
-                        Back to Chat
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {dashboardView === 'summary' && (
-                  <div className="relative min-h-[calc(100vh-80px)] w-full pb-16">
-                    {/* Glassmorphism Background Blobs */}
-                    <div className="absolute top-10 left-10 w-96 h-96 bg-emerald-300/30 rounded-full mix-blend-multiply filter blur-3xl opacity-70 pointer-events-none"></div>
-                    <div className="absolute top-40 right-20 w-96 h-96 bg-sky-300/30 rounded-full mix-blend-multiply filter blur-3xl opacity-70 pointer-events-none"></div>
-                    <div className="absolute bottom-20 left-1/3 w-96 h-96 bg-amber-200/30 rounded-full mix-blend-multiply filter blur-3xl opacity-70 pointer-events-none"></div>
-
-                    <div className="relative max-w-5xl mx-auto space-y-8 z-10">
-                      <div className="flex items-center justify-between p-8 backdrop-blur-xl bg-white/40 border border-white/60 rounded-[2.5rem] shadow-[0_8px_30px_rgb(0,0,0,0.04)] mb-8">
-                        <div>
-                          <h2 className="text-2xl font-black text-slate-800 tracking-tight uppercase tracking-[0.1em] drop-shadow-sm">Active Event Planning</h2>
-                          <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">Reviewing AI-generated blueprints and logistics</p>
-                        </div>
-                        <button onClick={exportSummaryTable} className="px-6 py-3 bg-white/60 border border-white/80 hover:bg-white text-[10px] font-black uppercase tracking-widest text-slate-700 rounded-2xl shadow-sm transition-all hover:shadow-md">Export CSV</button>
-                      </div>
-                      <div className="grid grid-cols-12 gap-6">
-                        <div className="col-span-12 lg:col-span-8">
-                          {visibleSteps
-                            .filter(s => !s.agent.includes('Knowledge Base') && !s.agent.includes('Monitoring') && !s.agent.includes('Shared Memory'))
-                            .map((step, idx) => (
-                            <AgentReport key={idx} step={step} isExpanded={expandedStepIndex === idx} onToggle={() => setExpandedStepIndex(idx)} />
-                          ))}
-                        </div>
-                        <div className="col-span-12 lg:col-span-4">
-                          <ProblemStatementFit stackStatus={stackStatus} />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </AnimatePresence>
-            </main>
+if (showRolePicker) {
+  return (
+    <div className="h-screen w-full flex items-center justify-center bg-gradient-to-br from-slate-50 to-emerald-50 p-4">
+      <div className="bg-white rounded-3xl shadow-2xl border border-slate-100 p-8 w-full max-w-md space-y-6">
+        <div className="text-center space-y-2">
+          <div className="w-14 h-14 rounded-2xl bg-emerald-50 border border-emerald-100 flex items-center justify-center mx-auto">
+            <Users className="w-7 h-7 text-emerald-600" />
           </div>
+          <h2 className="text-lg font-black text-slate-900 uppercase tracking-widest">Choose Your Role</h2>
+          <p className="text-xs text-slate-500 leading-relaxed">
+            Welcome, <span className="font-bold text-slate-700">{pendingGoogleUser?.displayName || pendingGoogleUser?.email}</span>!<br />
+            Select how you'll use CaterFlow.
+          </p>
         </div>
-      ) : (
-        <>
-          <header className="h-14 bg-white/90 backdrop-blur-md flex items-center justify-between px-6 border-b border-slate-200 flex-shrink-0 z-20">
-            <div className="flex items-center space-x-3">
-              <div className="w-8 h-8 bg-[var(--accent-color)] rounded-xl flex items-center justify-center font-bold text-lg text-white">C</div>
-              <h1 className="text-sm font-bold tracking-[0.08em] text-slate-950">
-                CaterFlow
-                <span className="text-slate-400 font-normal text-[10px] ml-2 uppercase tracking-[0.18em]">
-                  {workspaceRole === 'staff' ? 'Staff Portal' : 'Customer Planner'}
-                </span>
-              </h1>
-            </div>
-            <div className="flex items-center space-x-4">
-              <div className="flex items-center gap-3 pl-4 border-l border-slate-200">
-                <button
-                  onClick={() => setShowHistory(true)}
-                  className="p-2 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-xl transition-all"
-                  title="Saved Conversations"
-                >
-                  <History className="w-5 h-5" />
-                </button>
-                <img src={user.photoURL || null} className="w-6 h-6 rounded-full border border-slate-200" alt="User" />
-                <button onClick={logout} className="text-slate-400 hover:text-rose-500 transition-colors">
-                  <LogOut className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          </header>
+        <div className="grid grid-cols-1 gap-3">
+          {([
+            ['customer', 'Customer', 'Submit event briefs, review menus, track your plan'],
+            ['admin', 'Admin / Owner', 'Owner dashboard, pricing controls, supplier decisions'],
+            ['staff', 'Staff', 'Prep board, dispatch coordination, execution tasks'],
+          ] as const).map(([role, title, copy]) => (
+            <button
+              key={role}
+              type="button"
+              onClick={() => setSignupRole(role as WorkspaceRole)}
+              className={`rounded-2xl border p-4 text-left transition ${signupRole === role
+                ? 'border-emerald-600 bg-emerald-50 shadow-sm'
+                : 'border-slate-200 bg-white hover:border-emerald-200'
+                }`}
+            >
+              <p className={`text-xs font-black uppercase tracking-[0.18em] ${signupRole === role ? 'text-emerald-800' : 'text-slate-700'
+                }`}>{title}</p>
+              <p className="mt-1 text-[10px] leading-4 text-slate-500">{copy}</p>
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={handleGoogleRoleConfirm}
+          className="w-full min-h-12 bg-emerald-700 hover:bg-emerald-800 text-white font-black transition-all active:scale-[0.98] shadow-xl shadow-emerald-800/20 uppercase text-xs tracking-[0.18em] rounded-2xl"
+        >
+          Continue as {signupRole.charAt(0).toUpperCase() + signupRole.slice(1)}
+        </button>
+      </div>
+    </div>
+  );
+}
 
-          <main className="flex-1 grid grid-cols-12 gap-5 p-5 overflow-hidden relative bg-[var(--bg-color)]">
-            <div className="col-span-12 flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-2 h-12">
-              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
-                {workspaceRole === 'staff' ? 'Operational Tasks' : 'My Planning Journey'}
+if (!user && !showLogin) {
+  return <LandingPage onStart={() => setShowLogin(true)} />;
+}
+
+if (!user) {
+  return (
+    <div className="login-shell min-h-screen w-full p-5 relative overflow-hidden transition-colors duration-300">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(242,184,75,0.22),transparent_32%),linear-gradient(120deg,rgba(251,247,238,0.96),rgba(251,247,238,0.78))] pointer-events-none" />
+      <div className="relative z-20 mx-auto mb-5 flex max-w-6xl items-center justify-between">
+        <BrandLogo />
+        <button
+          type="button"
+          onClick={() => setShowLogin(false)}
+          className="rounded-full border border-slate-200 bg-white/80 px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-slate-600 shadow-sm backdrop-blur transition hover:bg-white hover:text-emerald-800"
+        >
+          Back
+        </button>
+      </div>
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="relative z-10 mx-auto grid max-w-6xl overflow-hidden rounded-[2rem] border border-white/70 bg-white/82 shadow-2xl shadow-slate-950/15 backdrop-blur-xl lg:grid-cols-[1.08fr_0.92fr]"
+      >
+        <section className="relative hidden min-h-[660px] overflow-hidden p-8 lg:block">
+          <img
+            src="https://images.unsplash.com/photo-1555244162-803834f70033?auto=format&fit=crop&q=85&w=1200"
+            alt="Catering prep table"
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/88 via-slate-950/24 to-transparent" />
+          <div className="relative z-10 flex h-full flex-col justify-between">
+            <div className="inline-flex w-fit items-center gap-2 rounded-full bg-white/90 px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-emerald-800 backdrop-blur">
+              <span className="h-2 w-2 rounded-full bg-tomato"></span>
+              Event ops workspace
+            </div>
+            <div className="max-w-xl space-y-5 text-white">
+              <h2 className="text-5xl font-black leading-[0.95] tracking-[-0.03em]">From client brief to service-ready plan.</h2>
+              <p className="max-w-md text-sm leading-7 text-white/78">
+                Sign in to coordinate menu planning, procurement, logistics, pricing, and risk monitoring with your AI catering team.
               </p>
-              <div className="flex gap-2">
-                {(workspaceRole === 'staff'
-                  ? [['staff-tasks', 'Duty Roster'], ['delivery', 'Logistics']]
-                  : [['conversation', 'Brief'], ['summary', 'Plan'], ['inventory-planner', 'Inventory Plan'], ['menu-editor', 'Edit Menu'], ['checkout', 'Checkout']]
-                ).map(([key, label]) => (
-                  <button
-                    key={key}
-                    onClick={() => setDashboardView(key as any)}
-                    className={`rounded-full px-3 py-1 text-[9px] font-black uppercase tracking-widest transition-all ${dashboardView === key
-                        ? 'bg-[var(--accent-color)] text-white'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
-                  >
-                    {label}
-                  </button>
+              <div className="grid grid-cols-3 gap-3 pt-3">
+                {[
+                  ["Menu", "portion plan"],
+                  ["Stock", "procurement"],
+                  ["Ops", "timeline"],
+                ].map(([title, subtitle]) => (
+                  <div key={title} className="rounded-2xl border border-white/20 bg-white/14 p-4 backdrop-blur">
+                    <p className="text-sm font-black">{title}</p>
+                    <p className="text-[10px] uppercase tracking-widest text-white/60">{subtitle}</p>
+                  </div>
                 ))}
               </div>
             </div>
-            <AnimatePresence>
-              {showHistory && (
-                <motion.div
-                  initial={{ opacity: 0, x: -100 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -100 }}
-                  className="absolute inset-y-4 left-4 w-80 bg-white/95 backdrop-blur-xl rounded-3xl z-30 border border-slate-200 overflow-hidden flex flex-col shadow-2xl shadow-slate-950/15"
-                >
-                  <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-[#fffaf0]">
-                    <h3 className="font-bold text-[10px] uppercase tracking-[0.2em] text-emerald-800">Saved Conversations</h3>
-                    <button onClick={() => setShowHistory(false)} className="text-slate-400 hover:text-emerald-700 transition-all">
-                      <ArrowRight className="w-4 h-4 rotate-180" />
-                    </button>
+          </div>
+        </section>
+
+        <section className="p-6 sm:p-10 lg:p-12 text-slate-900 flex flex-col justify-center">
+          <div className="mb-8 space-y-3">
+            <div className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-emerald-800">
+              Secure access
+            </div>
+            <div>
+              <h1 className="text-4xl font-black tracking-[-0.03em] text-slate-950">
+                {authMode === 'login' ? 'Welcome back.' : 'Create your workspace.'}
+              </h1>
+              <p className="mt-2 text-sm leading-6 text-slate-500">
+                {authMode === 'login'
+                  ? 'Continue building catering plans with your saved event history.'
+                  : 'Set up your CaterFlow account and start planning your first event.'}
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-6">
+            <form onSubmit={handleEmailAuth} className="space-y-4">
+              {authMode === 'signup' && (
+                <>
+                  <div className="space-y-1">
+                    <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Full Name</label>
+                    <input
+                      type="text"
+                      placeholder="EX: JOHN DOE"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none shadow-sm"
+                      required
+                    />
                   </div>
-                  <div className="border-b border-slate-100 bg-white p-3">
-                    <div className="relative">
-                      <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-                      <input
-                        value={historySearch}
-                        onChange={(e) => setHistorySearch(e.target.value)}
-                        placeholder="Search conversations"
-                        className="w-full rounded-2xl border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-xs outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
-                      />
+                  <div className="space-y-2">
+                    <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Workspace Role</label>
+                    <div className="grid grid-cols-2 gap-3">
+                      {[
+                        ['customer', 'Customer', 'Submit event brief, review menu, track plan'],
+                        ['admin', 'Admin', 'Owner dashboard, pricing, supplier decisions'],
+                        ['staff', 'Staff', 'Prep board, dispatch, execution tasks'],
+                      ].map(([role, title, copy]) => (
+                        <button
+                          key={role}
+                          type="button"
+                          onClick={() => setSignupRole(role as WorkspaceRole)}
+                          className={`rounded-2xl border p-4 text-left transition ${signupRole === role ? 'border-emerald-600 bg-emerald-50 shadow-sm' : 'border-slate-200 bg-white hover:border-emerald-200'}`}
+                        >
+                          <p className={`text-xs font-black uppercase tracking-[0.18em] ${signupRole === role ? 'text-emerald-800' : 'text-slate-700'}`}>{title}</p>
+                          <p className="mt-2 text-[10px] leading-4 text-slate-500">{copy}</p>
+                        </button>
+                      ))}
                     </div>
                   </div>
-                  <div className="flex-1 overflow-y-auto p-2 space-y-2">
-                    {filteredHistory.map((item) => (
-                      <div key={item.id} className="group rounded-2xl border border-slate-100 bg-white p-3 transition-all hover:border-emerald-200 hover:bg-emerald-50">
-                        <button onClick={() => loadFromHistory(item)} className="w-full text-left">
-                          <p className="text-[10px] font-bold text-slate-700 truncate mb-1 group-hover:text-emerald-800 transition-colors uppercase">{item.rawInput}</p>
-                          <div className="flex justify-between items-center">
-                            <p className="text-[8px] text-emerald-500/60 uppercase font-bold tracking-tighter">
-                              {item.createdAt?.seconds ? new Date(item.createdAt.seconds * 1000).toLocaleDateString() : 'Saved draft'}
-                            </p>
-                            <span className="text-[8px] px-1 bg-emerald-500/20 text-emerald-600 font-mono italic">{item.type || 'plan'} #{item.steps?.length || 0}A</span>
-                          </div>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => deleteConversation(item.id)}
-                          className="mt-2 inline-flex items-center gap-1 rounded-full bg-rose-50 px-2 py-1 text-[8px] font-black uppercase tracking-widest text-rose-600 transition hover:bg-rose-100"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                          Delete
-                        </button>
-                      </div>
-                    ))}
-                    {filteredHistory.length === 0 && (
-                      <div className="p-6 text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">No saved conversation found</div>
-                    )}
-                  </div>
-                </motion.div>
+                </>
               )}
-            </AnimatePresence>
+              <div className="space-y-1">
+                <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Email Address</label>
+                <input
+                  type="email"
+                  placeholder="USER@DOMAIN.COM"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none shadow-sm"
+                  required
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Password</label>
+                <input
+                  type="password"
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none shadow-sm"
+                  required
+                />
+              </div>
 
-            { }
-            {showConversation && <section className={`col-span-12 ${Object.keys(monitoringStep).length > 0 ? 'hidden' : 'lg:col-span-4'} flex flex-col space-y-4 overflow-hidden h-[calc(100vh-190px)]`}>
-              <div className="high-density-card flex flex-col min-h-[520px]">
-                <div className="high-density-header flex justify-between items-center">
-                  <div>
-                    <h2 className="high-density-label">Event Brief</h2>
-                    <p className="text-[11px] text-slate-500 mt-1">Answer a few questions. The agents handle the rest.</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button onClick={saveConversation} className="inline-flex items-center gap-1 text-[9px] font-bold text-sky-800 hover:text-sky-900 uppercase tracking-widest bg-sky-50 px-3 py-1.5 rounded-full border border-sky-100">
-                      <Save className="h-3 w-3" />
-                      Save
+              {authError && (
+                <div className="bg-pink-500/10 p-4 border border-pink-500/30 mb-4 animate-shake">
+                  <p className="text-[11px] text-pink-400 font-mono font-bold uppercase">{authError}</p>
+                  {authError.includes('operation-not-allowed') && (
+                    <p className="text-[10px] text-pink-400/80 mt-2 lowercase font-mono leading-relaxed">
+                      CRITICAL: Email/Password login is locked. Enable it in Firebase Console (Auth &gt; Sign-in Method) or use Google Access.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                className="w-full min-h-14 bg-emerald-700 hover:bg-emerald-800 text-white font-black transition-all active:scale-[0.98] shadow-xl shadow-emerald-800/20 uppercase text-xs tracking-[0.18em] rounded-2xl"
+              >
+                {authMode === 'login' ? 'Secure Login' : 'Create Account'}
+              </button>
+            </form>
+
+            <div className="relative py-1">
+              <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-200"></div></div>
+              <div className="relative flex justify-center text-[8px] uppercase tracking-[0.3em]"><span className="bg-white px-3 text-slate-400 font-bold">or continue with</span></div>
+            </div>
+
+            <button
+              onClick={signInWithGoogle}
+              className="w-full min-h-14 bg-white border border-slate-200 text-slate-700 rounded-2xl font-black flex items-center justify-center gap-3 hover:bg-slate-50 transition-all active:scale-[0.98] text-xs uppercase tracking-[0.18em] shadow-sm"
+            >
+              <img src="https://www.google.com/favicon.ico" className="w-3 h-3" alt="Google" />
+              Continue with Google
+            </button>
+
+            <p className="text-center text-[10px] text-slate-500 uppercase tracking-widest font-bold pt-1">
+              {authMode === 'login' ? "New operator?" : "Already registered?"}{" "}
+              <button
+                onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
+                className="text-emerald-700 font-bold hover:text-emerald-900 transition-colors underline decoration-emerald-500/30"
+              >
+                {authMode === 'login' ? 'Sign Up' : 'Return to Login'}
+              </button>
+            </p>
+          </div>
+        </section>
+      </motion.div>
+    </div>
+  );
+}
+
+
+const showConversation = dashboardView === 'conversation' || dashboardView === 'summary';
+const showOperations = dashboardView === 'operations' || dashboardView === 'summary';
+const showFinance = dashboardView === 'finance' || dashboardView === 'summary';
+
+return (
+  <div className={`app-shell flex flex-col h-screen w-full font-sans overflow-hidden transition-all duration-500 ${highContrast ? 'high-contrast' : ''
+    } ${workspaceRole === 'admin' ? 'admin-theme bg-[var(--bg-color)]' : workspaceRole === 'staff' ? 'staff-theme bg-[#fffbeb]' : 'customer-theme bg-[#fbf7ee]'}`}>
+
+    {workspaceRole === 'admin' ? (
+      <div className="flex-1 flex flex-col overflow-hidden bg-[var(--bg-color)]">
+        <header className="h-14 bg-[var(--header-bg)] flex items-center justify-between px-6 flex-shrink-0 z-30 border-b border-[var(--border-color)]">
+          <div className="flex items-center space-x-3">
+            <div className="w-8 h-8 bg-[var(--accent-color)] rounded-xl flex items-center justify-center font-bold text-lg text-white">C</div>
+            <h1 className="text-sm font-bold tracking-[0.08em] text-[var(--text-color)]">CaterFlow <span className="text-slate-500 font-normal text-[10px] ml-2 uppercase tracking-[0.18em]">Admin Portal</span></h1>
+          </div>
+          <div className="flex items-center space-x-4">
+            <div className="flex items-center gap-3 pl-4 border-l border-[var(--border-color)]">
+              <img src={user.photoURL || undefined} className="w-6 h-6 rounded-full border border-[var(--border-color)]" alt="User" />
+              <button onClick={() => auth.signOut()} className="text-slate-500 hover:text-rose-500 transition-colors">
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <div className="flex-1 flex overflow-hidden">
+          <aside className="w-64 bg-[var(--header-bg)] border-r border-[var(--border-color)] flex flex-col p-4 space-y-2">
+            {[
+              ['admin-inbox', 'Inbox / Chats', Inbox],
+              ['shop-setup', 'My Catering Shop', Store],
+              ['summary', 'Planning Hub', ClipboardList],
+              ['admin-dashboard', 'Business Analytics', BarChart3],
+              ['finance', 'Financials', DollarSign],
+            ].map(([key, label, Icon]: any) => (
+              <button
+                key={key}
+                onClick={() => setDashboardView(key as any)}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all ${dashboardView === key ? 'bg-[var(--accent-color)] text-slate-950 shadow-lg shadow-[var(--accent-color)]/20' : 'text-slate-400 hover:bg-white/5'
+                  }`}
+              >
+                <Icon className="w-4 h-4" />
+                {label}
+              </button>
+            ))}
+
+            <div className="mt-auto pt-4 border-t border-[var(--border-color)]">
+              <div className="p-4 bg-[var(--accent-color)]/5 border border-[var(--accent-color)]/10 rounded-2xl">
+                <p className="text-[10px] font-black text-[var(--accent-color)] uppercase tracking-widest mb-1">Owner Mode</p>
+                <p className="text-[9px] text-slate-500 leading-relaxed font-medium">You are managing your catering business operations.</p>
+              </div>
+            </div>
+          </aside>
+
+          <main className="flex-1 bg-[var(--bg-color)] overflow-y-auto p-8">
+            <AnimatePresence mode="wait">
+              {dashboardView === 'admin-inbox' && (
+                <AdminInbox
+                  plans={[]}
+                  adminUid={user.uid}
+                  adminName={user.displayName || 'Admin'}
+                  onSendMessage={async (planId, text) => {
+                    console.log(`Sending to ${planId}: ${text}`);
+                  }}
+                  onUpdateStatus={(id, status) => {
+                    console.log(`Status of ${id} changed to ${status}`);
+                  }}
+                />
+              )}
+              {dashboardView === 'shop-setup' && (
+                <AdminShopSetup
+                  profile={shopProfile}
+                  onSave={async (data) => {
+                    const saved = await mongoService.saveShop(data);
+                    setShopProfile(saved);
+                  }}
+                />
+              )}
+              {dashboardView === 'admin-dashboard' && (
+                <AdminDashboard
+                  inventory={localInventory}
+                  pricing={pricingStep}
+                />
+              )}
+
+              {dashboardView === 'discovery' && (
+                <ShopDiscovery
+                  eventData={eventData}
+                  onSelectShop={(id) => setShowShopDetails(id)}
+                />
+              )}
+              {dashboardView === 'marketplace-chat' && selectedShop && (
+                <div className="space-y-6">
+                  <MarketplaceChat
+                    eventId={activeConversationId || ''}
+                    shop={selectedShop}
+                    currentUser={user}
+                    eventData={eventData}
+                    menuItems={localMenu}
+                  />
+                  <div className="flex justify-center">
+                    <button
+                      onClick={() => setDashboardView('qr')}
+                      className="px-8 py-4 bg-white border border-slate-200 rounded-2xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-emerald-600 hover:border-emerald-200 transition-all shadow-sm flex items-center gap-2"
+                    >
+                      <QrCode className="w-4 h-4" />
+                      Generate Order QR Code
                     </button>
-                    <button onClick={handleRestartWithPrompt} className="text-[9px] font-bold text-emerald-700 hover:text-emerald-900 uppercase tracking-widest bg-emerald-50 px-3 py-1.5 rounded-full border border-emerald-100">New</button>
-                    {activeConversationId && (
-                      <button onClick={() => deleteConversation()} className="inline-flex items-center gap-1 text-[9px] font-bold text-rose-700 hover:text-rose-900 uppercase tracking-widest bg-rose-50 px-3 py-1.5 rounded-full border border-rose-100">
-                        <Trash2 className="h-3 w-3" />
-                        Delete
-                      </button>
-                    )}
                   </div>
                 </div>
+              )}
+              {dashboardView === 'qr' && activeConversationId && (
+                <div className="py-10">
+                  <OrderQR orderId={activeConversationId} orderData={{ menu: localMenu, event: eventData }} />
+                  <div className="mt-8 text-center">
+                    <button onClick={() => setDashboardView('marketplace-chat')} className="text-xs font-bold text-slate-400 hover:text-slate-600 uppercase tracking-widest">
+                      Back to Chat
+                    </button>
+                  </div>
+                </div>
+              )}
 
-                { }
-                <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-[#fffaf0]" ref={chatScrollRef}>
-                  <AnimatePresence initial={false}>
-                    {messages.map((msg) => (
-                      <motion.div
-                        key={msg.id}
-                        initial={{ opacity: 0, x: msg.role === 'user' ? 20 : -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                      >
-                        <div className={`
-                      max-w-[88%] px-4 py-3 text-[13px] leading-relaxed relative rounded-3xl shadow-sm
-                      ${msg.role === 'user' ? 'bg-emerald-700 text-white rounded-br-md' :
-                            msg.role === 'system' ? 'bg-amber-50 text-amber-800 w-full text-center border border-amber-100 rounded-2xl text-[11px] font-semibold' :
-                              'bg-white text-slate-800 border border-slate-100 rounded-bl-md'}
-                    `}>
-                          {editingMessageId === msg.id ? (
-                            <div className="space-y-2">
-                              <textarea
-                                value={editingText}
-                                onChange={(e) => setEditingText(e.target.value)}
-                                className="min-h-20 w-full rounded-2xl border border-emerald-200 bg-white p-3 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-emerald-100"
-                              />
-                              <div className="flex justify-end gap-2">
-                                <button type="button" onClick={() => { setEditingMessageId(null); setEditingText(""); }} className="rounded-full bg-slate-100 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-slate-600">
-                                  {eventData.preferred_language === 'tagalog' ? 'I-cancel' : 'Cancel'}
-                                </button>
-                                <button type="button" onClick={commitEditMessage} className="rounded-full bg-emerald-700 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-white">
-                                  {eventData.preferred_language === 'tagalog' ? 'I-update' : 'Update'}
-                                </button>
-                              </div>
-                            </div>
-                          ) : (
-                            <>
-                              {msg.content}
-                              {msg.isWeatherChoice && (
-                                <div className="mt-4 flex gap-2">
-                                  <button
-                                    onClick={() => handleWeatherChoice(true)}
-                                    className="px-6 py-2 bg-emerald-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-md flex items-center gap-2"
-                                  >
-                                    <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
-                                    Yes
-                                  </button>
-                                  <button
-                                    onClick={() => handleWeatherChoice(false)}
-                                    className="px-6 py-2 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all"
-                                  >
-                                    No
-                                  </button>
-                                </div>
-                              )}
-                              {msg.isMenuCompositionChoice && (
-                                <div className="mt-4 flex flex-col gap-2">
-                                  <button
-                                    onClick={() => handleChatSubmit(undefined, "System decide best mix to maximize my budget")}
-                                    className="px-4 py-3 bg-emerald-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-md text-left flex justify-between items-center"
-                                  >
-                                    <span>🤖 Auto-plan (Maximize my budget)</span>
-                                    <ArrowRight className="w-3 h-3 opacity-50" />
-                                  </button>
-                                  <button
-                                    onClick={() => handleChatSubmit(undefined, "1-2 main dishes only, keep it simple for my budget")}
-                                    className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all text-left flex justify-between items-center"
-                                  >
-                                    <span>🍱 Keep it simple (1-2 dishes only)</span>
-                                    <ArrowRight className="w-3 h-3 opacity-50" />
-                                  </button>
-                                  <button
-                                    onClick={() => handleChatSubmit(undefined, "System decide mains only, no desserts and no drinks")}
-                                    className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all text-left flex justify-between items-center"
-                                  >
-                                    <span>🥩 Mains Only (No Desserts / Drinks)</span>
-                                    <ArrowRight className="w-3 h-3 opacity-50" />
-                                  </button>
-                                  <button
-                                    onClick={() => {
-                                      setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, isMenuCompositionChoice: false } : m));
-                                      setInput("");
-                                      setTimeout(() => document.querySelector('textarea')?.focus(), 0);
-                                    }}
-                                    className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all text-left flex justify-between items-center"
-                                  >
-                                    <span>✍️ I'll type my custom counts</span>
-                                    <ArrowRight className="w-3 h-3 opacity-50" />
-                                  </button>
-                                </div>
-                              )}
-                              {msg.isFoodChoiceMode && (
-                                <div className="mt-4 flex flex-col gap-2">
-                                  <button
-                                    onClick={() => handleChatSubmit(undefined, "Suggest for me")}
-                                    className="px-4 py-3 bg-emerald-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-md text-left flex justify-between items-center"
-                                  >
-                                    <span>🤖 Suggest for me</span>
-                                    <ArrowRight className="w-3 h-3 opacity-50" />
-                                  </button>
-                                  <button
-                                    onClick={() => handleChatSubmit(undefined, "I have specific food")}
-                                    className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all text-left flex justify-between items-center"
-                                  >
-                                    <span>📝 I have specific food</span>
-                                    <ArrowRight className="w-3 h-3 opacity-50" />
-                                  </button>
-                                </div>
-                              )}
-                              {msg.isPortionControlMode && (
-                                <div className="mt-4 flex flex-col gap-2">
-                                  <button
-                                    onClick={() => handleChatSubmit(undefined, "System automatically calculate")}
-                                    className="px-4 py-3 bg-emerald-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-md text-left flex justify-between items-center"
-                                  >
-                                    <span>🤖 Auto-calculate optimal portions</span>
-                                    <ArrowRight className="w-3 h-3 opacity-50" />
-                                  </button>
-                                  <button
-                                    onClick={() => handleChatSubmit(undefined, "I will specify portions")}
-                                    className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all text-left flex justify-between items-center"
-                                  >
-                                    <span>⚖️ I will specify portions</span>
-                                    <ArrowRight className="w-3 h-3 opacity-50" />
-                                  </button>
-                                </div>
-                              )}
-                              {msg.role === 'user' && (
-                                <button
-                                  type="button"
-                                  onClick={() => startEditMessage(msg)}
-                                  className="ml-2 inline-flex align-middle text-white/70 transition hover:text-white"
-                                  title="Edit message"
-                                >
-                                  <Pencil className="h-3 w-3" />
-                                </button>
-                              )}
-                            </>
-                          )}
-                          <div className={`text-[9px] mt-2 opacity-45 ${msg.role === 'user' ? 'text-right text-white' : 'text-left text-slate-500'}`}>
-                            {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}
-                          </div>
+              {dashboardView === 'summary' && (
+                <div className="relative min-h-[calc(100vh-80px)] w-full pb-16">
+                  <div className="absolute top-10 left-10 w-96 h-96 bg-emerald-300/30 rounded-full mix-blend-multiply filter blur-3xl opacity-70 pointer-events-none"></div>
+                  <div className="absolute top-40 right-20 w-96 h-96 bg-sky-300/30 rounded-full mix-blend-multiply filter blur-3xl opacity-70 pointer-events-none"></div>
+                  <div className="absolute bottom-20 left-1/3 w-96 h-96 bg-amber-200/30 rounded-full mix-blend-multiply filter blur-3xl opacity-70 pointer-events-none"></div>
+
+                  <div className="relative max-w-5xl mx-auto space-y-8 z-10">
+                    <div className="flex items-center justify-between p-8 backdrop-blur-xl bg-white/40 border border-white/60 rounded-[2.5rem] shadow-[0_8px_30px_rgb(0,0,0,0.04)] mb-8">
+                      <div>
+                        <h2 className="text-2xl font-black text-slate-800 tracking-tight uppercase tracking-[0.1em] drop-shadow-sm">Active Event Planning</h2>
+                        <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">Reviewing AI-generated blueprints and logistics</p>
+                      </div>
+                      <button onClick={exportSummaryTable} className="px-6 py-3 bg-white/60 border border-white/80 hover:bg-white text-[10px] font-black uppercase tracking-widest text-slate-700 rounded-2xl shadow-sm transition-all hover:shadow-md">Export CSV</button>
+                    </div>
+                    <div className="grid grid-cols-12 gap-6">
+                      <div className="col-span-12 lg:col-span-8">
+                        {visibleSteps
+                          .filter(s => !s.agent.includes('Knowledge Base') && !s.agent.includes('Monitoring') && !s.agent.includes('Shared Memory'))
+                          .map((step, idx) => (
+                            <AgentReport key={idx} step={step} isExpanded={expandedStepIndex === idx} onToggle={() => setExpandedStepIndex(idx)} />
+                          ))}
+                      </div>
+                      <div className="col-span-12 lg:col-span-4">
+                        <ProblemStatementFit stackStatus={stackStatus} />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </AnimatePresence>
+          </main>
+        </div>
+      </div>
+    ) : (
+      <>
+        <header className="h-14 bg-white/90 backdrop-blur-md flex items-center justify-between px-6 border-b border-slate-200 flex-shrink-0 z-20">
+          <div className="flex items-center space-x-3">
+            <div className="w-8 h-8 bg-[var(--accent-color)] rounded-xl flex items-center justify-center font-bold text-lg text-white">C</div>
+            <h1 className="text-sm font-bold tracking-[0.08em] text-slate-950">
+              CaterFlow
+              <span className="text-slate-400 font-normal text-[10px] ml-2 uppercase tracking-[0.18em]">
+                {workspaceRole === 'staff' ? 'Staff Portal' : 'Customer Planner'}
+              </span>
+            </h1>
+          </div>
+          <div className="flex items-center space-x-4">
+            <div className="flex items-center gap-3 pl-4 border-l border-slate-200">
+              <AnimatePresence>
+                {saveStatus !== 'idle' && (
+                  <motion.div 
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.8 }}
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-lg"
+                  >
+                    {saveStatus === 'saving' && (
+                      <>
+                        <Loader2 className="w-3 h-3 text-emerald-500 animate-spin" />
+                        <span className="text-[9px] font-black uppercase tracking-tighter text-emerald-600">Syncing...</span>
+                      </>
+                    )}
+                    {saveStatus === 'saved' && (
+                      <>
+                        <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                        <span className="text-[9px] font-black uppercase tracking-tighter text-emerald-600">Saved to Atlas</span>
+                      </>
+                    )}
+                    {saveStatus === 'error' && (
+                      <>
+                        <AlertCircle className="w-3 h-3 text-rose-500" />
+                        <span className="text-[9px] font-black uppercase tracking-tighter text-rose-600">Cloud Sync Error</span>
+                      </>
+                    )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+              <button
+                onClick={() => setShowHistory(true)}
+                className="p-2 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-xl transition-all"
+                title="Recent Conversations"
+              >
+                <History className="w-5 h-5" />
+              </button>
+              <img src={user.photoURL || null} className="w-6 h-6 rounded-full border border-slate-200" alt="User" />
+              <button onClick={logout} className="text-slate-400 hover:text-rose-500 transition-colors">
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="flex-1 grid grid-cols-12 gap-5 p-5 overflow-hidden relative bg-[var(--bg-color)]">
+          <div className="col-span-12 flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-2 h-12">
+            <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+              {workspaceRole === 'staff' ? 'Operational Tasks' : 'My Planning Journey'}
+            </p>
+            <div className="flex gap-2">
+              {(workspaceRole === 'staff'
+                ? [['staff-tasks', 'Duty Roster'], ['delivery', 'Logistics']]
+                : [['conversation', 'Brief'], ['summary', 'Plan'], ['inventory-planner', 'Inventory Plan'], ['menu-editor', 'Edit Menu'], ['checkout', 'Checkout']]
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  onClick={() => setDashboardView(key as any)}
+                  className={`rounded-full px-3 py-1 text-[9px] font-black uppercase tracking-widest transition-all ${dashboardView === key
+                    ? 'bg-[var(--accent-color)] text-white'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <AnimatePresence>
+            {showHistory && (
+              <motion.div
+                initial={{ opacity: 0, x: -100 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -100 }}
+                className="absolute inset-y-4 left-4 w-80 bg-white/98 backdrop-blur-2xl rounded-[2.5rem] z-30 border border-slate-200 overflow-hidden flex flex-col shadow-[0_20px_50px_rgba(0,0,0,0.15)]"
+              >
+                <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-emerald-50/50 to-transparent">
+                  <div>
+                    <h3 className="font-black text-xs uppercase tracking-[0.2em] text-emerald-900">Recent Conversations</h3>
+                    <p className="text-[10px] text-slate-400 mt-1 font-bold uppercase tracking-widest">Saved to MongoDB Atlas</p>
+                  </div>
+                  <button onClick={() => setShowHistory(false)} className="p-2 hover:bg-emerald-50 rounded-full text-slate-400 hover:text-emerald-700 transition-all">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                <div className="border-b border-slate-100 bg-white/50 p-4">
+                  <div className="relative group">
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-300 group-focus-within:text-emerald-500 transition-colors" />
+                    <input
+                      value={historySearch}
+                      onChange={(e) => setHistorySearch(e.target.value)}
+                      placeholder="Search history..."
+                      className="w-full rounded-2xl border border-slate-200 bg-slate-50/50 py-2.5 pl-10 pr-3 text-xs outline-none transition focus:border-emerald-500 focus:bg-white focus:ring-4 focus:ring-emerald-500/5"
+                    />
+                  </div>
+                </div>
+                <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+                  {filteredHistory.map((item) => (
+                    <div key={item.id || item._id} className="group relative rounded-[1.5rem] border border-slate-100 bg-white p-4 transition-all hover:border-emerald-200 hover:shadow-lg hover:shadow-emerald-900/5 hover:-translate-y-0.5">
+                      <button onClick={() => loadFromHistory(item)} className="w-full text-left">
+                        <div className="flex items-center gap-2 mb-2">
+                          <div className={`w-2 h-2 rounded-full ${item.type === 'plan' ? 'bg-emerald-500' : 'bg-amber-400'}`} />
+                          <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">
+                            {item.type === 'plan' ? 'Event Blueprint' : 'Conversation'}
+                          </span>
                         </div>
-                      </motion.div>
-                    ))}
-                    {showSummary && (
-                      <motion.div
-                        initial={{ opacity: 0, scale: 0.95 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        className="overflow-hidden rounded-3xl border border-emerald-200 bg-white shadow-xl shadow-emerald-900/10"
-                      >
-                        <div className="p-5 space-y-4">
-                          <div className="flex items-start gap-3 border-b border-slate-100 pb-4">
-                            <div className="p-2 bg-emerald-50 rounded-xl text-emerald-700">
-                              <CheckCircle2 className="w-5 h-5" />
-                            </div>
-                            <div className="min-w-0">
-                              <h3 className="text-sm font-black text-slate-950 uppercase tracking-[0.12em]">Review Event Details</h3>
-                              <p className="mt-1 text-[11px] leading-5 text-slate-500">Please check the details below. You can edit servings, food preferences, budget, or notes before the agents create the full plan.</p>
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                            {SUMMARY_FIELDS.filter((field) => field.key !== "special_requests" || eventData[field.key]).map((field) => (
-                              <div
-                                key={field.key}
-                                className={`rounded-2xl border p-3 ${field.important ? 'border-emerald-200 bg-emerald-50' : 'border-slate-100 bg-slate-50'}`}
-                              >
-                                <label className="mb-2 block text-[9px] font-black uppercase tracking-[0.16em] text-slate-500">
-                                  {field.label}
-                                </label>
-                                {field.compact ? (
-                                  <input
-                                    value={String(eventData[field.key] || "")}
-                                    onChange={(e) => updateEventDataField(field.key, e.target.value)}
-                                    placeholder="Not provided"
-                                    className="w-full rounded-xl border border-white bg-white px-3 py-2 text-[12px] font-bold text-slate-800 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100"
-                                  />
-                                ) : (
-                                  <textarea
-                                    value={String(eventData[field.key] || "")}
-                                    onChange={(e) => updateEventDataField(field.key, e.target.value)}
-                                    placeholder="Not provided"
-                                    rows={2}
-                                    className="w-full resize-none rounded-xl border border-white bg-white px-3 py-2 text-[12px] font-semibold leading-5 text-slate-800 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100"
-                                  />
-                                )}
-                              </div>
-                            ))}
-                          </div>
-
-                          <div className="rounded-2xl border border-amber-100 bg-amber-50 p-3">
-                            <p className="text-[10px] font-bold leading-5 text-amber-800">
-                              Is this correct? If the serving count or any food detail changed, edit it above before confirming.
+                        <p className="text-xs font-black text-slate-800 line-clamp-2 mb-3 group-hover:text-emerald-700 transition-colors">{item.rawInput}</p>
+                        <div className="flex justify-between items-center">
+                          <div className="flex items-center gap-1.5">
+                            <Calendar className="w-3 h-3 text-slate-300" />
+                            <p className="text-[10px] text-slate-500 font-bold">
+                              {item.createdAt?.seconds ? new Date(item.createdAt.seconds * 1000).toLocaleDateString() : 
+                               item.createdAt ? new Date(item.createdAt).toLocaleDateString() : 'Just now'}
                             </p>
                           </div>
-
-                          <div className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-2">
-                            <button
-                              onClick={handleConfirmOrder}
-                              className="flex-1 py-3 bg-emerald-700 text-white rounded-2xl text-[11px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-lg shadow-emerald-800/15"
-                            >
-                              Confirm & Plan
-                            </button>
-                            <button
-                              onClick={() => {
-                                setIsConfirming(false);
-                                setShowSummary(false);
-                                setMessages(prev => [...prev, {
-                                  id: `bot-retry-${Date.now()}`,
-                                  role: 'bot',
-                                  content: "No problem! What else would you like to add or change?",
-                                  timestamp: new Date()
-                                }]);
-                              }}
-                              className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[11px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all"
-                            >
-                              Add More
-                            </button>
-                          </div>
+                          <span className="text-[9px] px-2 py-1 bg-slate-50 text-slate-400 rounded-lg font-mono font-bold">
+                            #{String(item.id || item._id).slice(-4).toUpperCase()}
+                          </span>
                         </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                  {isProcessing && isChatting && (
-                    <div className="flex justify-start">
-                      <div className="bg-white border border-slate-100 px-4 py-3 rounded-2xl shadow-sm">
-                        <div className="flex space-x-1">
-                          <div className="w-1.5 h-1.5 bg-emerald-600 rounded-full animate-bounce"></div>
-                          <div className="w-1.5 h-1.5 bg-emerald-600 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
-                          <div className="w-1.5 h-1.5 bg-emerald-600 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
-                        </div>
+                      </button>
+                      <div className="mt-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          type="button"
+                          onClick={() => deleteConversation(item.id || item._id)}
+                          className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-600 transition hover:bg-rose-100"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Delete
+                        </button>
+                        <button
+                          onClick={() => loadFromHistory(item)}
+                          className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl bg-emerald-700 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-white transition hover:bg-emerald-800"
+                        >
+                          Open
+                        </button>
                       </div>
+                    </div>
+                  ))}
+                  {filteredHistory.length === 0 && (
+                    <div className="flex flex-col items-center justify-center py-12 text-center">
+                      <div className="w-16 h-16 bg-slate-50 rounded-3xl flex items-center justify-center mb-4">
+                        <Inbox className="w-8 h-8 text-slate-200" />
+                      </div>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">No conversations found</p>
                     </div>
                   )}
                 </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-                <div className="p-4 border-t border-slate-100 bg-white">
-                  <form onSubmit={handleChatSubmit} className="flex flex-col space-y-3">
-                    <div className="relative flex flex-col group">
-                      <textarea
-                        autoFocus
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && !e.shiftKey) {
-                            e.preventDefault();
-                            handleChatSubmit(e as any);
-                          }
-                        }}
-                        placeholder={isProcessing ? "Planning..." : "Type your answer here"}
-                        disabled={isProcessing || !isChatting}
-                        className="w-full p-4 pr-24 bg-slate-50 text-slate-800 rounded-3xl text-sm leading-relaxed border border-slate-200 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 resize-none min-h-[96px] placeholder:text-slate-400 transition-all outline-none"
-                        required
-                      />
-                      <div className="absolute bottom-3 right-3 flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={handleVoiceInput}
-                          className={`p-2.5 rounded-full transition-all ${isListening ? 'bg-rose-600 text-white animate-pulse shadow-lg shadow-rose-600/20' : 'bg-white text-slate-500 border border-slate-200 hover:bg-emerald-50 hover:text-emerald-700'}`}
-                        >
-                          {isListening ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
-                        </button>
-                        <button
-                          type="submit"
-                          disabled={isProcessing || !isChatting}
-                          className="p-2.5 bg-emerald-700 text-white rounded-full hover:bg-emerald-800 disabled:bg-slate-300 transition-all shadow-lg shadow-emerald-800/15"
-                        >
-                          <Send className="w-3 h-3" />
-                        </button>
-                      </div>
-                    </div>
-                  </form>
+          { }
+          {showConversation && <section className={`col-span-12 ${Object.keys(monitoringStep).length > 0 ? 'hidden' : 'lg:col-span-4'} flex flex-col space-y-4 overflow-hidden h-[calc(100vh-190px)]`}>
+            <div className="high-density-card flex flex-col min-h-[520px]">
+              <div className="high-density-header flex justify-between items-center">
+                <div>
+                  <h2 className="high-density-label">Event Brief</h2>
+                  <p className="text-[11px] text-slate-500 mt-1">Answer a few questions. The agents handle the rest.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={restartChat} className="inline-flex items-center gap-1 text-[9px] font-bold text-rose-800 hover:text-rose-900 uppercase tracking-widest bg-rose-50 px-3 py-1.5 rounded-full border border-rose-100">
+                    <Trash2 className="w-3 h-3" />
+                    Reset
+                  </button>
+                  {activeConversationId && (
+                    <button onClick={() => deleteConversation()} className="inline-flex items-center gap-1 text-[9px] font-bold text-rose-700 hover:text-rose-900 uppercase tracking-widest bg-rose-50 px-3 py-1.5 rounded-full border border-rose-100">
+                      <Trash2 className="h-3 w-3" />
+                      Delete
+                    </button>
+                  )}
                 </div>
               </div>
 
-              { }
-              {steps.length > 0 && <div className="high-density-card flex flex-col max-h-72">
-                <div className="high-density-header">
-                  <h2 className="high-density-label">Agent Progress</h2>
-                </div>
-                <div className="p-3 grid grid-cols-2 gap-2 overflow-y-auto">
-                  {[
-                    { name: 'Knowledge Base & RAG', desc: 'Playbook Retrieval' },
-                    { name: 'CustomerAgent', desc: 'Requirement Extraction' },
-                    { name: 'DietaryAgent', desc: 'Allergen Safety' },
-                    { name: 'MenuAgent', desc: 'Menu + Nutrition' },
-                    { name: 'InventoryAgent', desc: 'Procurement Weights' },
-                    { name: 'SupplierAgent', desc: 'Market + Distance' },
-                    { name: 'WeatherAgent', desc: 'Live Risk' },
-                    { name: 'LogisticsAgent', desc: 'Traffic Timeline' },
-                    { name: 'PricingAgent', desc: 'Margin Audit' },
-                    { name: 'MonitoringAgent', desc: 'Readiness QA' },
-                    { name: 'Shared Memory', desc: 'Agent Handoffs' }
-                  ].map((agent, i) => {
-                    const isActive = currentStepIndex === i;
-                    const isCompleted = currentStepIndex > i;
+              <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-[#fffaf0]" ref={chatScrollRef}>
+                <AnimatePresence initial={false}>
+                  {messages.map((msg) => (
+                    <motion.div
+                      key={msg.id}
+                      initial={{ opacity: 0, x: msg.role === 'user' ? 20 : -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                    >
+                      <div className={`
+                      max-w-[88%] px-4 py-3 text-[13px] leading-relaxed relative rounded-3xl shadow-sm
+                      ${msg.role === 'user' ? 'bg-emerald-700 text-white rounded-br-md' :
+                          msg.role === 'system' ? 'bg-amber-50 text-amber-800 w-full text-center border border-amber-100 rounded-2xl text-[11px] font-semibold' :
+                            msg.isWeatherForecast ? 'bg-blue-50/50 text-blue-900 border border-blue-100 rounded-bl-md' :
+                            'bg-white text-slate-800 border border-slate-100 rounded-bl-md'}
+                    `}>
+                        {editingMessageId === msg.id ? (
+                          <div className="space-y-2">
+                            <textarea
+                              value={editingText}
+                              onChange={(e) => setEditingText(e.target.value)}
+                              className="min-h-20 w-full rounded-2xl border border-emerald-200 bg-white p-3 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-emerald-100"
+                            />
+                            <div className="flex justify-end gap-2">
+                              <button type="button" onClick={() => { setEditingMessageId(null); setEditingText(""); }} className="rounded-full bg-slate-100 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-slate-600">
+                                {eventData.preferred_language === 'tagalog' ? 'I-cancel' : 'Cancel'}
+                              </button>
+                              <button type="button" onClick={commitEditMessage} className="rounded-full bg-emerald-700 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-white">
+                                {eventData.preferred_language === 'tagalog' ? 'I-update' : 'Update'}
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            {msg.isWeatherForecast ? (
+                              <span className="font-semibold text-blue-900">
+                                {msg.content}
+                              </span>
+                            ) : msg.content}
+                            
+                            {msg.isWeatherChoice && (
+                              <div className="mt-4 flex gap-2">
+                                <button
+                                  onClick={() => handleWeatherChoice(true)}
+                                  className="px-6 py-2 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-700 transition-all shadow-md flex items-center gap-2"
+                                >
+                                  <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
+                                  Yes
+                                </button>
+                                <button
+                                  onClick={() => handleWeatherChoice(false)}
+                                  className="px-6 py-2 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all"
+                                >
+                                  No
+                                </button>
+                              </div>
+                            )}
+                            {msg.isMenuCompositionChoice && (
+                              <div className="mt-4 flex flex-col gap-2">
+                                <button
+                                  onClick={() => handleChatSubmit(undefined, "System decide best mix to maximize my budget")}
+                                  className="px-4 py-3 bg-emerald-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-md text-left flex justify-between items-center"
+                                >
+                                  <span>🤖 Auto-plan (Maximize my budget)</span>
+                                  <ArrowRight className="w-3 h-3 opacity-50" />
+                                </button>
+                                <button
+                                  onClick={() => handleChatSubmit(undefined, "1-2 main dishes only, keep it simple for my budget")}
+                                  className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all text-left flex justify-between items-center"
+                                >
+                                  <span>🍱 Keep it simple (1-2 dishes only)</span>
+                                  <ArrowRight className="w-3 h-3 opacity-50" />
+                                </button>
+                                <button
+                                  onClick={() => handleChatSubmit(undefined, "System decide mains only, no desserts and no drinks")}
+                                  className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all text-left flex justify-between items-center"
+                                >
+                                  <span>🥩 Mains Only (No Desserts / Drinks)</span>
+                                  <ArrowRight className="w-3 h-3 opacity-50" />
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, isMenuCompositionChoice: false } : m));
+                                    setInput("");
+                                    setTimeout(() => document.querySelector('textarea')?.focus(), 0);
+                                  }}
+                                  className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all text-left flex justify-between items-center"
+                                >
+                                  <span>✍️ I'll type my custom counts</span>
+                                  <ArrowRight className="w-3 h-3 opacity-50" />
+                                </button>
+                              </div>
+                            )}
+                            {msg.isFoodChoiceMode && (
+                              <div className="mt-4 flex flex-col gap-2">
+                                <button
+                                  onClick={() => handleChatSubmit(undefined, "Suggest for me")}
+                                  className="px-4 py-3 bg-emerald-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-md text-left flex justify-between items-center"
+                                >
+                                  <span>🤖 Suggest for me</span>
+                                  <ArrowRight className="w-3 h-3 opacity-50" />
+                                </button>
+                                <button
+                                  onClick={() => handleChatSubmit(undefined, "I have specific food")}
+                                  className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all text-left flex justify-between items-center"
+                                >
+                                  <span>📝 I have specific food</span>
+                                  <ArrowRight className="w-3 h-3 opacity-50" />
+                                </button>
+                              </div>
+                            )}
+                            {msg.isPortionControlMode && (
+                              <div className="mt-4 flex flex-col gap-2">
+                                <button
+                                  onClick={() => handleChatSubmit(undefined, "System automatically calculate")}
+                                  className="px-4 py-3 bg-emerald-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-md text-left flex justify-between items-center"
+                                >
+                                  <span>🤖 Auto-calculate optimal portions</span>
+                                  <ArrowRight className="w-3 h-3 opacity-50" />
+                                </button>
+                                <button
+                                  onClick={() => handleChatSubmit(undefined, "I will specify portions")}
+                                  className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all text-left flex justify-between items-center"
+                                >
+                                  <span>⚖️ I will specify portions</span>
+                                  <ArrowRight className="w-3 h-3 opacity-50" />
+                                </button>
+                              </div>
+                            )}
+                            {msg.role === 'user' && (
+                              <button
+                                type="button"
+                                onClick={() => startEditMessage(msg)}
+                                className="ml-2 inline-flex align-middle text-white/70 transition hover:text-white"
+                                title="Edit message"
+                              >
+                                <Pencil className="h-3 w-3" />
+                              </button>
+                            )}
+                          </>
+                        )}
+                        <div className={`text-[9px] mt-2 opacity-45 ${msg.role === 'user' ? 'text-right text-white' : 'text-left text-slate-500'}`}>
+                          {msg.timestamp instanceof Date ? msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}
+                        </div>
+                      </div>
+                    </motion.div>
+                  ))}
+                  {showSummary && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      className="overflow-hidden rounded-3xl border border-emerald-200 bg-white shadow-xl shadow-emerald-900/10"
+                    >
+                      <div className="p-5 space-y-4">
+                        <div className="flex items-start gap-3 border-b border-slate-100 pb-4">
+                          <div className="p-2 bg-emerald-50 rounded-xl text-emerald-700">
+                            <CheckCircle2 className="w-5 h-5" />
+                          </div>
+                          <div className="min-w-0">
+                            <h3 className="text-sm font-black text-slate-950 uppercase tracking-[0.12em]">Review Event Details</h3>
+                            <p className="mt-1 text-[11px] leading-5 text-slate-500">Please check the details below. You can edit servings, food preferences, budget, or notes before the agents create the full plan.</p>
+                          </div>
+                        </div>
 
-                    return (
-                      <div key={agent.name} className={`flex items-center gap-2 p-2 rounded-2xl border transition-all ${isActive ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-100'}`}>
-                        <div className={`
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          {SUMMARY_FIELDS.filter((field) => field.key !== "special_requests" || eventData[field.key]).map((field) => (
+                            <div
+                              key={field.key}
+                              className={`rounded-2xl border p-3 ${field.important ? 'border-emerald-200 bg-emerald-50' : 'border-slate-100 bg-slate-50'}`}
+                            >
+                              <label className="mb-2 block text-[9px] font-black uppercase tracking-[0.16em] text-slate-500">
+                                {field.label}
+                              </label>
+                              {field.compact ? (
+                                <input
+                                  value={String(eventData[field.key] || "")}
+                                  onChange={(e) => updateEventDataField(field.key, e.target.value)}
+                                  placeholder="Not provided"
+                                  className="w-full rounded-xl border border-white bg-white px-3 py-2 text-[12px] font-bold text-slate-800 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100"
+                                />
+                              ) : (
+                                <textarea
+                                  value={String(eventData[field.key] || "")}
+                                  onChange={(e) => updateEventDataField(field.key, e.target.value)}
+                                  placeholder="Not provided"
+                                  rows={2}
+                                  className="w-full resize-none rounded-xl border border-white bg-white px-3 py-2 text-[12px] font-semibold leading-5 text-slate-800 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100"
+                                />
+                              )}
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="rounded-2xl border border-amber-100 bg-amber-50 p-3">
+                          <p className="text-[10px] font-bold leading-5 text-amber-800">
+                            Is this correct? If the serving count or any food detail changed, edit it above before confirming.
+                          </p>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-2">
+                          <button
+                            onClick={handleConfirmOrder}
+                            className="flex-1 py-3 bg-emerald-700 text-white rounded-2xl text-[11px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-lg shadow-emerald-800/15"
+                          >
+                            Confirm & Plan
+                          </button>
+                          <button
+                            onClick={() => {
+                              setIsConfirming(false);
+                              setShowSummary(false);
+                              setMessages(prev => [...prev, {
+                                id: `bot-retry-${Date.now()}`,
+                                role: 'bot',
+                                content: "No problem! What else would you like to add or change?",
+                                timestamp: new Date()
+                              }]);
+                            }}
+                            className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[11px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all"
+                          >
+                            Add More
+                          </button>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+                {isProcessing && (
+                  <div className="flex justify-start">
+                    <div className="bg-white border border-slate-100 px-6 py-4 rounded-[1.5rem] shadow-sm flex items-center gap-4">
+                      <div className="flex space-x-1.5">
+                        <div className="w-1.5 h-1.5 bg-emerald-600 rounded-full animate-bounce [animation-duration:0.8s]"></div>
+                        <div className="w-1.5 h-1.5 bg-emerald-600 rounded-full animate-bounce [animation-duration:0.8s] [animation-delay:0.1s]"></div>
+                        <div className="w-1.5 h-1.5 bg-emerald-600 rounded-full animate-bounce [animation-duration:0.8s] [animation-delay:0.2s]"></div>
+                      </div>
+                      {!isChatting && (
+                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Agents collaborating...</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="p-4 border-t border-slate-100 bg-white">
+                <form onSubmit={handleChatSubmit} className="flex flex-col space-y-3">
+                  <div className="relative flex flex-col group">
+                    <textarea
+                      autoFocus
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleChatSubmit(e as any);
+                        }
+                      }}
+                      placeholder={isProcessing ? "Planning..." : "Type your answer here"}
+                      disabled={isProcessing || !isChatting}
+                      className="w-full p-4 pr-24 bg-slate-50 text-slate-800 rounded-3xl text-sm leading-relaxed border border-slate-200 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 resize-none min-h-[96px] placeholder:text-slate-400 transition-all outline-none"
+                      required
+                    />
+                    <div className="absolute bottom-3 right-3 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleVoiceInput}
+                        className={`p-2.5 rounded-full transition-all ${isListening ? 'bg-rose-600 text-white animate-pulse shadow-lg shadow-rose-600/20' : 'bg-white text-slate-500 border border-slate-200 hover:bg-emerald-50 hover:text-emerald-700'}`}
+                      >
+                        {isListening ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isProcessing || !isChatting}
+                        className="p-2.5 bg-emerald-700 text-white rounded-full hover:bg-emerald-800 disabled:bg-slate-300 transition-all shadow-lg shadow-emerald-800/15"
+                      >
+                        <Send className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            { }
+            {steps.length > 0 && <div className="high-density-card flex flex-col max-h-72">
+              <div className="high-density-header">
+                <h2 className="high-density-label">Agent Progress</h2>
+              </div>
+              <div className="p-3 grid grid-cols-2 gap-2 overflow-y-auto">
+                {[
+                  { name: 'Knowledge Base & RAG', desc: 'Playbook Retrieval' },
+                  { name: 'CustomerAgent', desc: 'Requirement Extraction' },
+                  { name: 'DietaryAgent', desc: 'Allergen Safety' },
+                  { name: 'MenuAgent', desc: 'Menu + Nutrition' },
+                  { name: 'InventoryAgent', desc: 'Procurement Weights' },
+                  { name: 'SupplierAgent', desc: 'Market + Distance' },
+                  { name: 'WeatherAgent', desc: 'Live Risk' },
+                  { name: 'LogisticsAgent', desc: 'Traffic Timeline' },
+                  { name: 'PricingAgent', desc: 'Margin Audit' },
+                  { name: 'MonitoringAgent', desc: 'Readiness QA' },
+                  { name: 'Shared Memory', desc: 'Agent Handoffs' }
+                ].map((agent, i) => {
+                  const isActive = currentStepIndex === i;
+                  const isCompleted = currentStepIndex > i;
+
+                  return (
+                    <div key={agent.name} className={`flex items-center gap-2 p-2 rounded-2xl border transition-all ${isActive ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-100'}`}>
+                      <div className={`
                       w-5 h-5 text-[8px] flex items-center justify-center flex-shrink-0 font-mono rounded-full
                       ${isActive ? 'bg-emerald-700 text-white animate-pulse' : ''}
                       ${isCompleted ? 'bg-emerald-600 text-white' : 'border border-slate-200 text-slate-400'}
                     `}>
-                          <span>{isCompleted ? <CheckCircle2 className="w-3 h-3" /> : i + 1}</span>
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <h3 className={`text-[9px] font-bold truncate ${isActive ? 'text-emerald-800' : isCompleted ? 'text-slate-800' : 'text-slate-400'}`}>
-                            {agent.name}
-                          </h3>
-                        </div>
+                        <span>{isCompleted ? <CheckCircle2 className="w-3 h-3" /> : i + 1}</span>
                       </div>
-                    );
-                  })}
+                      <div className="flex-1 min-w-0">
+                        <h3 className={`text-[9px] font-bold truncate ${isActive ? 'text-emerald-800' : isCompleted ? 'text-slate-800' : 'text-slate-400'}`}>
+                          {agent.name}
+                        </h3>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>}
+          </section>}
+
+          { }
+          <section className={`col-span-12 ${Object.keys(monitoringStep).length > 0 ? 'lg:col-span-12' : 'lg:col-span-8'} flex flex-col space-y-4 h-[calc(100vh-190px)] min-h-0`}>
+            <div className="flex-1 overflow-y-auto pr-2 space-y-4 scroll-smooth custom-scrollbar pb-20" ref={scrollRef}>
+              {/* Start New Plan banner — always visible when results exist */}
+              {steps.length > 0 && (
+                <div className="flex items-center justify-between bg-slate-900 rounded-2xl px-5 py-3 mb-2">
+                  <p className="text-xs font-bold text-slate-300">Viewing a previous plan result</p>
+                  <button
+                    onClick={restartChat}
+                    className="flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-white px-4 py-2 rounded-full text-xs font-black uppercase tracking-wider transition"
+                  >
+                    <ArrowRight className="w-3.5 h-3.5" />
+                    Start New Plan
+                  </button>
                 </div>
-              </div>}
-            </section>}
-
-            { }
-            <section className={`col-span-12 ${Object.keys(monitoringStep).length > 0 ? 'lg:col-span-12' : 'lg:col-span-8'} flex flex-col space-y-4 h-[calc(100vh-190px)] min-h-0`}>
-              <div className="flex-1 overflow-y-auto pr-2 space-y-4 scroll-smooth custom-scrollbar pb-20" ref={scrollRef}>
-                {/* Start New Plan banner — always visible when results exist */}
-                {steps.length > 0 && (
-                  <div className="flex items-center justify-between bg-slate-900 rounded-2xl px-5 py-3 mb-2">
-                    <p className="text-xs font-bold text-slate-300">Viewing a previous plan result</p>
-                    <button
-                      onClick={restartChat}
-                      className="flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-white px-4 py-2 rounded-full text-xs font-black uppercase tracking-wider transition"
-                    >
-                      <ArrowRight className="w-3.5 h-3.5" />
-                      Start New Plan
-                    </button>
-                  </div>
+              )}
+              <AnimatePresence mode="popLayout">
+                {steps.length === 0 && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="min-h-full bg-white border border-slate-100 rounded-[2rem] shadow-sm"
+                  >
+                    <div className="grid grid-cols-1 xl:grid-cols-[0.92fr_1.08fr]">
+                      <div className="p-8 lg:p-10 flex flex-col justify-center min-h-[500px]">
+                        <div className="inline-flex w-fit items-center gap-2 rounded-full bg-emerald-50 px-4 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-800 mb-6">
+                          <ChefHat className="w-4 h-4" />
+                          Ready to plan
+                        </div>
+                        <h3 className="text-4xl font-black tracking-[-0.03em] text-slate-950 max-w-md">
+                          Build a catering plan from one conversation.
+                        </h3>
+                        <p className="mt-4 text-sm leading-7 text-slate-500 max-w-md">
+                          Start with the event brief on the left. CaterFlow will assemble the menu, supplies, schedule, quote, and risk notes here.
+                        </p>
+                        <div className="mt-8 grid grid-cols-2 gap-3 max-w-md">
+                          {[
+                            ['Menu', 'Dishes and portions'],
+                            ['Supplies', 'Procurement list'],
+                            ['Schedule', 'Prep and delivery'],
+                            ['Quote', 'Pricing and margin'],
+                          ].map(([title, copy]) => (
+                            <div key={title} className="rounded-2xl bg-[#fff7e8] border border-amber-100 p-4">
+                              <p className="text-sm font-black text-slate-900">{title}</p>
+                              <p className="text-[11px] text-slate-500 mt-1">{copy}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="relative min-h-[360px]">
+                        <img
+                          src="https://images.unsplash.com/photo-1555244162-803834f70033?auto=format&fit=crop&q=85&w=1000"
+                          alt="Prepared catering table"
+                          className="absolute inset-0 h-full w-full object-cover"
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-t from-slate-950/45 to-transparent"></div>
+                      </div>
+                    </div>
+                  </motion.div>
                 )}
-                <AnimatePresence mode="popLayout">
-                  {steps.length === 0 && (
-                    <motion.div
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      className="min-h-full bg-white border border-slate-100 rounded-[2rem] shadow-sm"
-                    >
-                      <div className="grid grid-cols-1 xl:grid-cols-[0.92fr_1.08fr]">
-                        <div className="p-8 lg:p-10 flex flex-col justify-center min-h-[500px]">
-                          <div className="inline-flex w-fit items-center gap-2 rounded-full bg-emerald-50 px-4 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-800 mb-6">
-                            <ChefHat className="w-4 h-4" />
-                            Ready to plan
+
+                {steps.length > 0 && (
+                  <motion.div
+                    key="plan-flow-overview"
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="mb-6 rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm"
+                  >
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-[0.22em] text-emerald-600">Dashboard Flow</p>
+                        <h2 className="mt-1 text-2xl font-black tracking-tight text-slate-950">Brief to executable catering plan</h2>
+                        <p className="mt-2 max-w-2xl text-xs leading-6 text-slate-500">
+                          Review the customer brief first, then inspect menu decisions, operations, and pricing from the selector below.
+                        </p>
+                      </div>
+                      <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-right">
+                        <p className="text-[9px] font-black uppercase tracking-widest text-emerald-700">Current View</p>
+                        <p className="text-sm font-black text-emerald-950">{reportView === 'menu' ? 'Menu Strategy' : reportView === 'logistics' ? 'Ops & Logistics' : reportView === 'finance' ? 'Finance' : 'Full Workflow'}</p>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
+                      <InfoTile icon={<Users className="w-4 h-4" />} label="Servings" value={customerStep.guests || eventData.guest_count || '--'} />
+                      <InfoTile icon={<Calendar className="w-4 h-4" />} label="Date" value={customerStep.date || eventData.event_date || '--'} />
+                      <InfoTile icon={<MapPin className="w-4 h-4" />} label="Location" value={customerStep.location || eventData.event_location || '--'} />
+                      <InfoTile icon={<DollarSign className="w-4 h-4" />} label="Budget" value={customerStep.budget || eventData.budget || '--'} />
+                      <InfoTile icon={<ShieldCheck className="w-4 h-4" />} label="Readiness" value={monitoringStep.execution_readiness ? `${monitoringStep.execution_readiness}%` : isProcessing ? 'Planning' : '--'} />
+                    </div>
+
+                    <div className="mt-5 grid grid-cols-1 gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500 sm:grid-cols-5">
+                      {['Brief', 'Menu', 'Procurement', 'Logistics', 'Quote'].map((item, index) => (
+                        <div key={item} className={`rounded-xl border px-3 py-2 ${index <= (monitoringStep.execution_readiness ? 4 : steps.length > 5 ? 2 : 1) ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-slate-100 bg-slate-50'}`}>
+                          {item}
+                        </div>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+
+                {Object.keys(monitoringStep).length > 0 && !showDetailedAgentView && (
+                  <motion.div
+                    key="final-summary-highlight"
+                    initial={{ opacity: 0, y: -20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="mb-8 overflow-hidden rounded-[2.5rem] border border-emerald-100 bg-white shadow-2xl shadow-emerald-900/8"
+                  >
+                    {/* Hero gradient header */}
+                    <div className="relative overflow-hidden bg-gradient-to-br from-slate-900 via-emerald-950 to-slate-900 p-8 md:p-10">
+                      <div className="absolute top-0 right-0 w-72 h-72 bg-emerald-500/10 rounded-full blur-3xl -translate-y-1/3 translate-x-1/3" />
+                      <div className="absolute bottom-0 left-0 w-48 h-48 bg-sky-500/10 rounded-full blur-2xl translate-y-1/3 -translate-x-1/3" />
+                      <div className="relative z-10">
+                        <div className="flex flex-wrap items-start justify-between gap-4">
+                          <div>
+                            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-emerald-400 mb-2">Multi-Agent Orchestration Complete</p>
+                            <h2 className="text-3xl md:text-4xl font-black tracking-tight text-white">Smart Catering Blueprint</h2>
+                            <p className="text-sm text-slate-300 mt-2 max-w-xl leading-relaxed">{monitoringStep.final_summary || 'Blueprint synchronized across all agents.'}</p>
                           </div>
-                          <h3 className="text-4xl font-black tracking-[-0.03em] text-slate-950 max-w-md">
-                            Build a catering plan from one conversation.
-                          </h3>
-                          <p className="mt-4 text-sm leading-7 text-slate-500 max-w-md">
-                            Start with the event brief on the left. CaterFlow will assemble the menu, supplies, schedule, quote, and risk notes here.
-                          </p>
-                          <div className="mt-8 grid grid-cols-2 gap-3 max-w-md">
-                            {[
-                              ['Menu', 'Dishes and portions'],
-                              ['Supplies', 'Procurement list'],
-                              ['Schedule', 'Prep and delivery'],
-                              ['Quote', 'Pricing and margin'],
-                            ].map(([title, copy]) => (
-                              <div key={title} className="rounded-2xl bg-[#fff7e8] border border-amber-100 p-4">
-                                <p className="text-sm font-black text-slate-900">{title}</p>
-                                <p className="text-[11px] text-slate-500 mt-1">{copy}</p>
-                              </div>
-                            ))}
+                          <div className="flex flex-wrap gap-2 mt-2">
+                            <button
+                              onClick={() => setDashboardView('inventory-planner')}
+                              className="rounded-full bg-emerald-500 hover:bg-emerald-400 px-5 py-2.5 text-[11px] font-black uppercase tracking-wider text-white transition shadow-lg flex items-center gap-2"
+                            >
+                              <ShoppingBag className="w-3.5 h-3.5" />
+                              Inventory Plan
+                            </button>
+                            <button onClick={exportBlueprint} className="rounded-full bg-white/10 hover:bg-white/20 border border-white/20 px-5 py-2.5 text-[11px] font-black uppercase tracking-wider text-white transition">
+                              Export
+                            </button>
                           </div>
                         </div>
-                        <div className="relative min-h-[360px]">
-                          <img
-                            src="https://images.unsplash.com/photo-1555244162-803834f70033?auto=format&fit=crop&q=85&w=1000"
-                            alt="Prepared catering table"
-                            className="absolute inset-0 h-full w-full object-cover"
-                          />
-                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/45 to-transparent"></div>
+
+                        {/* KPI Stat Cards */}
+                        <div className="mt-8 grid grid-cols-2 md:grid-cols-3 gap-3">
+                          {[
+                            { label: 'Your Budget', value: customerStep.budget || eventData.budget || '--', color: 'from-emerald-500/20 to-emerald-600/10', border: 'border-emerald-500/30', text: 'text-emerald-300' },
+                            { label: 'Guests', value: customerStep.guests || eventData.guest_count || '--', color: 'from-sky-500/20 to-sky-600/10', border: 'border-sky-500/30', text: 'text-sky-300' },
+                            { label: 'Readiness', value: monitoringStep.execution_readiness ? `${monitoringStep.execution_readiness}%` : '--', color: 'from-violet-500/20 to-violet-600/10', border: 'border-violet-500/30', text: 'text-violet-300' },
+                          ].map(({ label, value, color, border, text }) => (
+                            <div key={label} className={`bg-gradient-to-br ${color} border ${border} rounded-2xl p-4`}>
+                              <p className="text-[9px] font-black uppercase tracking-[0.25em] text-white/50 mb-1">{label}</p>
+                              <p className={`text-xl font-black ${text} tracking-tight truncate`}>{String(value)}</p>
+                            </div>
+                          ))}
                         </div>
                       </div>
-                    </motion.div>
-                  )}
+                    </div>
 
-                  {steps.length > 0 && (
-                    <motion.div
-                      key="plan-flow-overview"
-                      initial={{ opacity: 0, y: 12 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="mb-6 rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm"
-                    >
-                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                    {/* Results Grid */}
+                    <div className="p-8 space-y-6">
+                      {/* Menu Items */}
+                      {(menuStep.menu || []).length > 0 && (
                         <div>
-                          <p className="text-[10px] font-black uppercase tracking-[0.22em] text-emerald-600">Dashboard Flow</p>
-                          <h2 className="mt-1 text-2xl font-black tracking-tight text-slate-950">Brief to executable catering plan</h2>
-                          <p className="mt-2 max-w-2xl text-xs leading-6 text-slate-500">
-                            Review the customer brief first, then inspect menu decisions, operations, and pricing from the selector below.
-                          </p>
-                        </div>
-                        <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-right">
-                          <p className="text-[9px] font-black uppercase tracking-widest text-emerald-700">Current View</p>
-                          <p className="text-sm font-black text-emerald-950">{reportView === 'menu' ? 'Menu Strategy' : reportView === 'logistics' ? 'Ops & Logistics' : reportView === 'finance' ? 'Finance' : 'Full Workflow'}</p>
-                        </div>
-                      </div>
-
-                      <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
-                        <InfoTile icon={<Users className="w-4 h-4" />} label="Servings" value={customerStep.guests || eventData.guest_count || '--'} />
-                        <InfoTile icon={<Calendar className="w-4 h-4" />} label="Date" value={customerStep.date || eventData.event_date || '--'} />
-                        <InfoTile icon={<MapPin className="w-4 h-4" />} label="Location" value={customerStep.location || eventData.event_location || '--'} />
-                        <InfoTile icon={<DollarSign className="w-4 h-4" />} label="Budget" value={customerStep.budget || eventData.budget || '--'} />
-                        <InfoTile icon={<ShieldCheck className="w-4 h-4" />} label="Readiness" value={monitoringStep.execution_readiness ? `${monitoringStep.execution_readiness}%` : isProcessing ? 'Planning' : '--'} />
-                      </div>
-
-                      <div className="mt-5 grid grid-cols-1 gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500 sm:grid-cols-5">
-                        {['Brief', 'Menu', 'Procurement', 'Logistics', 'Quote'].map((item, index) => (
-                          <div key={item} className={`rounded-xl border px-3 py-2 ${index <= (monitoringStep.execution_readiness ? 4 : steps.length > 5 ? 2 : 1) ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-slate-100 bg-slate-50'}`}>
-                            {item}
-                          </div>
-                        ))}
-                      </div>
-                    </motion.div>
-                  )}
-
-                  {Object.keys(monitoringStep).length > 0 && !showDetailedAgentView && (
-                    <motion.div
-                      key="final-summary-highlight"
-                      initial={{ opacity: 0, y: -20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="mb-8 overflow-hidden rounded-[2.5rem] border border-emerald-100 bg-white shadow-2xl shadow-emerald-900/8"
-                    >
-                      {/* Hero gradient header */}
-                      <div className="relative overflow-hidden bg-gradient-to-br from-slate-900 via-emerald-950 to-slate-900 p-8 md:p-10">
-                        <div className="absolute top-0 right-0 w-72 h-72 bg-emerald-500/10 rounded-full blur-3xl -translate-y-1/3 translate-x-1/3" />
-                        <div className="absolute bottom-0 left-0 w-48 h-48 bg-sky-500/10 rounded-full blur-2xl translate-y-1/3 -translate-x-1/3" />
-                        <div className="relative z-10">
-                          <div className="flex flex-wrap items-start justify-between gap-4">
-                            <div>
-                              <p className="text-[10px] font-black uppercase tracking-[0.3em] text-emerald-400 mb-2">Multi-Agent Orchestration Complete</p>
-                              <h2 className="text-3xl md:text-4xl font-black tracking-tight text-white">Smart Catering Blueprint</h2>
-                              <p className="text-sm text-slate-300 mt-2 max-w-xl leading-relaxed">{monitoringStep.final_summary || 'Blueprint synchronized across all agents.'}</p>
-                            </div>
-                            <div className="flex flex-wrap gap-2 mt-2">
-                              <button
-                                onClick={() => setDashboardView('inventory-planner')}
-                                className="rounded-full bg-emerald-500 hover:bg-emerald-400 px-5 py-2.5 text-[11px] font-black uppercase tracking-wider text-white transition shadow-lg flex items-center gap-2"
-                              >
-                                <ShoppingBag className="w-3.5 h-3.5" />
-                                Inventory Plan
-                              </button>
-                              <button onClick={saveConversation} className="rounded-full bg-white/10 hover:bg-white/20 border border-white/20 px-5 py-2.5 text-[11px] font-black uppercase tracking-wider text-white transition">
-                                Save
-                              </button>
-                              <button onClick={exportBlueprint} className="rounded-full bg-white/10 hover:bg-white/20 border border-white/20 px-5 py-2.5 text-[11px] font-black uppercase tracking-wider text-white transition">
-                                Export
-                              </button>
-                            </div>
-                          </div>
-
-                          {/* KPI Stat Cards */}
-                          <div className="mt-8 grid grid-cols-2 md:grid-cols-3 gap-3">
-                            {[
-                              { label: 'Your Budget', value: customerStep.budget || eventData.budget || '--', color: 'from-emerald-500/20 to-emerald-600/10', border: 'border-emerald-500/30', text: 'text-emerald-300' },
-                              { label: 'Guests', value: customerStep.guests || eventData.guest_count || '--', color: 'from-sky-500/20 to-sky-600/10', border: 'border-sky-500/30', text: 'text-sky-300' },
-                              { label: 'Readiness', value: monitoringStep.execution_readiness ? `${monitoringStep.execution_readiness}%` : '--', color: 'from-violet-500/20 to-violet-600/10', border: 'border-violet-500/30', text: 'text-violet-300' },
-                            ].map(({ label, value, color, border, text }) => (
-                              <div key={label} className={`bg-gradient-to-br ${color} border ${border} rounded-2xl p-4`}>
-                                <p className="text-[9px] font-black uppercase tracking-[0.25em] text-white/50 mb-1">{label}</p>
-                                <p className={`text-xl font-black ${text} tracking-tight truncate`}>{String(value)}</p>
+                          <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400 mb-3">AI Recommendations ({(menuStep.menu || []).length})</p>
+                          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                            {(menuStep.menu || []).map((item: any, i: number) => (
+                              <div key={`${item.dish}-${i}`} className="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-emerald-200 hover:shadow-xl hover:shadow-emerald-900/10">
+                                <FoodImageFrame item={item} compact />
+                                <div className="p-4 space-y-3">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <p className="text-sm font-black text-slate-950 leading-tight">{item.dish}</p>
+                                      <p className="mt-1 text-xs font-semibold text-slate-500 line-clamp-2">{item.description}</p>
+                                    </div>
+                                    {(item.price || item.portion_per_guest) && (
+                                      <span className="shrink-0 rounded-full bg-emerald-50 px-3 py-1 text-[10px] font-black text-emerald-700 border border-emerald-100">
+                                        {item.price || item.portion_per_guest}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    {[(item.category || ''), ...(item.tags || [])].filter(Boolean).slice(0, 3).map((tag: string) => (
+                                      <span key={tag} className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[9px] font-black uppercase tracking-wider text-slate-500">{tag}</span>
+                                    ))}
+                                  </div>
+                                  {item.reasoning && <p className="text-xs leading-relaxed text-slate-600">{item.reasoning}</p>}
+                                </div>
                               </div>
                             ))}
                           </div>
                         </div>
-                      </div>
+                      )}
 
-                      {/* Results Grid */}
-                      <div className="p-8 space-y-6">
-                        {/* Menu Items */}
-                        {(menuStep.menu || []).length > 0 && (
-                          <div>
-                            <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400 mb-3">AI Recommendations ({(menuStep.menu || []).length})</p>
-                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                              {(menuStep.menu || []).map((item: any, i: number) => (
-                                <div key={`${item.dish}-${i}`} className="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-emerald-200 hover:shadow-xl hover:shadow-emerald-900/10">
-                                  <FoodImageFrame item={item} compact />
-                                  <div className="p-4 space-y-3">
-                                    <div className="flex items-start justify-between gap-3">
-                                      <div className="min-w-0">
-                                        <p className="text-sm font-black text-slate-950 leading-tight">{item.dish}</p>
-                                        <p className="mt-1 text-xs font-semibold text-slate-500 line-clamp-2">{item.description}</p>
-                                      </div>
-                                      {(item.price || item.portion_per_guest) && (
-                                        <span className="shrink-0 rounded-full bg-emerald-50 px-3 py-1 text-[10px] font-black text-emerald-700 border border-emerald-100">
-                                          {item.price || item.portion_per_guest}
-                                        </span>
-                                      )}
-                                    </div>
-                                    <div className="flex flex-wrap gap-2">
-                                      {[(item.category || ''), ...(item.tags || [])].filter(Boolean).slice(0, 3).map((tag: string) => (
-                                        <span key={tag} className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[9px] font-black uppercase tracking-wider text-slate-500">{tag}</span>
-                                      ))}
-                                    </div>
-                                    {item.reasoning && <p className="text-xs leading-relaxed text-slate-600">{item.reasoning}</p>}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Metrics Table */}
-                        <div className="overflow-hidden rounded-2xl border border-slate-100">
-                          <table className="w-full">
-                            <thead>
-                              <tr className="bg-slate-50 border-b border-slate-100">
-                                <th className="px-5 py-3.5 text-left text-xs font-black uppercase tracking-[0.18em] text-slate-400">Metric</th>
-                                <th className="px-5 py-3.5 text-left text-xs font-black uppercase tracking-[0.18em] text-slate-400">Value</th>
+                      {/* Metrics Table */}
+                      <div className="overflow-hidden rounded-2xl border border-slate-100">
+                        <table className="w-full">
+                          <thead>
+                            <tr className="bg-slate-50 border-b border-slate-100">
+                              <th className="px-5 py-3.5 text-left text-xs font-black uppercase tracking-[0.18em] text-slate-400">Metric</th>
+                              <th className="px-5 py-3.5 text-left text-xs font-black uppercase tracking-[0.18em] text-slate-400">Value</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-50">
+                            {buildSummaryRows().slice(0, 8).map(([label, value]) => (
+                              <tr key={label} className="hover:bg-slate-50/80 transition-colors">
+                                <td className="px-5 py-4 text-sm font-bold text-slate-500 uppercase tracking-wide">{label}</td>
+                                <td className="px-5 py-4 text-sm font-semibold text-slate-900">{String(value)}</td>
                               </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-50">
-                              {buildSummaryRows().slice(0, 8).map(([label, value]) => (
-                                <tr key={label} className="hover:bg-slate-50/80 transition-colors">
-                                  <td className="px-5 py-4 text-sm font-bold text-slate-500 uppercase tracking-wide">{label}</td>
-                                  <td className="px-5 py-4 text-sm font-semibold text-slate-900">{String(value)}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-
-                        {/* Catering Shop Recommendations */}
-                        {(supplierStep.catering_shop_recommendations || []).length > 0 && (
-                          <div>
-                            <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400 mb-3">Recommended Catering Shops</p>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                              {(supplierStep.catering_shop_recommendations || []).slice(0, 3).map((shop: any, i: number) => (
-                                <div key={i} className="bg-gradient-to-br from-slate-50 to-white border border-slate-200 rounded-2xl p-4 hover:border-emerald-200 hover:shadow-md transition-all">
-                                  <div className="flex items-start justify-between mb-2">
-                                    <p className="text-sm font-black text-slate-900">{shop.name}</p>
-                                    <span className="text-xs font-black text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">{shop.match_score}</span>
-                                  </div>
-                                  <p className="text-xs text-slate-500 font-medium">{shop.area}</p>
-                                  {shop.reason && <p className="text-xs text-slate-400 mt-2 leading-relaxed">{shop.reason}</p>}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Staffing & Logistics */}
-                        {logisticsStep.staffing_needs && (
-                          <div className="flex items-start gap-4 bg-amber-50 border border-amber-100 rounded-2xl p-5">
-                            <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center flex-shrink-0">
-                              <Users className="w-5 h-5 text-amber-700" />
-                            </div>
-                            <div>
-                              <p className="text-xs font-black uppercase tracking-widest text-amber-700 mb-1">Staffing & Operations</p>
-                              <p className="text-sm font-semibold text-slate-800 leading-relaxed">{logisticsStep.staffing_needs}</p>
-                            </div>
-                          </div>
-                        )}
-
-                        <div className="pt-2 flex justify-end">
-                          <button
-                            onClick={() => setShowDetailedAgentView(true)}
-                            className="flex items-center gap-2 bg-slate-900 hover:bg-emerald-800 text-white px-7 py-3.5 rounded-full text-sm font-black uppercase tracking-wider transition shadow-lg"
-                          >
-                            View Detailed Agent Breakdown
-                            <ArrowRight className="w-4 h-4" />
-                          </button>
-                        </div>
+                            ))}
+                          </tbody>
+                        </table>
                       </div>
-                    </motion.div>
-                  )}
 
-                  { }
-                  {(steps.length > 0 && (!Object.keys(monitoringStep).length || showDetailedAgentView)) && (
+                      {/* Catering Shop Recommendations */}
+                      {(supplierStep.catering_shop_recommendations || []).length > 0 && (
+                        <div>
+                          <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400 mb-3">Recommended Catering Shops</p>
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            {(supplierStep.catering_shop_recommendations || []).slice(0, 3).map((shop: any, i: number) => (
+                              <div key={i} className="bg-gradient-to-br from-slate-50 to-white border border-slate-200 rounded-2xl p-4 hover:border-emerald-200 hover:shadow-md transition-all">
+                                <div className="flex items-start justify-between mb-2">
+                                  <p className="text-sm font-black text-slate-900">{shop.name}</p>
+                                  <span className="text-xs font-black text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">{shop.match_score}</span>
+                                </div>
+                                <p className="text-xs text-slate-500 font-medium">{shop.area}</p>
+                                {shop.reason && <p className="text-xs text-slate-400 mt-2 leading-relaxed">{shop.reason}</p>}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Staffing & Logistics */}
+                      {logisticsStep.staffing_needs && (
+                        <div className="flex items-start gap-4 bg-amber-50 border border-amber-100 rounded-2xl p-5">
+                          <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                            <Users className="w-5 h-5 text-amber-700" />
+                          </div>
+                          <div>
+                            <p className="text-xs font-black uppercase tracking-widest text-amber-700 mb-1">Staffing & Operations</p>
+                            <p className="text-sm font-semibold text-slate-800 leading-relaxed">{logisticsStep.staffing_needs}</p>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="pt-2 flex justify-end">
+                        <button
+                          onClick={() => setShowDetailedAgentView(true)}
+                          className="flex items-center gap-2 bg-slate-900 hover:bg-emerald-800 text-white px-7 py-3.5 rounded-full text-sm font-black uppercase tracking-wider transition shadow-lg"
+                        >
+                          View Detailed Agent Breakdown
+                          <ArrowRight className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+
+                { }
+                {(steps.length > 0 && (!Object.keys(monitoringStep).length || showDetailedAgentView)) && (
                   <div key="agent-reports-container" className="space-y-12">
                     {Object.keys(monitoringStep).length > 0 && (
                       <div className="flex items-center mt-2 mb-[-20px]">
@@ -2314,7 +2395,7 @@ export default function App() {
                         }
                       ];
 
-                      const activePhases = ORCHESTRATION_PHASES.filter(phase => 
+                      const activePhases = ORCHESTRATION_PHASES.filter(phase =>
                         visibleSteps.some(s => phase.agents.some(name => s.agent.includes(name)))
                       );
 
@@ -2382,280 +2463,280 @@ export default function App() {
                               );
                             })}
                           </div>
-                          
+
                           {/* Footer Stepper Controls */}
                           <div className="flex justify-between items-center mt-8 pt-4 border-t border-slate-100">
-                             <div className="flex gap-1">
-                               {activePhases.map((_, i) => (
-                                 <div 
-                                   key={i} 
-                                   onClick={() => setActivePhaseIndex(i)}
-                                   className={`h-1.5 rounded-full cursor-pointer transition-all duration-300 ${i === safeIndex ? 'w-6 bg-emerald-500' : 'w-2 bg-slate-200 hover:bg-emerald-200'}`} 
-                                 />
-                               ))}
-                             </div>
-                             {safeIndex < activePhases.length - 1 && (
-                               <button 
-                                 onClick={() => setActivePhaseIndex(safeIndex + 1)}
-                                 className="text-xs font-bold text-emerald-600 hover:text-emerald-800 uppercase tracking-wider"
-                               >
-                                 Continue to next step →
-                               </button>
-                             )}
+                            <div className="flex gap-1">
+                              {activePhases.map((_, i) => (
+                                <div
+                                  key={i}
+                                  onClick={() => setActivePhaseIndex(i)}
+                                  className={`h-1.5 rounded-full cursor-pointer transition-all duration-300 ${i === safeIndex ? 'w-6 bg-emerald-500' : 'w-2 bg-slate-200 hover:bg-emerald-200'}`}
+                                />
+                              ))}
+                            </div>
+                            {safeIndex < activePhases.length - 1 && (
+                              <button
+                                onClick={() => setActivePhaseIndex(safeIndex + 1)}
+                                className="text-xs font-bold text-emerald-600 hover:text-emerald-800 uppercase tracking-wider"
+                              >
+                                Continue to next step →
+                              </button>
+                            )}
                           </div>
                         </div>
                       );
                     })()}
                   </div>
-                  )}
-
-                  {dashboardView === 'menu-editor' && (
-                    <MenuEditor
-                      menu={localMenu}
-                      onChange={(newMenu) => setLocalMenu(newMenu)}
-                    />
-                  )}
-                  {dashboardView === 'inventory-planner' && (
-                    <CustomerPlanner
-                      menu={localMenu}
-                      inventory={localInventory}
-                    />
-                  )}
-                  {dashboardView === 'admin-inbox' && (
-                    <AdminInbox
-                      plans={[]}
-                      adminUid={user.uid}
-                      adminName={user.displayName || 'Admin'}
-                      onSendMessage={async (planId, text) => {
-                        console.log(`Sending to ${planId}: ${text}`);
-                      }}
-                      onUpdateStatus={(id, status) => {
-                        console.log(`Status of ${id} changed to ${status}`);
-                      }}
-                    />
-                  )}
-                  {dashboardView === 'admin-dashboard' && (
-                    <AdminDashboard
-                      inventory={localInventory}
-                      pricing={pricingStep}
-                    />
-                  )}
-                  {dashboardView === 'staff-tasks' && (
-                    <StaffTaskBoard
-                      tasks={staffTasks}
-                      onToggle={(index) => {
-                        const newTasks = [...staffTasks];
-                        newTasks[index].completed = !newTasks[index].completed;
-                        setStaffTasks(newTasks);
-                      }}
-                    />
-                  )}
-                  {dashboardView === 'shop-setup' && (
-                    <AdminShopSetup
-                      profile={shopProfile}
-                      onSave={async (data) => {
-                        const saved = await mongoService.saveShop(data);
-                        setShopProfile(saved);
-                      }}
-                    />
-                  )}
-                  {dashboardView === 'checkout' && (
-                    <CheckoutPortal
-                      shop={matchedShop}
-                      event={eventData}
-                      blueprint={steps}
-                      status={agreementStatus}
-                      onAccept={() => setAgreementStatus('accepted')}
-                      onFinalize={() => setAgreementStatus('finalized')}
-                    />
-                  )}
-                  {dashboardView === 'delivery' && (
-                    <DriverView
-                      event={eventData}
-                      logistics={logisticsStep}
-                    />
-                  )}
-                </AnimatePresence>
-              </div>
-            </section>
-
-            {steps.length > 0 && (showOperations || showFinance) && (
-              <section className="col-span-12 lg:col-span-3 flex flex-col space-y-4">
-                <div className="high-density-card flex flex-col">
-                  <div className="high-density-header">
-                    <h2 className="high-density-label">Plan Snapshot</h2>
-                    <Utensils className="w-4 h-4 text-emerald-500" />
-                  </div>
-                  <div className="p-4 space-y-4">
-                    {steps.length > 0 ? (
-                      <>
-                        <div className="grid grid-cols-2 gap-3">
-                          <InfoTile icon={<Users className="w-4 h-4" />} label="Guests" value={customerStep.guests || eventData.guest_count || '--'} />
-                          <InfoTile icon={<MapPin className="w-4 h-4" />} label="Location" value={customerStep.location || eventData.event_location || '--'} />
-                          <InfoTile icon={<Calendar className="w-4 h-4" />} label="Date" value={customerStep.date || eventData.event_date || '--'} />
-                          <InfoTile icon={<ChefHat className="w-4 h-4" />} label="Menu Items" value={(menuStep.menu || []).length || '--'} />
-                        </div>
-                        <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3">
-                          <p className="text-[10px] font-bold text-emerald-800 uppercase tracking-widest mb-2">Next Best Actions</p>
-                          {nextBestActions.slice(0, 3).map((item: string, i: number) => (
-                            <p key={i} className="text-[10px] text-slate-600 leading-relaxed">- {item}</p>
-                          ))}
-                          {nextBestActions.length === 0 && (
-                            <p className="text-[10px] text-slate-500 leading-relaxed">Run the planner to generate next actions.</p>
-                          )}
-                        </div>
-                      </>
-                    ) : (
-                      <div className="py-8 text-center text-slate-400">
-                        <Utensils className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                        <p className="text-[10px] font-bold uppercase tracking-widest">Catering plan appears here after intake</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {showOperations && (
-                  <>
-                    <GeoOpsLeafletMap
-                      role={workspaceRole}
-                      customer={customerStep}
-                      inventory={inventoryStep}
-                      logistics={logisticsStep}
-                    />
-                    <RoleWorkspace role={workspaceRole} monitoring={monitoringStep} pricing={pricingStep} />
-                    <ProblemStatementFit stackStatus={stackStatus} />
-                    <div className="high-density-card flex flex-col">
-                      <div className="high-density-header">
-                        <h2 className="high-density-label">Readiness</h2>
-                      </div>
-                      <div className="p-4 space-y-4">
-                        {Object.keys(monitoringStep).length > 0 ? (
-                          <div className="space-y-4">
-                            <div className="grid grid-cols-2 gap-3 text-center">
-                              <div className="border border-emerald-100 bg-emerald-50 rounded-2xl p-3">
-                                <div className="text-lg font-black text-emerald-800 tracking-tighter">{monitoringStep.execution_readiness}%</div>
-                                <div className="text-[8px] text-emerald-500 uppercase font-bold tracking-widest">Readiness</div>
-                              </div>
-                              <div className="border border-emerald-100 bg-white rounded-2xl p-3">
-                                <div className="text-lg font-black text-slate-800 tracking-tighter">{monitoringStep.overall_status?.toUpperCase() || 'UNKNOWN'}</div>
-                                <div className="text-[8px] text-emerald-500 uppercase font-bold tracking-widest">Status</div>
-                              </div>
-                            </div>
-                            <div className="p-3 bg-[#fff7e8] rounded-2xl border border-amber-100">
-                              <p className="text-[11px] leading-relaxed text-slate-600 font-medium">
-                                {monitoringStep.final_summary || 'Protocols finalising...'}
-                              </p>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="h-full flex flex-col items-center justify-center text-emerald-900/40 py-12">
-                            <ShieldCheck className="w-12 h-12 mb-2 opacity-20" />
-                            <span className="text-[9px] font-bold uppercase tracking-[0.3em]">Plan review pending</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </>
                 )}
 
-                {showFinance && (
+                {dashboardView === 'menu-editor' && (
+                  <MenuEditor
+                    menu={localMenu}
+                    onChange={(newMenu) => setLocalMenu(newMenu)}
+                  />
+                )}
+                {dashboardView === 'inventory-planner' && (
+                  <CustomerPlanner
+                    menu={localMenu}
+                    inventory={localInventory}
+                  />
+                )}
+                {dashboardView === 'admin-inbox' && (
+                  <AdminInbox
+                    plans={[]}
+                    adminUid={user.uid}
+                    adminName={user.displayName || 'Admin'}
+                    onSendMessage={async (planId, text) => {
+                      console.log(`Sending to ${planId}: ${text}`);
+                    }}
+                    onUpdateStatus={(id, status) => {
+                      console.log(`Status of ${id} changed to ${status}`);
+                    }}
+                  />
+                )}
+                {dashboardView === 'admin-dashboard' && (
+                  <AdminDashboard
+                    inventory={localInventory}
+                    pricing={pricingStep}
+                  />
+                )}
+                {dashboardView === 'staff-tasks' && (
+                  <StaffTaskBoard
+                    tasks={staffTasks}
+                    onToggle={(index) => {
+                      const newTasks = [...staffTasks];
+                      newTasks[index].completed = !newTasks[index].completed;
+                      setStaffTasks(newTasks);
+                    }}
+                  />
+                )}
+                {dashboardView === 'shop-setup' && (
+                  <AdminShopSetup
+                    profile={shopProfile}
+                    onSave={async (data) => {
+                      const saved = await mongoService.saveShop(data);
+                      setShopProfile(saved);
+                    }}
+                  />
+                )}
+                {dashboardView === 'checkout' && (
+                  <CheckoutPortal
+                    shop={matchedShop}
+                    event={eventData}
+                    blueprint={steps}
+                    status={agreementStatus}
+                    onAccept={() => setAgreementStatus('accepted')}
+                    onFinalize={() => setAgreementStatus('finalized')}
+                  />
+                )}
+                {dashboardView === 'delivery' && (
+                  <DriverView
+                    event={eventData}
+                    logistics={logisticsStep}
+                  />
+                )}
+              </AnimatePresence>
+            </div>
+          </section>
+
+          {steps.length > 0 && (showOperations || showFinance) && (
+            <section className="col-span-12 lg:col-span-3 flex flex-col space-y-4">
+              <div className="high-density-card flex flex-col">
+                <div className="high-density-header">
+                  <h2 className="high-density-label">Plan Snapshot</h2>
+                  <Utensils className="w-4 h-4 text-emerald-500" />
+                </div>
+                <div className="p-4 space-y-4">
+                  {steps.length > 0 ? (
+                    <>
+                      <div className="grid grid-cols-2 gap-3">
+                        <InfoTile icon={<Users className="w-4 h-4" />} label="Guests" value={customerStep.guests || eventData.guest_count || '--'} />
+                        <InfoTile icon={<MapPin className="w-4 h-4" />} label="Location" value={customerStep.location || eventData.event_location || '--'} />
+                        <InfoTile icon={<Calendar className="w-4 h-4" />} label="Date" value={customerStep.date || eventData.event_date || '--'} />
+                        <InfoTile icon={<ChefHat className="w-4 h-4" />} label="Menu Items" value={(menuStep.menu || []).length || '--'} />
+                      </div>
+                      <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3">
+                        <p className="text-[10px] font-bold text-emerald-800 uppercase tracking-widest mb-2">Next Best Actions</p>
+                        {nextBestActions.slice(0, 3).map((item: string, i: number) => (
+                          <p key={i} className="text-[10px] text-slate-600 leading-relaxed">- {item}</p>
+                        ))}
+                        {nextBestActions.length === 0 && (
+                          <p className="text-[10px] text-slate-500 leading-relaxed">Run the planner to generate next actions.</p>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="py-8 text-center text-slate-400">
+                      <Utensils className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                      <p className="text-[10px] font-bold uppercase tracking-widest">Catering plan appears here after intake</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {showOperations && (
+                <>
+                  <GeoOpsLeafletMap
+                    role={workspaceRole}
+                    customer={customerStep}
+                    inventory={inventoryStep}
+                    logistics={logisticsStep}
+                  />
+                  <RoleWorkspace role={workspaceRole} monitoring={monitoringStep} pricing={pricingStep} />
+                  <ProblemStatementFit stackStatus={stackStatus} />
                   <div className="high-density-card flex flex-col">
                     <div className="high-density-header">
-                      <h2 className="high-density-label">Pricing</h2>
+                      <h2 className="high-density-label">Readiness</h2>
                     </div>
-                    <div className="p-4 flex-1">
-                      {Object.keys(pricingStep).length > 0 ? (
-                        <PricingInsight data={pricingStep} />
+                    <div className="p-4 space-y-4">
+                      {Object.keys(monitoringStep).length > 0 ? (
+                        <div className="space-y-4">
+                          <div className="grid grid-cols-2 gap-3 text-center">
+                            <div className="border border-emerald-100 bg-emerald-50 rounded-2xl p-3">
+                              <div className="text-lg font-black text-emerald-800 tracking-tighter">{monitoringStep.execution_readiness}%</div>
+                              <div className="text-[8px] text-emerald-500 uppercase font-bold tracking-widest">Readiness</div>
+                            </div>
+                            <div className="border border-emerald-100 bg-white rounded-2xl p-3">
+                              <div className="text-lg font-black text-slate-800 tracking-tighter">{monitoringStep.overall_status?.toUpperCase() || 'UNKNOWN'}</div>
+                              <div className="text-[8px] text-emerald-500 uppercase font-bold tracking-widest">Status</div>
+                            </div>
+                          </div>
+                          <div className="p-3 bg-[#fff7e8] rounded-2xl border border-amber-100">
+                            <p className="text-[11px] leading-relaxed text-slate-600 font-medium">
+                              {monitoringStep.final_summary || 'Protocols finalising...'}
+                            </p>
+                          </div>
+                        </div>
                       ) : (
                         <div className="h-full flex flex-col items-center justify-center text-emerald-900/40 py-12">
-                          <DollarSign className="w-12 h-12 mb-2 opacity-20" />
-                          <span className="text-[9px] font-bold uppercase tracking-[0.3em] font-mono">Profit_Analysis_Hold</span>
+                          <ShieldCheck className="w-12 h-12 mb-2 opacity-20" />
+                          <span className="text-[9px] font-bold uppercase tracking-[0.3em]">Plan review pending</span>
                         </div>
                       )}
                     </div>
                   </div>
-                )}
-              </section>
-            )}
-          </main>
+                </>
+              )}
 
-          <footer className="h-10 bg-white/90 border-t border-slate-200 px-6 flex items-center justify-between text-[8px] text-slate-400 font-bold uppercase tracking-[0.24em] flex-shrink-0 z-20">
-            <div>CaterFlow Smart Catering Planner</div>
-            <div className="flex items-center space-x-6">
-              <span className="hidden sm:inline">Customer to menu to inventory to logistics to pricing</span>
-              <div className="flex items-center space-x-2">
-                <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></div>
-                <span>Planner ready</span>
-              </div>
+              {showFinance && (
+                <div className="high-density-card flex flex-col">
+                  <div className="high-density-header">
+                    <h2 className="high-density-label">Pricing</h2>
+                  </div>
+                  <div className="p-4 flex-1">
+                    {Object.keys(pricingStep).length > 0 ? (
+                      <PricingInsight data={pricingStep} />
+                    ) : (
+                      <div className="h-full flex flex-col items-center justify-center text-emerald-900/40 py-12">
+                        <DollarSign className="w-12 h-12 mb-2 opacity-20" />
+                        <span className="text-[9px] font-bold uppercase tracking-[0.3em] font-mono">Profit_Analysis_Hold</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+        </main>
+
+        <footer className="h-10 bg-white/90 border-t border-slate-200 px-6 flex items-center justify-between text-[8px] text-slate-400 font-bold uppercase tracking-[0.24em] flex-shrink-0 z-20">
+          <div>CaterFlow Smart Catering Planner</div>
+          <div className="flex items-center space-x-6">
+            <span className="hidden sm:inline">Customer to menu to inventory to logistics to pricing</span>
+            <div className="flex items-center space-x-2">
+              <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></div>
+              <span>Planner ready</span>
             </div>
-          </footer>
-          <AnimatePresence>
-            {showAccessibilityPanel && (
+          </div>
+        </footer>
+        <AnimatePresence>
+          {showAccessibilityPanel && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
+            >
               <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
+                initial={{ scale: 0.9, y: 20 }}
+                animate={{ scale: 1, y: 0 }}
+                className="bg-white rounded-[2.5rem] w-full max-w-md overflow-hidden shadow-2xl border border-slate-200"
               >
-                <motion.div
-                  initial={{ scale: 0.9, y: 20 }}
-                  animate={{ scale: 1, y: 0 }}
-                  className="bg-white rounded-[2.5rem] w-full max-w-md overflow-hidden shadow-2xl border border-slate-200"
-                >
-                  <div className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                    <h3 className="text-xl font-black text-slate-950">CaterFlow Accessibility</h3>
-                    <button onClick={() => setShowAccessibilityPanel(false)} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
-                      <X className="w-5 h-5" />
-                    </button>
-                  </div>
-                  <div className="p-8 space-y-6">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="font-bold text-slate-900">High Contrast Mode</p>
-                        <p className="text-xs text-slate-500">Pure black and high visibility colors</p>
-                      </div>
-                      <button
-                        onClick={() => setHighContrast(!highContrast)}
-                        className={`w-12 h-6 rounded-full transition-all relative ${highContrast ? 'bg-emerald-600' : 'bg-slate-200'}`}
-                      >
-                        <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${highContrast ? 'left-7' : 'left-1'}`} />
-                      </button>
+                <div className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                  <h3 className="text-xl font-black text-slate-950">CaterFlow Accessibility</h3>
+                  <button onClick={() => setShowAccessibilityPanel(false)} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                <div className="p-8 space-y-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-bold text-slate-900">High Contrast Mode</p>
+                      <p className="text-xs text-slate-500">Pure black and high visibility colors</p>
                     </div>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="font-bold text-slate-900">Text-to-Speech (TTS)</p>
-                        <p className="text-xs text-slate-500">Read bot responses aloud</p>
-                      </div>
-                      <button
-                        onClick={() => setTtsEnabled(!ttsEnabled)}
-                        className={`w-12 h-6 rounded-full transition-all relative ${ttsEnabled ? 'bg-emerald-600' : 'bg-slate-200'}`}
-                      >
-                        <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${ttsEnabled ? 'left-7' : 'left-1'}`} />
-                      </button>
-                    </div>
-                    <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
-                      <p className="text-[10px] font-black uppercase tracking-widest text-emerald-800 mb-2">Screen Reader Tip</p>
-                      <p className="text-xs leading-relaxed text-slate-600">
-                        Use <kbd className="bg-white border border-slate-200 px-1 rounded text-[10px]">Tab</kbd> to navigate between roles and menu items. Press <kbd className="bg-white border border-slate-200 px-1 rounded text-[10px]">Space</kbd> to toggle tasks.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="p-8 bg-slate-50">
                     <button
-                      onClick={() => setShowAccessibilityPanel(false)}
-                      className="w-full py-4 bg-slate-950 text-white rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-xl shadow-slate-950/20"
+                      onClick={() => setHighContrast(!highContrast)}
+                      className={`w-12 h-6 rounded-full transition-all relative ${highContrast ? 'bg-emerald-600' : 'bg-slate-200'}`}
                     >
-                      Done
+                      <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${highContrast ? 'left-7' : 'left-1'}`} />
                     </button>
                   </div>
-                </motion.div>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-bold text-slate-900">Text-to-Speech (TTS)</p>
+                      <p className="text-xs text-slate-500">Read bot responses aloud</p>
+                    </div>
+                    <button
+                      onClick={() => setTtsEnabled(!ttsEnabled)}
+                      className={`w-12 h-6 rounded-full transition-all relative ${ttsEnabled ? 'bg-emerald-600' : 'bg-slate-200'}`}
+                    >
+                      <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${ttsEnabled ? 'left-7' : 'left-1'}`} />
+                    </button>
+                  </div>
+                  <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-emerald-800 mb-2">Screen Reader Tip</p>
+                    <p className="text-xs leading-relaxed text-slate-600">
+                      Use <kbd className="bg-white border border-slate-200 px-1 rounded text-[10px]">Tab</kbd> to navigate between roles and menu items. Press <kbd className="bg-white border border-slate-200 px-1 rounded text-[10px]">Space</kbd> to toggle tasks.
+                    </p>
+                  </div>
+                </div>
+                <div className="p-8 bg-slate-50">
+                  <button
+                    onClick={() => setShowAccessibilityPanel(false)}
+                    className="w-full py-4 bg-slate-950 text-white rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-xl shadow-slate-950/20"
+                  >
+                    Done
+                  </button>
+                </div>
               </motion.div>
-            )}
-          </AnimatePresence>
-        </>
-      )}
-    </div>
-  );
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </>
+    )}
+  </div>
+);
 }
 
 function LandingPage({ onStart }: { onStart: () => void }) {
@@ -3125,19 +3206,7 @@ function FoodImageFrame({ item, compact = false }: { item: any, compact?: boolea
         <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-white/70 bg-white/55 text-emerald-700 shadow-lg backdrop-blur">
           <Utensils className="h-7 w-7" />
         </div>
-      
-      {showShopDetails && (
-        <ShopDetailsModal 
-          shopId={showShopDetails} 
-          onClose={() => setShowShopDetails(null)} 
-          onStartChat={(shop) => {
-            setSelectedShop(shop);
-            setShowShopDetails(null);
-            setDashboardView('marketplace-chat');
-          }}
-        />
-      )}
-</div>
+      </div>
     </div>
   );
 }
@@ -3395,7 +3464,7 @@ function AgentReport({ step, isExpanded, onToggle }: { step: AgentStep, isExpand
               <p className="text-sm text-slate-800 leading-relaxed font-medium pl-5">{data.staffing_needs}</p>
               <p className="text-[11px] text-slate-500 font-medium pl-5 mt-1">{data.transport_plan}</p>
             </div>
-            
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {data.timeline?.slice(-4).map((t: any, i: number) => (
                 <div key={i} className="flex flex-col bg-white/40 backdrop-blur-md p-4 border border-white/60 rounded-2xl shadow-sm">

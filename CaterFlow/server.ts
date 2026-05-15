@@ -22,7 +22,7 @@ async function startServer() {
   console.log("Starting CaterFlow Server...");
 
   // MongoDB Connection with proper error handling and reconnection
-  const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/caterflow";
+  const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/CaterFlow";
   
   const mongooseOptions = {
     maxPoolSize: 10,
@@ -236,7 +236,7 @@ async function startServer() {
       const user = await UserProfile.findOneAndUpdate(
         { uid },
         { $set: update },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: 'after' }
       );
       res.json(user);
     } catch (err) {
@@ -436,9 +436,6 @@ JSON shape:
       });
 
       const result = await aiResponse.json();
-      const content = result.choices?.[0]?.message?.content;
-      const newItem = JSON.parse(content || "{}");
-      
       res.json({ success: true, newItem });
     } catch (err) {
       console.error("Regeneration failed:", err);
@@ -534,7 +531,7 @@ JSON shape:
 
       const updated = await Event.findByIdAndUpdate(eventId,
         { $set: update },
-        { new: true }
+        { returnDocument: 'after' }
       );
       res.json(updated);
     } catch (err) {
@@ -582,7 +579,7 @@ JSON shape:
       const shop = await Shop.findOneAndUpdate(
         { adminId: (req as any).auth.uid },
         { ...req.body, adminId: (req as any).auth.uid },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: 'after' }
       );
       res.json(shop);
     } catch (err) {
@@ -710,7 +707,7 @@ JSON shape:
       const shop = await Shop.findOneAndUpdate(
         { adminId: (req as any).auth.uid },
         { inventory: items, adminId: (req as any).auth.uid },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: 'after' }
       );
       res.json({ inventory: (shop as any).inventory || [] });
     } catch (err) {
@@ -794,7 +791,7 @@ JSON shape:
       if ((plan as any).adminId !== (req as any).auth.uid) {
         return res.status(403).json({ error: "Forbidden" });
       }
-      const updated = await SentPlan.findByIdAndUpdate(req.params.planId, { status }, { new: true });
+      const updated = await SentPlan.findByIdAndUpdate(req.params.planId, { status }, { returnDocument: 'after' });
       res.json(updated);
     } catch (err) {
       res.status(500).json({ error: "Failed to update plan status" });
@@ -837,7 +834,7 @@ JSON shape:
           $setOnInsert: { participants: [event.userId] },
           $push: { messages: { senderId, text: text.trim(), timestamp: Date.now() } },
         },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: 'after' }
       );
       res.json(chat);
     } catch (err) {

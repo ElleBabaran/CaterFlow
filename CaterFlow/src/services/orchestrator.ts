@@ -15,6 +15,58 @@ import { parseBudgetDetails } from "./budget";
 export const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
 export const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 
+export const openaiKey = import.meta.env.VITE_OPENAI_API_KEY || "";
+
+async function callAI(prompt: string, jsonMode = false, systemInstruction = "", responseSchema?: any) {
+  // Try OpenAI first (User request: "use openai instead")
+  if (openaiKey) {
+    try {
+      const finalPrompt = jsonMode ? `${prompt}\n\nIMPORTANT: Respond ONLY with a valid JSON object matching this schema or structure.` : prompt;
+
+      const res = await fetch("https://aiapiv2.pekpik.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${openaiKey}`
+        },
+        body: JSON.stringify({
+          model: "deepseek-chat",
+          messages: [
+            ...(systemInstruction ? [{ role: "system", content: systemInstruction }] : []),
+            { role: "user", content: finalPrompt }
+          ],
+          response_format: jsonMode ? { type: "json_object" } : undefined
+        })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message);
+      return data.choices?.[0].message.content || null;
+    } catch (err) {
+      console.warn("[CaterFlow] OpenAI primary engine failed, trying Gemini as failover...", err);
+    }
+  }
+
+  // Failover to Gemini
+  if (ai) {
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-2.0-flash-lite",
+        contents: systemInstruction ? `${systemInstruction}\n\n${prompt}` : prompt,
+        config: {
+          responseMimeType: jsonMode ? "application/json" : "text/plain",
+          responseSchema: jsonMode ? responseSchema : undefined
+        }
+      });
+      return response.text?.trim() || null;
+    } catch (err: any) {
+      console.error("[CaterFlow] All AI engines failed:", err);
+      return null;
+    }
+  }
+
+  return null;
+}
+
 export function parseAIJSON(text: string | null | undefined): any {
   if (!text) return {};
   try {
@@ -67,27 +119,194 @@ export function prefetchWeather(location: string, date: string, language = "engl
 
 export async function predictWeather(location: string, date: string, language: string = "english") {
   try {
-    if (ai) {
-      const aiResponse = await ai.models.generateContent({
-        model: "gemini-2.0-flash-lite",
-        contents: "Weather analyst. Predict weather for " + location + " on " + date + ". Language: " + language + ". In ≤2 sentences: state season, declare condition as SUNNY/RAINY/CLOUDY/MODERATE, and give 2 quick catering tips. Be concise and professional."
-      });
+    const apiKey = import.meta.env.VITE_OPENWEATHERMAP_API_KEY;
+    if (!apiKey) {
+      console.warn("No OpenWeatherMap API key found.");
+      return null;
+    }
+
+    // 1. Geocoding: Get lat/lon for the location
+    const geoUrl = `https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(location)}&limit=1&appid=${apiKey}`;
+    const geoRes = await fetch(geoUrl);
+    const geoData = await geoRes.json();
+
+    if (!geoRes.ok || !Array.isArray(geoData) || geoData.length === 0) {
+      console.error("Geocoding failed:", geoData);
       return {
-        source: "AI Environmental Intelligence",
-        summary: aiResponse.text?.trim() || "Weather for " + location + " is expected to be typical for " + date + ".",
-        risk_level: "low",
-        recommendations: [],
+        source: "Weather Intelligence System",
+        summary: `Could not locate "${location}". Please check the spelling or provide a more specific city name.`,
+        isForecastAvailable: false,
+        raw_data: null
       };
     }
-  } catch (err) {
-    console.error("AI Weather Prediction failed:", err);
+
+    const { lat, lon } = geoData[0];
+
+    // 2. Fetch Forecast
+    const forecastUrl = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&appid=${apiKey}&units=metric`;
+    const forecastRes = await fetch(forecastUrl);
+    const forecastData = await forecastRes.json();
+
+    if (!forecastRes.ok || !forecastData || !forecastData.list) {
+      console.error("Weather forecast fetch failed:", forecastData);
+      return {
+        source: "Weather Intelligence System",
+        summary: `Weather service error: ${forecastData.message || "Unknown error"}. Please verify your API key configuration.`,
+        isForecastAvailable: false,
+        raw_data: null
+      };
+    }
+
+    // 3. Normalize target date for searching
+    const targetDateObj = new Date(date);
+    if (isNaN(targetDateObj.getTime())) {
+      return {
+        source: "Weather Intelligence System",
+        summary: `The date "${date}" is invalid. Please use a format like MM/DD/YYYY.`,
+        isForecastAvailable: false,
+        raw_data: null
+      };
+    }
+
+    const targetDayStr = targetDateObj.toISOString().split('T')[0];
+    const now = new Date();
+    const diffDays = Math.ceil((targetDateObj.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+
+    if (diffDays < 0 || diffDays > 5) {
+      return {
+        source: "Weather Intelligence System",
+        summary: `Real-time forecast for ${location} on ${targetDayStr} is not yet available (max 5 days).`,
+        isForecastAvailable: false,
+        raw_data: { temp: "N/A", condition: "Unknown", rain: "N/A", humidity: "N/A", wind: "N/A", score: 0, risk: "unknown", recommendation: "Please check back closer to the event." }
+      };
+    }
+
+    // Find the entry closest to 12:00 PM on the target date
+    const closest = forecastData.list.find((entry: any) => entry.dt_txt.includes(targetDayStr) && entry.dt_txt.includes("12:00:00"))
+      || forecastData.list.find((entry: any) => entry.dt_txt.includes(targetDayStr))
+      || forecastData.list[0];
+
+    if (!closest) {
+      return {
+        source: "Weather Intelligence System",
+        summary: `No forecast found for ${targetDayStr}.`,
+        isForecastAvailable: false,
+        raw_data: null
+      };
+    }
+
+    const weatherInfo = {
+      temp: `${Math.round(closest.main.temp)}°C`,
+      condition: closest.weather[0].main,
+      rain: closest.pop !== undefined ? `${Math.round(closest.pop * 100)}%` : "0%",
+      humidity: `${closest.main.humidity}%`,
+      wind: `${Math.round(closest.wind.speed * 3.6)} km/h`,
+    };
+    let analysis = {
+      score: 7,
+      risk: "Low",
+      recommendation: "Please ensure standard food safety protocols are followed. (Detailed AI analysis temporarily unavailable)."
+    };
+
+    try {
+      const aiPrompt = `Weather Intelligence Agent. 
+        FACTUAL DATA for ${location} on ${targetDayStr}:
+        - Temperature: ${weatherInfo.temp}
+        - Condition: ${weatherInfo.condition}
+        - Rain Probability: ${weatherInfo.rain}
+        - Humidity: ${weatherInfo.humidity}
+        - Wind Speed: ${weatherInfo.wind}
+        
+        Language: ${language}.
+        
+        CRITICAL RULES:
+        1. Use ONLY provided data. Never invent.
+        2. Provide professional catering analysis.
+        3. Recommend specific actions.
+        4. Use realistic language.
+        5. Return JSON.`;
+
+      const aiSchema = {
+        type: Type.OBJECT,
+        properties: {
+          score: { type: Type.NUMBER },
+          risk: { type: Type.STRING },
+          recommendation: { type: Type.STRING }
+        },
+        required: ["score", "risk", "recommendation"]
+      };
+
+      const text = await callAI(aiPrompt, true, "", aiSchema);
+      const parsed = parseAIJSON(text);
+      if (parsed) {
+        analysis.score = parsed.score ?? analysis.score;
+        analysis.risk = parsed.risk ?? analysis.risk;
+        analysis.recommendation = parsed.recommendation ?? analysis.recommendation;
+      }
+    } catch (aiErr) {
+      console.error("AI Weather Analysis failed (using fallback):", aiErr);
+      if (weatherInfo.condition.toLowerCase().includes('rain')) {
+        analysis.score = 4;
+        analysis.risk = "Medium";
+        analysis.recommendation = "Rain is forecasted. Consider indoor venues or providing adequate tenting for food and guests.";
+      } else if (parseInt(weatherInfo.temp) > 30) {
+        analysis.score = 6;
+        analysis.risk = "Medium";
+        analysis.recommendation = "High temperatures detected. Ensure adequate beverage supply and cooling for perishable food items.";
+      }
+    }
+
+    const formattedSummary =
+      `🌤 Weather Forecast — ${location}\n` +
+      `📅 Date: ${targetDayStr} \n\n` +
+      `Condition: ${weatherInfo.condition}\n` +
+      `Temperature: ${weatherInfo.temp} \n` +
+      `Rain Chance: ${weatherInfo.rain} \n` +
+      `Humidity: ${weatherInfo.humidity} \n` +
+      `Wind Speed: ${weatherInfo.wind} \n\n` +
+      `Event Suitability Score: ${analysis.score}/10 \n` +
+      `Risk Level: ${(analysis.risk || "Unknown").toUpperCase()} \n\n` +
+      `Recommendation: ${analysis.recommendation}`;
+
+    return {
+      source: "Weather Intelligence System",
+      summary: formattedSummary,
+      risk_level: analysis.risk,
+      recommendations: [analysis.recommendation],
+      suitability_score: analysis.score,
+      isForecastAvailable: true,
+      raw_data: { ...weatherInfo, score: analysis.score, risk: analysis.risk, recommendation: analysis.recommendation }
+    };
+  } catch (err: any) {
+    console.error("Weather API error:", err);
+    return {
+      source: "Weather Intelligence System",
+      summary: `Weather Technical Error: ${err.message || "Connection failed"}.`,
+      isForecastAvailable: false,
+      raw_data: null
+    };
   }
+
   return {
-    source: "AI Environmental Intelligence",
-    summary: "Based on historical data, " + location + " on " + date + " is expected to have favorable conditions for catering events.",
-    risk_level: "low",
-    recommendations: [],
+    source: "Weather Intelligence System",
+    summary: `Forecast unavailable.`,
+    isForecastAvailable: false,
+    raw_data: null
   };
+}
+
+export async function translateText(text: string, targetLanguage: string) {
+  if (!text || targetLanguage.toLowerCase() === "english") return text;
+  try {
+    const prompt = `Professional Translator. Translate the following text into ${targetLanguage}. 
+      Keep the tone professional and warm. Preserve all emojis and formatting.
+      Text to translate: "${text}"`;
+    const translated = await callAI(prompt);
+    return translated || text;
+  } catch (err) {
+    console.error("Translation failed:", err);
+  }
+  return text;
 }
 
 export async function orchestrateCatering(input: string, onStep: (step: any) => void, useFoundry = false) {
@@ -156,13 +375,10 @@ export async function validateUserResponse(questionKey: string, questionText: st
   if (!deterministicValidation.valid || deterministicValidation.confident) return deterministicValidation;
 
   try {
-    if (!ai) return deterministicValidation;
     const lang = (preferredLanguage && preferredLanguage.length > 2) ? preferredLanguage : "english";
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash-lite",
-      contents: "You are a strict validator for a catering planner. Q: '" + questionText + "' User Answer: '" + normalizedAnswer + "' Is the User's answer actually answering the question or providing relevant context? - If the user says 'hi', 'hello', 'keyboard smash', or something unrelated to catering/the question, it is INVALID. - If it's a valid answer or provides new catering info, it is VALID. Reply only: VALID or INVALID: <short helpful message in " + lang + " explaining why and asking again>"
-    });
-    const text = response.text?.trim() || "VALID";
+    const prompt = "You are a strict validator for a catering planner. Q: '" + questionText + "' User Answer: '" + normalizedAnswer + "' Is the User's answer actually answering the question or providing relevant context? - If the user says 'hi', 'hello', 'keyboard smash', or something unrelated to catering/the question, it is INVALID. - If it's a valid answer or provides new catering info, it is VALID. Reply only: VALID or INVALID: <short helpful message in " + lang + " explaining why and asking again>";
+
+    const text = await callAI(prompt) || "VALID";
     if (text.startsWith("INVALID:")) {
       return { valid: false, message: text.replace("INVALID:", "").trim() };
     }
@@ -188,8 +404,21 @@ export async function processIntake(
     return FAST_FAIL(deterministicResult.message || "Please provide a more specific answer.");
   }
 
-  if (/\b(english|tagalog|filipino|spanish|japanese|chinese|mandarin)\b/i.test(trimmed)) {
-    return { intent: { type: 'LANGUAGE_CHANGE', value: trimmed }, validation: { valid: true }, reaction: { text: "" } };
+  const languageMatch = trimmed.match(/\b(english|tagalog|filipino|spanish|japanese|chinese|mandarin|nihongo|日本語|indonesian|bahasa|korean|korea|french|german|vietnamese|thai|arabic)\b/i);
+  if (languageMatch) {
+    const isLanguageStep = currentQuestionKey === 'preferred_language';
+    const isExplicitChange = /\b(speak|switch|change|use|translate|in|naka|mag|magsalita|bicara|pake)\b/i.test(trimmed);
+    const commonGreetings = /^(hi|hello|hey|yo|sup|test)$/i.test(trimmed);
+    const isJustLanguageName = trimmed.split(/\s+/).length <= 2 && !commonGreetings;
+    const isCuisineContext = currentQuestionKey === 'cuisine_preference' || /cuisine|food|dish|menu/i.test(currentQuestionText);
+
+    // Context-aware logic:
+    // 1. If it's an explicit command (e.g. "speak in Japanese"), it's always a language change.
+    // 2. If it's the dedicated language question, it's always a language change.
+    // 3. If it's just the language name, only change if NOT in a cuisine-related context.
+    if (isLanguageStep || isExplicitChange || (isJustLanguageName && !isCuisineContext)) {
+      return { intent: { type: 'LANGUAGE_CHANGE', value: languageMatch[0] }, validation: { valid: true }, reaction: { text: "" } };
+    }
   }
   if (/^(done|tapos|wala na|that'?s all|finish|none|wala)$/i.test(trimmed)) {
     return { intent: { type: 'DONE', value: trimmed }, validation: { valid: true }, reaction: { text: "" } };
@@ -202,29 +431,33 @@ export async function processIntake(
   if (!ai) return FAST_PASS;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash-lite",
-      contents: "CaterFlow concierge. Current Question: '" + currentQuestionText + "' | User Input: '" + trimmed + "' | Language: " + language + ". " +
-                "STRICT VALIDATION RULES: " +
-                "1. If the User is asking a question RELATED to catering, food, the event, or this planning process: Set intent.type='GENERAL_REQUEST', validation.valid=true, and provide a helpful, concise answer in reaction.text. " +
-                "2. If the User is providing a valid answer to the Current Question: Set intent.type='ANSWER', validation.valid=true, and give a ≤8-word warm reaction in reaction.text. " +
-                "3. If the User input is IRRELEVANT (greetings only, off-topic questions, gibberish, or vague fillers like 'ok' or 'maybe' without context): Set validation.valid=false. " +
-                "4. Detect other intents: LANGUAGE_CHANGE (if they want to switch languages), DONE (if they say they are finished with a multi-item list). " +
-                "Be extremely strict. If it's not a clear answer or a relevant question, it is INVALID.",
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            intent: { type: Type.OBJECT, properties: { type: { type: Type.STRING }, value: { type: Type.STRING } }, required: ["type"] },
-            validation: { type: Type.OBJECT, properties: { valid: { type: Type.BOOLEAN }, message: { type: Type.STRING } }, required: ["valid"] },
-            reaction: { type: Type.OBJECT, properties: { text: { type: Type.STRING } }, required: ["text"] }
-          },
-          required: ["intent", "validation", "reaction"]
-        }
-      }
-    });
-    return parseAIJSON(response.text) || FAST_PASS;
+    const prompt = "CaterFlow concierge. Current Question: '" + currentQuestionText + "' | User Input: '" + trimmed + "' | Language: " + language + ". " +
+      "STRICT VALIDATION RULES: " +
+      "1. If the User is asking a question RELATED to catering, food, the event, or this planning process: Set intent.type='GENERAL_REQUEST', validation.valid=true, and provide a helpful, concise answer in reaction.text. " +
+      "2. If the User is providing a valid answer to the Current Question: Set intent.type='ANSWER', validation.valid=true, and give a ≤8-word warm reaction in reaction.text. " +
+      "3. If the User input is IRRELEVANT (greetings only, off-topic questions, gibberish, or vague fillers like 'ok' or 'maybe' without context): Set validation.valid=false. " +
+      "4. Detect other intents: LANGUAGE_CHANGE (if they want to switch languages, even if it's a language not on the hardcoded list), DONE (if they say they are finished with a multi-item list). " +
+      "CRITICAL: YOUR ENTIRE RESPONSE (reaction.text and validation.message) MUST BE IN " + language.toUpperCase() + ". " +
+      "If the bot asks a numeric question (like guest count) and the user answers with a language name (like 'Indonesian'), it is a LANGUAGE_CHANGE, not a valid answer.";
+
+    const schema = {
+      type: Type.OBJECT,
+      properties: {
+        intent: { type: Type.OBJECT, properties: { type: { type: Type.STRING }, value: { type: Type.STRING } }, required: ["type"] },
+        validation: { type: Type.OBJECT, properties: { valid: { type: Type.BOOLEAN }, message: { type: Type.STRING } }, required: ["valid"] },
+        reaction: { type: Type.OBJECT, properties: { text: { type: Type.STRING } }, required: ["text"] }
+      },
+      required: ["intent", "validation", "reaction"]
+    };
+
+    const text = await callAI(prompt, true, "", schema);
+    const parsed = parseAIJSON(text);
+    if (!parsed) return FAST_PASS;
+    return {
+      intent: parsed.intent || FAST_PASS.intent,
+      validation: parsed.validation || FAST_PASS.validation,
+      reaction: parsed.reaction || FAST_PASS.reaction
+    };
   } catch (err) {
     console.error("Intake processing error:", err);
     return FAST_PASS;
@@ -238,14 +471,10 @@ export async function generateConversationalPrompt(
   nextQuestion: string,
   language: string = "english"
 ): Promise<{ reply: string }> {
-  if (!ai) return { reply: nextQuestion };
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash-lite",
-      contents: "CaterFlow concierge. Answered '" + questionText + "': '" + userAnswer + "'. Language: " + language + ". Write ≤8-word warm acknowledgement, then on new line: '" + nextQuestion + "'. No JSON, plain text only."
-    });
-    const text = response.text?.trim();
-    return { reply: text || nextQuestion };
+    const prompt = "CaterFlow concierge. Answered '" + questionText + "': '" + userAnswer + "'. Language: " + language + ". Write ≤8-word warm acknowledgement, then on new line: '" + nextQuestion + "'. No JSON, plain text only.";
+    const reply = await callAI(prompt);
+    return { reply: reply || nextQuestion };
   } catch {
     return { reply: nextQuestion };
   }
@@ -253,35 +482,31 @@ export async function generateConversationalPrompt(
 
 async function runConciergeAgent(input: string) {
   try {
-    if (!ai) throw new Error("No Gemini API key configured");
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash-lite",
-      contents: "You are the CaterFlow Concierge Agent (Phase 1). Analyze this input: '" + input + "'. CRITICAL RULE 1: If the input is random, gibberish, or completely unrelated to catering (e.g., 'how are you'), set event_type to 'INVALID_REQUEST'. CRITICAL RULE 2: Respond and extract information in the SAME LANGUAGE as the user's input. Extract ALL fields mentioned: event_type, guests, budget, location, date, dietary_needs, cuisine_preference, service_style, special_requests, food_choice_mode, specific_food_items, menu_composition, portion_control_mode.",
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            event_type: { type: Type.STRING },
-            guests: { type: Type.NUMBER },
-            budget: { type: Type.STRING },
-            location: { type: Type.STRING },
-            date: { type: Type.STRING },
-            dietary_needs: { type: Type.STRING },
-            cuisine_preference: { type: Type.STRING },
-            service_style: { type: Type.STRING },
-            special_requests: { type: Type.STRING },
-            food_choice_mode: { type: Type.STRING },
-            specific_food_items: { type: Type.STRING },
-            menu_composition: { type: Type.STRING },
-            food_style_preference: { type: Type.STRING },
-            portion_control_mode: { type: Type.STRING },
-          },
-          required: ["event_type", "guests", "location", "date"],
-        },
+    const prompt = "You are the CaterFlow Concierge Agent (Phase 1). Analyze this input: '" + input + "'. CRITICAL RULE 1: If the input is random, gibberish, or completely unrelated to catering (e.g., 'how are you'), set event_type to 'INVALID_REQUEST'. CRITICAL RULE 2: Respond and extract information in the SAME LANGUAGE as the user's input. Extract ALL fields mentioned: event_type, guests, budget, location, date, dietary_needs, cuisine_preference, service_style, special_requests, food_choice_mode, specific_food_items, menu_composition, portion_control_mode.";
+
+    const schema = {
+      type: Type.OBJECT,
+      properties: {
+        event_type: { type: Type.STRING },
+        guests: { type: Type.NUMBER },
+        budget: { type: Type.STRING },
+        location: { type: Type.STRING },
+        date: { type: Type.STRING },
+        dietary_needs: { type: Type.STRING },
+        cuisine_preference: { type: Type.STRING },
+        service_style: { type: Type.STRING },
+        special_requests: { type: Type.STRING },
+        food_choice_mode: { type: Type.STRING },
+        specific_food_items: { type: Type.STRING },
+        menu_composition: { type: Type.STRING },
+        food_style_preference: { type: Type.STRING },
+        portion_control_mode: { type: Type.STRING },
       },
-    });
-    return enrichCustomer(parseAIJSON(response.text), input);
+      required: ["event_type", "guests", "location", "date"],
+    };
+
+    const text = await callAI(prompt, true, "", schema);
+    return enrichCustomer(parseAIJSON(text), input);
   } catch {
     return enrichCustomer(parseCustomerFallback(input), input);
   }
@@ -289,23 +514,17 @@ async function runConciergeAgent(input: string) {
 
 async function runDietarySpecialist(input: string, customer: any) {
   try {
-    if (!ai) throw new Error("No Gemini API key configured");
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash-lite",
-      contents: "You are the Dietary Specialist. Identify allergens, labels, and safety controls for " + JSON.stringify(customer) + " from '" + input + "'.",
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            allergens_to_avoid: { type: Type.ARRAY, items: { type: Type.STRING } },
-            recommended_labels: { type: Type.ARRAY, items: { type: Type.STRING } },
-            safety_controls: { type: Type.ARRAY, items: { type: Type.STRING } },
-          },
-        },
+    const prompt = "You are the Dietary Specialist. Identify allergens, labels, and safety controls for " + JSON.stringify(customer) + " from '" + input + "'.";
+    const schema = {
+      type: Type.OBJECT,
+      properties: {
+        allergens_to_avoid: { type: Type.ARRAY, items: { type: Type.STRING } },
+        recommended_labels: { type: Type.ARRAY, items: { type: Type.STRING } },
+        safety_controls: { type: Type.ARRAY, items: { type: Type.STRING } },
       },
-    });
-    const parsed = parseAIJSON(response.text);
+    };
+    const text = await callAI(prompt, true, "", schema);
+    const parsed = parseAIJSON(text);
     return {
       allergens_to_avoid: parsed.allergens_to_avoid || extractAllergens(input),
       recommended_labels: parsed.recommended_labels || dietaryLabels(input),
@@ -322,7 +541,7 @@ async function runDietarySpecialist(input: string, customer: any) {
 
 async function runHeadChefAgent(input: string, customer: any, dietary: any, rag: any) {
   const budgetMeta = parseBudgetDetails(customer.budget || "");
-  const budgetValue = parseBudget(customer.budget);
+  const budgetValue = budgetMeta.value;
   const budgetPerGuest = budgetValue ? Math.round(budgetValue / (customer.guests || 100)) : 500;
 
   const composition = (() => {
@@ -344,37 +563,48 @@ async function runHeadChefAgent(input: string, customer: any, dietary: any, rag:
     ? "Menu composition: AUTO-DECIDE. Build " + totalItemsTarget + " items (" + composition.mainCount + " main, " + composition.dessertCount + " dessert, " + composition.drinkCount + " drink). Optimize for budget PHP " + budgetPerGuest + "/guest."
     : "Menu composition: USER-SPECIFIED. You MUST build exactly: " + composition.mainCount + " main dishes, " + composition.dessertCount + " desserts, " + composition.drinkCount + " drinks. Total: " + totalItemsTarget + " items.";
 
+  const stylePref = customer.food_style_preference || "Chef's Choice";
+  const cuisinePref = customer.cuisine_preference || "Any Cuisine";
+  
   try {
-    if (!ai) throw new Error("No Gemini API key configured");
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash-lite",
-      contents: "You are the CaterFlow Head Chef (Phase 2). Suggest a culturally adapted menu for " + JSON.stringify(customer) + ". Total Guests: " + customer.guests + ". Budget per guest: " + budgetPerGuest + ". " + compositionInstruction + " Avoid allergens: " + JSON.stringify(dietary.allergens_to_avoid) + ". Use RAG: " + JSON.stringify(rag.retrieved_playbooks) + ".",
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            dietary_compliance: { type: Type.STRING },
-            cultural_adaptation: { type: Type.STRING },
-            nutrition_summary: { type: Type.OBJECT },
-            menu: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  dish: { type: Type.STRING },
-                  description: { type: Type.STRING },
-                  portion_per_guest: { type: Type.STRING },
-                  tags: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  allergens: { type: Type.ARRAY, items: { type: Type.STRING } },
-                },
-              },
+    const prompt = `You are the CaterFlow Head Chef (Phase 2). 
+    STRICT COMPLIANCE MANDATE:
+    1. CUISINE: You MUST follow the '${cuisinePref}' preference.
+    2. COOKING STYLE: You MUST follow the '${stylePref}' style. (e.g., if 'Veggies', no meat. If 'Grilled', no frying).
+    3. DIETARY & ALLERGENS: Zero tolerance. Avoid: ${JSON.stringify(dietary.allergens_to_avoid)}. Follow: ${JSON.stringify(dietary.recommended_labels)}.
+    
+    Event Context: ${JSON.stringify(customer)}
+    Total Guests: ${customer.guests}
+    Budget per guest: ${budgetPerGuest}
+    
+    ${compositionInstruction}
+    
+    Use RAG context for authentic recipes: ${JSON.stringify(rag.retrieved_playbooks)}
+    
+    Any dish that violates the CUISINE, STYLE, or DIETARY rules is a FAILURE. Provide a premium, cohesive menu that meets 100% of these criteria.`;
+    const schema = {
+      type: Type.OBJECT,
+      properties: {
+        dietary_compliance: { type: Type.STRING },
+        cultural_adaptation: { type: Type.STRING },
+        nutrition_summary: { type: Type.OBJECT },
+        menu: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              dish: { type: Type.STRING },
+              description: { type: Type.STRING },
+              portion_per_guest: { type: Type.STRING },
+              tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+              allergens: { type: Type.ARRAY, items: { type: Type.STRING } },
             },
           },
         },
       },
-    });
-    const parsed = parseAIJSON(response.text);
+    };
+    const text = await callAI(prompt, true, "", schema);
+    const parsed = parseAIJSON(text);
     if (!parsed.menu?.length) throw new Error("AI returned no menu recommendations");
     const menu = parsed.menu.map((item: any, index: number) => ({
       dish: item.dish || "AI recommendation " + (index + 1),
@@ -402,33 +632,27 @@ async function runInventorySpecialist(customer: any, menuData: any) {
   const guests = Number(customer.guests || 100);
   const menu = menuData.menu || [];
   try {
-    if (!ai) throw new Error("No API key");
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash-lite",
-      contents: "You are the CaterFlow Inventory Specialist. Calculate procurement for " + guests + " guests. Menu: " + JSON.stringify(menu.map((m: any) => m.dish)),
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            procurement_list: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  item: { type: Type.STRING },
-                  qty: { type: Type.STRING },
-                  source_category: { type: Type.STRING }
-                }
-              }
-            },
-            potential_shortages: { type: Type.ARRAY, items: { type: Type.STRING } },
-            food_safety_notes: { type: Type.ARRAY, items: { type: Type.STRING } }
+    const prompt = "You are the CaterFlow Inventory Specialist. Calculate procurement for " + guests + " guests. Menu: " + JSON.stringify(menu.map((m: any) => m.dish));
+    const schema = {
+      type: Type.OBJECT,
+      properties: {
+        procurement_list: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              item: { type: Type.STRING },
+              qty: { type: Type.STRING },
+              source_category: { type: Type.STRING }
+            }
           }
-        }
+        },
+        potential_shortages: { type: Type.ARRAY, items: { type: Type.STRING } },
+        food_safety_notes: { type: Type.ARRAY, items: { type: Type.STRING } }
       }
-    });
-    const parsed = parseAIJSON(response.text);
+    };
+    const text = await callAI(prompt, true, "", schema);
+    const parsed = parseAIJSON(text);
     return {
       procurement_list: parsed.procurement_list || [],
       procurement_weight_kg: Math.ceil(guests * 0.46),
@@ -442,29 +666,23 @@ async function runInventorySpecialist(customer: any, menuData: any) {
 
 async function runSupplierSpecialist(customer: any, inventory: any, input: string) {
   try {
-    if (!ai) throw new Error("No API key");
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash-lite",
-      contents: "You are the CaterFlow Supplier Specialist. Location: " + customer.location + ". Budget: " + customer.budget + ". Recommend 3 local catering shops.",
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            supplier_matches: {
-              type: Type.ARRAY,
-              items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, categories: { type: Type.STRING }, score: { type: Type.STRING }, reason: { type: Type.STRING } } }
-            },
-            catering_shop_recommendations: {
-              type: Type.ARRAY,
-              items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, area: { type: Type.STRING }, match_score: { type: Type.STRING }, reason: { type: Type.STRING }, contact: { type: Type.STRING } } }
-            },
-            optimization_strategy: { type: Type.STRING }
-          }
-        }
+    const prompt = "You are the CaterFlow Supplier Specialist. Location: " + customer.location + ". Budget: " + customer.budget + ". Recommend 3 local catering shops.";
+    const schema = {
+      type: Type.OBJECT,
+      properties: {
+        supplier_matches: {
+          type: Type.ARRAY,
+          items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, categories: { type: Type.STRING }, score: { type: Type.STRING }, reason: { type: Type.STRING } } }
+        },
+        catering_shop_recommendations: {
+          type: Type.ARRAY,
+          items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, area: { type: Type.STRING }, match_score: { type: Type.STRING }, reason: { type: Type.STRING }, contact: { type: Type.STRING } } }
+        },
+        optimization_strategy: { type: Type.STRING }
       }
-    });
-    const parsed = parseAIJSON(response.text);
+    };
+    const text = await callAI(prompt, true, "", schema);
+    const parsed = parseAIJSON(text);
     return {
       supplier_matches: parsed.supplier_matches || [],
       optimization_strategy: parsed.optimization_strategy || "",
@@ -479,27 +697,21 @@ async function runSupplierSpecialist(customer: any, inventory: any, input: strin
 async function runLogisticsLeadAgent(customer: any, inventory: any, suppliers: any, weather: any) {
   const guests = Number(customer.guests || 100);
   try {
-    if (!ai) throw new Error("No API key");
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash-lite",
-      contents: "You are the CaterFlow Logistics Lead. Plan operations for " + guests + " guests at " + customer.location + ".",
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            timeline: {
-              type: Type.ARRAY,
-              items: { type: Type.OBJECT, properties: { time: { type: Type.STRING }, activity: { type: Type.STRING } } }
-            },
-            staffing_needs: { type: Type.STRING },
-            equipment_list: { type: Type.ARRAY, items: { type: Type.STRING } },
-            transport_plan: { type: Type.STRING }
-          }
-        }
+    const prompt = "You are the CaterFlow Logistics Lead. Plan operations for " + guests + " guests at " + customer.location + ".";
+    const schema = {
+      type: Type.OBJECT,
+      properties: {
+        timeline: {
+          type: Type.ARRAY,
+          items: { type: Type.OBJECT, properties: { time: { type: Type.STRING }, activity: { type: Type.STRING } } }
+        },
+        staffing_needs: { type: Type.STRING },
+        equipment_list: { type: Type.ARRAY, items: { type: Type.STRING } },
+        transport_plan: { type: Type.STRING }
       }
-    });
-    const parsed = parseAIJSON(response.text);
+    };
+    const text = await callAI(prompt, true, "", schema);
+    const parsed = parseAIJSON(text);
     return {
       timeline: parsed.timeline || [],
       staffing_needs: parsed.staffing_needs || "",
@@ -607,7 +819,7 @@ function validateAnswerDeterministically(questionKey: string, questionText: stri
     const hasNumbers = /\d+/.test(trimmed);
     const isNegotiable = /negotiable|open|depend|tbd|cheap|expensive|quality|best/.test(trimmed);
     if (!hasNumbers && !isNegotiable) {
-       return { valid: false, message: lang === 'tagalog' ? "Magkano po ang budget ninyo para sa event? Pakilagay po ang halaga o sabihing 'negotiable'." : "What is your budget for the event? Please provide an amount or say 'negotiable'.", confident: true };
+      return { valid: false, message: lang === 'tagalog' ? "Magkano po ang budget ninyo para sa event? Pakilagay po ang halaga o sabihing 'negotiable'." : "What is your budget for the event? Please provide an amount or say 'negotiable'.", confident: true };
     }
   }
 
