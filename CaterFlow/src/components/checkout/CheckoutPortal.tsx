@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { ChefHat, ClipboardList, Send } from 'lucide-react';
 
-export function CheckoutPortal({ shop, event, blueprint, status, onAccept, onFinalize }: { shop: any, event: any, blueprint: any[], status: string, onAccept: () => void, onFinalize: () => void }) {
+export function CheckoutPortal({ eventId, shop, event, blueprint, status, onAccept, onFinalize }: { eventId: string, shop: any, event: any, blueprint: any[], status: string, onAccept: () => void, onFinalize: () => void }) {
   const [msg, setMsg] = useState('');
   const [localMsgs, setLocalMsgs] = useState<any[]>([
     { role: 'admin', text: "Hello! We've received your catering blueprint. The menu looks great. Would you like to proceed with this quote?", time: 'Just now' }
@@ -52,6 +52,22 @@ export function CheckoutPortal({ shop, event, blueprint, status, onAccept, onFin
               <button onClick={onFinalize} className="w-full py-4 bg-emerald-700 text-white rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-lg shadow-emerald-900/20">
                 Proceed to Final Agreement
               </button>
+            )}
+
+            {status === 'finalized' && (
+              <div className="flex flex-col items-center gap-4 bg-slate-50 rounded-3xl p-6 border border-slate-200">
+                <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                   <img 
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(window.location.origin + '?orderId=' + eventId)}`} 
+                    alt="Order QR Code" 
+                    className="w-32 h-32"
+                   />
+                </div>
+                <div className="text-center">
+                   <p className="text-[10px] font-black uppercase tracking-widest text-slate-800">Scan to view order</p>
+                   <p className="text-[9px] text-slate-500 mt-1 font-medium">Anyone with this code can see the menu</p>
+                </div>
+              </div>
             )}
           </div>
         </div>

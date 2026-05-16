@@ -27,6 +27,8 @@ import {
   Trash2,
   Pencil,
   X,
+  UserCircle,
+  MessageSquare,
   PieChart as PieIcon,
   BarChart3,
   ClipboardList,
@@ -51,9 +53,10 @@ import {
 import { auth, signInWithGoogle, logout, loginWithEmail, signupWithEmail, WorkspaceRole } from './lib/firebase';
 import { MessageBubble } from './components/chat/MessageBubble';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { processIntake, orchestrateCatering, validateUserResponse } from './services/orchestrator';
+import { processIntake, orchestrateCatering, validateUserResponse, translateText, prefetchWeather, predictWeather } from './services/orchestrator';
 import { mongoService } from './services/mongodb';
 import { hasCurrencyMarker } from './services/budget';
+import { generateFoodImage } from './services/imageService';
 import { GeoOpsLeafletMap } from './components/GeoOpsLeafletMap';
 import { CustomerPlanner } from './components/plan/CustomerPlanner';
 import { AdminInbox } from './components/admin/AdminInbox';
@@ -88,6 +91,17 @@ interface Message {
   isMenuCompositionChoice?: boolean;
   isFoodChoiceMode?: boolean;
   isPortionControlMode?: boolean;
+  isProteinChoice?: boolean;
+  isVenueChoice?: boolean;
+  isServiceChoice?: boolean;
+  isEventTimeChoice?: boolean;
+  isBeverageChoice?: boolean;
+  isStaffingChoice?: boolean;
+  isLanguageChoice?: boolean;
+  isCuisineChoice?: boolean;
+  isNearbyChoice?: boolean;
+  isDietaryChoice?: boolean;
+  isStyleChoice?: boolean;
 }
 
 const QUESTIONS = [
@@ -98,10 +112,16 @@ const QUESTIONS = [
   { key: "event_date", text: "📅 What is the event date?" },
   { key: "budget", text: "💰 What is your total budget? (Please include the currency, e.g. $5000, ₱50000, 1000€)" },
   { key: "food_choice_mode", text: "🍽️ Do you have specific food items in mind that you'd like to add, or would you like our Head Chef to suggest a menu for you? (e.g., 'I have specific food' or 'Suggest for me')" },
-  { key: "specific_food_items", text: "🍲 What specific food items or dishes do you have in mind? Please list them here." },
+  { key: "specific_food_items", text:  "🍲 What specific food items or dishes do you have in mind? Please list them here." },
   { key: "portion_control_mode", text: "⚖️ Regarding the serving sizes, would you like to specify the portion per guest for each dish (e.g., '200g per person'), or would you like our system to automatically calculate the optimal portions based on your budget and guest count?" },
   { key: "cuisine_preference", text: "🍱 Any cuisine preference? (e.g. Filipino, Italian, Japanese, Chinese, Mediterranean)" },
   { key: "food_style_preference", text: "🔥 What cooking styles do you prefer? (e.g. Grilled, Fried, Steamed, Soups, Veggies, Roasted, Raw/Salads)" },
+  { key: "protein_preferences", text: "🥩 Any specific protein preferences for your dishes? (e.g. Beef, Chicken, Pork, Fish, Seafood, or All Mixed)" },
+  { key: "venue_type", text: "🏠 Where is the specific setting of the event?" },
+  { key: "service_style", text: "🍽️ What is your preferred service style?" },
+  { key: "event_time", text: "⏰ What time of day is the meal service?" },
+  { key: "beverage_plan", text: "🥤 What is your beverage preference?" },
+  { key: "staffing_needs", text: "🧑‍🍳 Do you need on-site staff?" },
   { key: "dietary_needs", text: "🥗 Any dietary needs or restrictions? (e.g. None, Vegetarian, Allergies)" },
   { key: "menu_composition", text: "🍽️ How would you like to set up your menu? You can specify counts like: '4 main dishes, 2 desserts, 2 drinks' — or just say 'system decide' and we'll auto-plan everything within your budget. You can also mix: e.g. '3 main dishes, system decide drinks and desserts'." },
   { key: "nearby_suggestions", text: "🏢 Do you want me to look for suggested catering nearby or not? (Yes/No)" },
@@ -120,6 +140,12 @@ const QUESTION_TRANSLATIONS: Record<string, Record<string, string>> = {
     budget: "Magkano ang total budget mo? Pakilagay ang currency, hal. PHP 50000.",
     cuisine_preference: "May gusto ka bang cuisine? (hal. Filipino, Italian, Japanese, Chinese, Mediterranean)",
     food_style_preference: "🔥 Anong cooking style ang gusto mo? (hal. Inihaw/Grilled, Prito/Fried, Nilaga/Soup, Gulay/Veggies, Steamed, Roasted)",
+    protein_preferences: "🥩 May gusto ka bang specific na karne o protein? (hal. Beef, Manok, Baboy, Isda, Seafood, o Mixed)",
+    venue_type: "🏠 Saan ang specific na setting ng event?",
+    service_style: "🍽️ Anong klaseng service ang gusto mo?",
+    event_time: "⏰ Anong oras ang serving ng pagkain?",
+    beverage_plan: "🥤 Ano ang beverage preference mo?",
+    staffing_needs: "🧑‍🍳 Kailangan mo ba ng staff sa venue?",
     dietary_needs: "May dietary needs ba o restrictions? (hal. vegetarian, halal, allergies)",
     menu_composition: "🍽️ Ilang klase ng pagkain ang gusto mo sa menu? Pwede kang mag-specify tulad ng: '4 na ulam, 2 desserts, 2 drinks' — o sabihing 'system na bahala' at aayusin namin lahat base sa budget mo. Pwede rin i-mix: hal. '3 ulam, system na bahala sa drinks at desserts'.",
     nearby_suggestions: "Gusto mo bang maghanap din ako ng suggested catering shops na malapit sa venue? (Oo/Hindi)",
@@ -132,6 +158,12 @@ const QUESTION_TRANSLATIONS: Record<string, Record<string, string>> = {
     budget: "Cual es tu presupuesto total? Incluye la moneda, por ejemplo PHP 50000.",
     cuisine_preference: "Tienes alguna preferencia de cocina? (Filipina, Italiana, Japonesa, China, Mediterranea)",
     food_style_preference: "🔥 Que estilos de cocina prefieres? (Asado/Grilled, Frito/Fried, Sopas, Verduras, Al vapor, Horneado)",
+    protein_preferences: "🥩 ¿Alguna preferencia de proteína específica? (Res, Pollo, Cerdo, Pescado, Mariscos o Mixto)",
+    venue_type: "🏠 ¿Dónde es el entorno específico del evento?",
+    service_style: "🍽️ ¿Cuál es su estilo de servicio preferido?",
+    event_time: "⏰ ¿A qué hora es el servicio de comida?",
+    beverage_plan: "🥤 ¿Cuál es su preferencia de bebidas?",
+    staffing_needs: "🧑‍🍳 ¿Necesita personal en el lugar?",
     dietary_needs: "Hay necesidades dieteticas o restricciones? (vegetariano, halal, alergias)",
     menu_composition: "🍽️ Cuantos platos quieres en el menu? Puedes especificar: '4 platos, 2 postres, 2 bebidas' — o di 'el sistema decide' y planificaremos todo segun tu presupuesto.",
     nearby_suggestions: "Quieres que busque sugerencias de catering cercanas o no? (Si/No)",
@@ -144,6 +176,12 @@ const QUESTION_TRANSLATIONS: Record<string, Record<string, string>> = {
     budget: "総予算はいくらですか？通貨も含めてください（例：PHP 50000、50000円）。",
     cuisine_preference: "料理のご希望はありますか？（例：フィリピン料理、イタリアン、和食、中華、地中海料理）",
     food_style_preference: "🔥 調理スタイルの好みは？（例：グリル、揚げ物、スープ、野菜料理、蒸し料理、ロースト）",
+    protein_preferences: "🥩 特定のタンパク質の好みはありますか？（牛肉、鶏肉、豚肉、魚、シーフード、またはミックス）",
+    venue_type: "🏠 イベントの具体的な設定はどちらですか？",
+    service_style: "🍽️ ご希望のサービススタイルは何ですか？",
+    event_time: "⏰ 食事の提供時間はいつですか？",
+    beverage_plan: "🥤 お飲み物のご希望は？",
+    staffing_needs: "🧑‍🍳 現地スタッフは必要ですか？",
     dietary_needs: "食事制限やアレルギーはありますか？（例：なし、ベジタリアン、ハラール、アレルギー）",
     menu_composition: "🍽️ メニューの構成はどうしますか？例：'メイン4品、デザート2品、飲み物2品' と指定するか、'システムにお任せ' で予算内で自動設定します。",
     nearby_suggestions: "近くのケータリングショップを提案したほうがいいですか？ (はい/いいえ)",
@@ -156,6 +194,12 @@ const QUESTION_TRANSLATIONS: Record<string, Record<string, string>> = {
     budget: "您的总预算是多少？请包括币种（例如：PHP 50000，5000元）。",
     cuisine_preference: "您有偏好的菜系吗？（例如：菲律宾菜、意大利菜、日本料理、中餐、地中海料理）",
     food_style_preference: "🔥 您偏好哪种烹饪方式？（例如：烧烤/Grilled、油炸/Fried、汤品/Soup、蔬菜/Veggies、蒸食/Steamed）",
+    protein_preferences: "🥩 您对菜肴中的蛋白质有特定偏好吗？（例如：牛肉、鸡肉、猪肉、鱼肉、海鲜或混合）",
+    venue_type: "🏠 活动的具体场地设置在哪里？",
+    service_style: "🍽️ 您更喜欢哪种服务方式？",
+    event_time: "⏰ 用餐服务在什么时候？",
+    beverage_plan: "🥤 您的饮品偏好是什么？",
+    staffing_needs: "🧑‍🍳 您需要现场服务人员吗？",
     dietary_needs: "是否有饮食需求或限制？（例如：无、素食、清真、过敏）",
     menu_composition: "🍽️ 您想要菜单中有多少道菜？可以指定：'4道主菜，2道甜点，2种饮料' — 或者说'系统决定'，我们将在预算内自动规划。",
     nearby_suggestions: "您想让我寻找附近的餐饮建议吗？ (是/否)",
@@ -190,10 +234,16 @@ const SUMMARY_FIELDS = [
   { key: "budget", label: "Budget", compact: true },
   { key: "cuisine_preference", label: "Cuisine" },
   { key: "food_style_preference", label: "Cooking Style" },
+  { key: "protein_preferences", label: "Proteins" },
+  { key: "venue_type", label: "Venue Setting", compact: true },
+  { key: "service_style", label: "Service Style", compact: true },
+  { key: "event_time", label: "Event Time", compact: true },
+  { key: "beverage_plan", label: "Beverages", compact: true },
+  { key: "staffing_needs", label: "Staffing", compact: true },
   { key: "dietary_needs", label: "Dietary needs" },
   { key: "menu_composition", label: "Menu Composition" },
   { key: "nearby_suggestions", label: "Nearby catering suggestions" },
-  { key: "special_requests", label: "Added notes" },
+  { key: "special_requests", label: "Planning Notes", important: true },
 ];
 
 
@@ -216,6 +266,8 @@ export default function App() {
   const [activePhaseIndex, setActivePhaseIndex] = useState<number>(0);
   const [expandedStepIndex, setExpandedStepIndex] = useState<number | null>(0);
   const [showDetailedAgentView, setShowDetailedAgentView] = useState<boolean>(false);
+  const [resultPageIndex, setResultPageIndex] = useState(0);
+  const [fullScreenResult, setFullScreenResult] = useState(false);
   const [useFoundry, setUseFoundry] = useState(false);
   const [stackStatus, setStackStatus] = useState<any>(null);
   const [skipRoleLoad, setSkipRoleLoad] = useState(false);
@@ -247,7 +299,11 @@ export default function App() {
   const [showAccessibilityPanel, setShowAccessibilityPanel] = useState(false);
   const [highContrast, setHighContrast] = useState(false);
   const [ttsEnabled, setTtsEnabled] = useState(false);
-
+  const [dbConnected, setDbConnected] = useState<boolean | null>(null);
+  const [conversationTitle, setConversationTitle] = useState("");
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [editingHistoryId, setEditingHistoryId] = useState<string | null>(null);
+  const [newHistoryTitle, setNewHistoryTitle] = useState("");
   const [shopProfile, setShopProfile] = useState<any>(null);
   const [availableShops, setAvailableShops] = useState<any[]>([]);
   const [matchedShop, setMatchedShop] = useState<any>(null);
@@ -308,6 +364,17 @@ export default function App() {
           isMenuCompositionChoice: QUESTIONS[nextIdx].key === 'menu_composition',
           isFoodChoiceMode: QUESTIONS[nextIdx].key === 'food_choice_mode',
           isPortionControlMode: QUESTIONS[nextIdx].key === 'portion_control_mode',
+          isProteinChoice: QUESTIONS[nextIdx].key === 'protein_preferences',
+          isVenueChoice: QUESTIONS[nextIdx].key === 'venue_type',
+          isServiceChoice: QUESTIONS[nextIdx].key === 'service_style',
+          isEventTimeChoice: QUESTIONS[nextIdx].key === 'event_time',
+          isBeverageChoice: QUESTIONS[nextIdx].key === 'beverage_plan',
+          isStaffingChoice: QUESTIONS[nextIdx].key === 'staffing_needs',
+          isLanguageChoice: QUESTIONS[nextIdx].key === 'preferred_language',
+          isCuisineChoice: QUESTIONS[nextIdx].key === 'cuisine_preference',
+          isNearbyChoice: QUESTIONS[nextIdx].key === 'nearby_suggestions',
+          isDietaryChoice: QUESTIONS[nextIdx].key === 'dietary_needs',
+          isStyleChoice: QUESTIONS[nextIdx].key === 'food_style_preference',
           timestamp: new Date()
         }]);
         saveConversation();
@@ -358,10 +425,31 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const res = await fetch('/api/health');
+        if (res.ok) {
+          const data = await res.json();
+          setDbConnected(data.mongodb === 'connected');
+        } else {
+          setDbConnected(false);
+        }
+      } catch (err) {
+        setDbConnected(false);
+      }
+    };
+    checkHealth();
+    const timer = setInterval(checkHealth, 10000);
+    return () => clearInterval(timer);
+  }, []);
+
   const fetchHistory = async (uid: string) => {
     try {
-      const hist = await mongoService.fetchEvents(uid);
-      setHistory(hist);
+      const result = await mongoService.fetchEvents(uid);
+      // The server returns { events: [], total: 0, ... }
+      const histData = Array.isArray(result) ? result : (result.events || []);
+      setHistory(histData);
     } catch (err) {
       console.error("Error fetching history from MongoDB:", err);
     }
@@ -470,15 +558,33 @@ export default function App() {
     }
   };
 
-  const handleChatSubmit = async (e?: React.FormEvent, directInput?: string) => {
+  const handleChatSubmit = async (e?: React.FormEvent, directInput?: string, targetKey?: string) => {
     if (e) e.preventDefault();
     const textToSubmit = directInput !== undefined ? directInput : input;
     if (!textToSubmit.trim() || isProcessing) return;
 
     const userText = textToSubmit.trim();
-    const currentQuestion = QUESTIONS[qIndex];
+    const activeQIndex = targetKey ? QUESTIONS.findIndex(q => q.key === targetKey) : qIndex;
+    if (activeQIndex === -1) return;
+    
+    const currentQuestion = QUESTIONS[activeQIndex];
 
-    const newMessages: Message[] = [...messages.map(m => (m.isMenuCompositionChoice || m.isFoodChoiceMode || m.isPortionControlMode) ? { ...m, isMenuCompositionChoice: false, isFoodChoiceMode: false, isPortionControlMode: false } : m), {
+    const newMessages: Message[] = [...messages.map(m => (
+      m.isMenuCompositionChoice || m.isFoodChoiceMode || m.isPortionControlMode || 
+      m.isProteinChoice || m.isVenueChoice || m.isServiceChoice || 
+      m.isEventTimeChoice || m.isBeverageChoice || m.isStaffingChoice
+    ) ? { 
+      ...m, 
+      isMenuCompositionChoice: false, 
+      isFoodChoiceMode: false, 
+      isPortionControlMode: false,
+      isProteinChoice: false,
+      isVenueChoice: false,
+      isServiceChoice: false,
+      isEventTimeChoice: false,
+      isBeverageChoice: false,
+      isStaffingChoice: false
+    } : m), {
       id: `user-${Date.now()}`,
       role: 'user',
       content: userText,
@@ -518,16 +624,14 @@ export default function App() {
 
     setEventData(newEventData);
 
-    if (qIndex < QUESTIONS.length - 1) {
-      setIsProcessing(true);
+      if (activeQIndex < QUESTIONS.length - 1) {
+        setIsProcessing(true);
 
-      if (currentQuestion.key === 'event_location' && userText.length > 2) {
-        import('./services/orchestrator').then(m => {
-          m.prefetchWeather(userText, newEventData.event_date || 'TBD', newEventData.preferred_language || 'english');
-        });
-      }
+        if (currentQuestion.key === 'event_location' && userText.length > 2) {
+          prefetchWeather(userText, newEventData.event_date || 'TBD', newEventData.preferred_language || 'english');
+        }
 
-      let nextIdx = qIndex + 1;
+        let nextIdx = activeQIndex + 1;
 
       const processingLanguage = isLanguageStep ? (eventData.preferred_language || 'english') : newEventData.preferred_language;
       const intakeResult = await processIntake(userText, currentQuestion.key, currentQuestion.text, processingLanguage);
@@ -585,9 +689,9 @@ export default function App() {
       }
 
       if (currentQuestion.key === 'specific_food_items' && intent.type === 'DONE') {
-        nextIdx = qIndex + 1;
+        nextIdx = activeQIndex + 1;
       } else if (intent.type === 'DONE') {
-        nextIdx = qIndex + 1;
+        nextIdx = activeQIndex + 1;
       }
 
       if (currentQuestion.key === 'food_choice_mode') {
@@ -603,45 +707,42 @@ export default function App() {
       if (isDateStep && validation.valid) {
         setIsProcessing(true);
         setIsWaitingForWeather(true);
-        import('./services/orchestrator').then(async m => {
-          const weather = await m.predictWeather(eventData.event_location, userText, newEventData.preferred_language);
-          if (weather) {
-            if (reaction) {
-              setMessages(prev => [...prev, {
-                id: `bot-react-${Date.now()}`,
-                role: 'bot',
-                content: reaction,
-                timestamp: new Date()
-              }]);
-            }
-
+        const weather = await predictWeather(eventData.event_location, userText, newEventData.preferred_language);
+        if (weather) {
+          if (reaction) {
             setMessages(prev => [...prev, {
-              id: `bot-weather-${Date.now()}`,
+              id: `bot-react-${Date.now()}`,
               role: 'bot',
-              content: weather.summary,
-              weatherData: weather.raw_data,
-              weatherLocation: eventData.event_location,
-              isWeatherForecast: true,
+              content: reaction,
               timestamp: new Date()
             }]);
-
-            const weatherChoiceText = eventData.preferred_language === 'tagalog'
-              ? "Iba-base ba natin yung mga food suggestion sa forecast na ito?"
-              : "Should we base the food suggestions on this weather forecast?";
-            
-            const mm = await import('./services/orchestrator');
-            const translatedChoice = await mm.translateText(weatherChoiceText, newEventData.preferred_language);
-            setMessages(prev => [...prev, {
-              id: `bot-weather-choice-${Date.now()}`,
-              role: 'bot',
-              content: translatedChoice,
-              isWeatherChoice: true,
-              timestamp: new Date()
-            }]);
-            saveConversation();
           }
-          setIsProcessing(false);
-        });
+
+          setMessages(prev => [...prev, {
+            id: `bot-weather-${Date.now()}`,
+            role: 'bot',
+            content: weather.summary,
+            weatherData: weather.raw_data,
+            weatherLocation: eventData.event_location,
+            isWeatherForecast: true,
+            timestamp: new Date()
+          }]);
+
+          const weatherChoiceText = eventData.preferred_language === 'tagalog'
+            ? "Iba-base ba natin yung mga food suggestion sa forecast na ito?"
+            : "Should we base the food suggestions on this weather forecast?";
+          
+          const translatedChoice = await translateText(weatherChoiceText, newEventData.preferred_language);
+          setMessages(prev => [...prev, {
+            id: `bot-weather-choice-${Date.now()}`,
+            role: 'bot',
+            content: translatedChoice,
+            isWeatherChoice: true,
+            timestamp: new Date()
+          }]);
+          saveConversation();
+        }
+        setIsProcessing(false);
         return;
       }
 
@@ -651,8 +752,6 @@ export default function App() {
         const updatedEventData = { ...newEventData, preferred_language: newLang };
         setEventData(updatedEventData);
 
-        const m = await import('./services/orchestrator');
-        
         let prefix = `Sure, I'll speak in ${newLang.charAt(0).toUpperCase() + newLang.slice(1)}! `;
         if (newLang === 'tagalog') prefix = "Sige po, magta-Tagalog na ako. ";
         else if (newLang === 'spanish') prefix = "¡Claro! Hablaré en español. ";
@@ -661,22 +760,29 @@ export default function App() {
         else if (newLang === 'indonesian') prefix = "Baik, saya akan berbicara dalam Bahasa Indonesia. ";
         else if (newLang === 'korean') prefix = "네, 한국어로 말씀드리겠습니다. ";
 
-        const translatedPrefix = await m.translateText(prefix, newLang);
+        const translatedPrefix = await translateText(prefix, newLang);
 
         if (currentQuestion.key === 'preferred_language') {
           setTimeout(async () => {
             const nextIdxVal = qIndex + 1;
             setQIndex(nextIdxVal);
             const questionText = getQuestionText(nextIdxVal, newLang);
-            const localizedQuestion = await m.translateText(questionText, newLang);
+            const localizedQuestion = await translateText(questionText, newLang);
 
             setMessages(prev => [...prev, {
               id: `bot-lang-${Date.now()}`,
               role: 'bot',
               content: `${translatedPrefix}\n\n${localizedQuestion}`,
+              qKey: QUESTIONS[nextIdxVal].key,
               isMenuCompositionChoice: QUESTIONS[nextIdxVal].key === 'menu_composition',
               isFoodChoiceMode: QUESTIONS[nextIdxVal].key === 'food_choice_mode',
               isPortionControlMode: QUESTIONS[nextIdxVal].key === 'portion_control_mode',
+              isProteinChoice: QUESTIONS[nextIdxVal].key === 'protein_preferences',
+              isVenueChoice: QUESTIONS[nextIdxVal].key === 'venue_type',
+              isServiceChoice: QUESTIONS[nextIdxVal].key === 'service_style',
+              isEventTimeChoice: QUESTIONS[nextIdxVal].key === 'event_time',
+              isBeverageChoice: QUESTIONS[nextIdxVal].key === 'beverage_plan',
+              isStaffingChoice: QUESTIONS[nextIdxVal].key === 'staffing_needs',
               timestamp: new Date()
             }]);
             saveConversation();
@@ -686,7 +792,7 @@ export default function App() {
         }
 
         const repeatedQuestion = getQuestionText(qIndex, newLang);
-        const localizedRepeated = await m.translateText(repeatedQuestion, newLang);
+        const localizedRepeated = await translateText(repeatedQuestion, newLang);
 
         setMessages(prev => [...prev, {
           id: `bot-lang-${Date.now()}`,
@@ -710,13 +816,12 @@ export default function App() {
           return;
         }
 
-        const m = await import('./services/orchestrator');
         const fallbackMsg = eventData.preferred_language === 'tagalog'
           ? "Pasensya na, kaya ko lang tumulong sa catering planning sa ngayon."
           : "I'm sorry, I can only help with catering planning right now.";
         
-        const localizedFallback = await m.translateText(fallbackMsg, newEventData.preferred_language);
-        const localizedQuestion = await m.translateText(currentQuestion.text, newEventData.preferred_language);
+        const localizedFallback = await translateText(fallbackMsg, newEventData.preferred_language);
+        const localizedQuestion = await translateText(currentQuestion.text, newEventData.preferred_language);
 
         setMessages(prev => [...prev, {
           id: `bot-gen-${Date.now()}`,
@@ -730,14 +835,17 @@ export default function App() {
       }
 
       if (!validation.valid) {
-        const m = await import('./services/orchestrator');
         const langToUse = eventData.preferred_language || 'english';
-        const localizedQuestion = await m.translateText(currentQuestion.text, langToUse);
+        const localizedQuestion = await translateText(currentQuestion.text, langToUse);
         
         setMessages(prev => [...prev, {
           id: `bot-err-${Date.now()}`,
           role: 'bot',
           content: `${validation.message || "Please provide a more specific answer."}\n\n${localizedQuestion}`,
+          qKey: currentQuestion.key,
+          isMenuCompositionChoice: currentQuestion.key === 'menu_composition',
+          isFoodChoiceMode: currentQuestion.key === 'food_choice_mode',
+          isPortionControlMode: currentQuestion.key === 'portion_control_mode',
           timestamp: new Date()
         }]);
         saveConversation();
@@ -745,26 +853,38 @@ export default function App() {
         return;
       }
 
-      import('./services/orchestrator').then(async m => {
-        const actualNextQuestionText = getQuestionText(nextIdx, newEventData.preferred_language);
-        const localizedNextQuestion = await m.translateText(actualNextQuestionText, newEventData.preferred_language);
-        const botMessage = reaction ? `${reaction}\n\n${localizedNextQuestion}` : localizedNextQuestion;
+      const actualNextQuestionText = getQuestionText(nextIdx, newEventData.preferred_language);
+      const localizedNextQuestion = await translateText(actualNextQuestionText, newEventData.preferred_language);
+      const botMessage = reaction ? `${reaction}\n\n${localizedNextQuestion}` : localizedNextQuestion;
 
-        setTimeout(() => {
-          setQIndex(nextIdx);
-          setMessages(prev => [...prev, {
-            id: `bot-q-${Date.now()}`,
-            role: 'bot',
-            content: botMessage,
-            isMenuCompositionChoice: QUESTIONS[nextIdx].key === 'menu_composition',
-            isFoodChoiceMode: QUESTIONS[nextIdx].key === 'food_choice_mode',
-            isPortionControlMode: QUESTIONS[nextIdx].key === 'portion_control_mode',
-            timestamp: new Date()
-          }]);
-          saveConversation();
-          setIsProcessing(false);
-        }, 200);
-      });
+      setTimeout(() => {
+        setQIndex(nextIdx);
+        const nextKey = QUESTIONS[nextIdx].key;
+        
+        setMessages(prev => [...prev, {
+          id: `bot-q-${Date.now()}`,
+          role: 'bot',
+          content: botMessage,
+          qKey: nextKey,
+          isMenuCompositionChoice: nextKey === 'menu_composition',
+          isFoodChoiceMode: nextKey === 'food_choice_mode',
+          isPortionControlMode: nextKey === 'portion_control_mode',
+          isProteinChoice: nextKey === 'protein_preferences',
+          isVenueChoice: nextKey === 'venue_type',
+          isServiceChoice: nextKey === 'service_style',
+          isEventTimeChoice: nextKey === 'event_time',
+          isBeverageChoice: nextKey === 'beverage_plan',
+          isStaffingChoice: nextKey === 'staffing_needs',
+          isLanguageChoice: nextKey === 'preferred_language',
+          isCuisineChoice: nextKey === 'cuisine_preference',
+          isNearbyChoice: nextKey === 'nearby_suggestions',
+          isDietaryChoice: nextKey === 'dietary_needs',
+          isStyleChoice: nextKey === 'food_style_preference',
+          timestamp: new Date()
+        }]);
+        saveConversation();
+        setIsProcessing(false);
+      }, 200);
     } else {
       if (isConfirming || showSummary) {
         const updatedSpecial = `${newEventData.special_requests || ""}\nAdditional info: ${userText}`.trim();
@@ -813,6 +933,8 @@ const handleConfirmOrder = async () => {
   setIsProcessing(true);
   setSteps([]);
   setCurrentStepIndex(-1);
+  setResultPageIndex(0);
+  setFullScreenResult(true);
 
   const fullPrompt = Object.entries(eventData)
     .map(([k, v]) => `${k.replace('_', ' ')}: ${v}`)
@@ -830,13 +952,13 @@ const handleConfirmOrder = async () => {
       setSteps(prev => [...prev, step]);
       setCurrentStepIndex(prev => prev + 1);
 
-      if (step.agent.includes('Head Chef') && step.data.menu) {
-        setLocalMenu(step.data.menu);
+      if ((step.agent.includes('Head Chef') || step.agent.includes('Phase 2')) && (step.data.menu || step.data.dishes || step.data.recommendations)) {
+        setLocalMenu(step.data.menu || step.data.dishes || step.data.recommendations);
       }
       if (step.agent.includes('Inventory') && step.data.procurement_list) {
         setLocalInventory(step.data.procurement_list);
       }
-      if (step.agent.includes('Logistics') && step.data.timeline) {
+      if ((step.agent.includes('Logistics') || step.agent.includes('Phase 4')) && step.data.timeline) {
         setLocalTimeline(step.data.timeline);
         setStaffTasks(step.data.timeline.map((t: any) => ({ ...t, completed: false })));
       }
@@ -884,8 +1006,10 @@ const handleConfirmOrder = async () => {
     console.error("Orchestration error:", error);
     let errorMsg = error?.message || "Critical error in AI Orchestration. Connection severed.";
 
-    if (errorMsg.includes("429") || errorMsg.includes("quota")) {
-      errorMsg = "AI planning service is busy. Please try again in 60 seconds.";
+    if (errorMsg.includes("429") || errorMsg.includes("quota") || errorMsg.includes("RESOURCE_EXHAUSTED")) {
+      errorMsg = "AI planning service quota exceeded. Please check your API limits or try again later.";
+    } else if (errorMsg.includes("401") || errorMsg.includes("Unauthorized") || errorMsg.includes("令牌")) {
+      errorMsg = "AI Authentication failed. Your API key might be invalid or expired.";
     } else if (errorMsg.includes("503") || errorMsg.includes("high demand")) {
       errorMsg = "AI Models under heavy load. Please retry in a few moments.";
     }
@@ -906,7 +1030,7 @@ const updateEventDataField = (key: string, value: string) => {
 };
 
 const loadFromHistory = (item: any) => {
-  setActiveConversationId(item.id);
+  setActiveConversationId(item.id || item._id);
   if (item.messages?.length > 0) {
     setMessages(item.messages.map((msg: any) => ({
       ...msg,
@@ -915,6 +1039,7 @@ const loadFromHistory = (item: any) => {
   }
   setSteps(item.steps || []);
   setEventData(item.eventData || {});
+  setConversationTitle(item.title || item.rawInput || "Untitled Plan");
   setQIndex(item.qIndex || 0);
   setIsChatting(!item.steps?.length);
   setShowHistory(false);
@@ -944,6 +1069,7 @@ const saveConversation = async () => {
   const firstUserMessage = messages.find(msg => msg.role === 'user')?.content || 'Untitled catering conversation';
   const payload = sanitizeForFirestore({
     userId: user.uid,
+    title: conversationTitle,
     type: steps.length > 0 ? 'plan' : 'conversation',
     rawInput: firstUserMessage,
     messages: serializeMessages(),
@@ -975,6 +1101,19 @@ const deleteConversation = async (id?: string) => {
     fetchHistory(user.uid);
   } catch (err) {
     console.error("Error deleting from MongoDB:", err);
+  }
+};
+
+const renameConversation = async (id: string, newTitle: string) => {
+  if (!newTitle.trim() || !user) return;
+  try {
+    await mongoService.updateEvent(id, { title: newTitle.trim() });
+    if (id === activeConversationId) setConversationTitle(newTitle.trim());
+    fetchHistory(user.uid);
+    setEditingHistoryId(null);
+    setNewHistoryTitle("");
+  } catch (err) {
+    console.error("Error renaming conversation:", err);
   }
 };
 
@@ -1086,7 +1225,7 @@ const exportBlueprint = () => {
 };
 
 const buildSummaryRows = () => {
-  const customer = steps.find(s => s.agent.includes('Concierge'))?.data || {};
+  const customer = steps.find(s => s.agent.includes('Confirmation'))?.data || {};
   const menu = steps.find(s => s.agent.includes('Head Chef'))?.data || {};
   const inventory = steps.find(s => s.agent.includes('Inventory'))?.data || {};
   const suppliers = steps.find(s => s.agent.includes('Supplier'))?.data || {};
@@ -1123,7 +1262,7 @@ const findStepData = (needles: string | string[]) => {
   return steps.find((step) => matchers.some((needle) => step.agent.includes(needle)))?.data || {};
 };
 
-const customerStep = findStepData('Concierge');
+const customerStep = findStepData('Confirmation');
 const menuStep = findStepData('Head Chef');
 const inventoryStep = findStepData('Inventory');
 const supplierStep = findStepData('Supplier');
@@ -1608,6 +1747,14 @@ return (
                   </motion.div>
                 )}
               </AnimatePresence>
+              
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-100 ml-2">
+                <div className={`w-1.5 h-1.5 rounded-full ${dbConnected === true ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : dbConnected === false ? 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.5)]' : 'bg-slate-300'} animate-pulse`} />
+                <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">
+                  DB: {dbConnected === true ? 'ONLINE' : dbConnected === false ? 'OFFLINE' : 'CHECKING'}
+                </span>
+              </div>
+
               <button
                 onClick={() => setShowHistory(true)}
                 className="p-2 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-xl transition-all"
@@ -1623,7 +1770,12 @@ return (
           </div>
         </header>
 
-        <main className="flex-1 grid grid-cols-12 gap-5 p-5 overflow-hidden relative bg-[var(--bg-color)]">
+        <main className={`flex-1 grid grid-cols-12 gap-5 p-5 overflow-hidden relative bg-[var(--bg-color)] ${fullScreenResult ? 'full-screen-results' : ''}`}>
+          {(!fullScreenResult || steps.length === 0) && (
+            <section className="col-span-12 lg:col-span-4 flex flex-col space-y-4 h-[calc(100vh-190px)] min-h-0">
+               {/* Chat UI ... */}
+            </section>
+          )}
           <div className="col-span-12 flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-2 h-12">
             <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
               {workspaceRole === 'staff' ? 'Operational Tasks' : 'My Planning Journey'}
@@ -1633,16 +1785,15 @@ return (
                 ? [['staff-tasks', 'Duty Roster'], ['delivery', 'Logistics']]
                 : [['conversation', 'Brief'], ['summary', 'Plan'], ['inventory-planner', 'Inventory Plan'], ['menu-editor', 'Edit Menu'], ['checkout', 'Checkout']]
               ).map(([key, label]) => (
-                <button
+                <div
                   key={key}
-                  onClick={() => setDashboardView(key as any)}
                   className={`rounded-full px-3 py-1 text-[9px] font-black uppercase tracking-widest transition-all ${dashboardView === key
-                    ? 'bg-[var(--accent-color)] text-white'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    ? 'bg-[var(--accent-color)] text-white shadow-md'
+                    : 'bg-slate-100 text-slate-400'
                     }`}
                 >
                   {label}
-                </button>
+                </div>
               ))}
             </div>
           </div>
@@ -1677,14 +1828,34 @@ return (
                 <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
                   {filteredHistory.map((item) => (
                     <div key={item.id || item._id} className="group relative rounded-[1.5rem] border border-slate-100 bg-white p-4 transition-all hover:border-emerald-200 hover:shadow-lg hover:shadow-emerald-900/5 hover:-translate-y-0.5">
-                      <button onClick={() => loadFromHistory(item)} className="w-full text-left">
+                      <div onClick={() => loadFromHistory(item)} className="w-full text-left cursor-pointer">
                         <div className="flex items-center gap-2 mb-2">
                           <div className={`w-2 h-2 rounded-full ${item.type === 'plan' ? 'bg-emerald-500' : 'bg-amber-400'}`} />
                           <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">
                             {item.type === 'plan' ? 'Event Blueprint' : 'Conversation'}
                           </span>
                         </div>
-                        <p className="text-xs font-black text-slate-800 line-clamp-2 mb-3 group-hover:text-emerald-700 transition-colors">{item.rawInput}</p>
+                        {editingHistoryId === (item.id || item._id) ? (
+                          <div className="mb-3 flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                            <input 
+                              type="text" 
+                              value={newHistoryTitle}
+                              onChange={(e) => setNewHistoryTitle(e.target.value)}
+                              className="flex-1 rounded-lg border border-slate-300 px-2 py-1 text-xs font-bold focus:border-emerald-500 focus:outline-none"
+                              autoFocus
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') renameConversation(item.id || item._id, newHistoryTitle);
+                                if (e.key === 'Escape') setEditingHistoryId(null);
+                              }}
+                            />
+                            <button onClick={() => renameConversation(item.id || item._id, newHistoryTitle)} className="rounded bg-emerald-600 px-2 py-1 text-[9px] font-bold text-white hover:bg-emerald-700">Save</button>
+                            <button onClick={() => setEditingHistoryId(null)} className="rounded bg-slate-200 px-2 py-1 text-[9px] font-bold text-slate-600 hover:bg-slate-300">Cancel</button>
+                          </div>
+                        ) : (
+                          <p className="text-xs font-black text-slate-800 line-clamp-2 mb-3 group-hover:text-emerald-700 transition-colors">
+                            {item.title || item.rawInput}
+                          </p>
+                        )}
                         <div className="flex justify-between items-center">
                           <div className="flex items-center gap-1.5">
                             <Calendar className="w-3 h-3 text-slate-300" />
@@ -1697,8 +1868,19 @@ return (
                             #{String(item.id || item._id).slice(-4).toUpperCase()}
                           </span>
                         </div>
-                      </button>
+                      </div>
                       <div className="mt-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingHistoryId(item.id || item._id);
+                            setNewHistoryTitle(item.title || item.rawInput || "");
+                          }}
+                          className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl bg-blue-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-blue-600 transition hover:bg-blue-100"
+                        >
+                          <Edit3 className="h-3.5 w-3.5" />
+                          Rename
+                        </button>
                         <button
                           type="button"
                           onClick={() => deleteConversation(item.id || item._id)}
@@ -1730,11 +1912,28 @@ return (
           </AnimatePresence>
 
           { }
-          {showConversation && <section className={`col-span-12 ${Object.keys(monitoringStep).length > 0 ? 'hidden' : 'lg:col-span-4'} flex flex-col space-y-4 overflow-hidden h-[calc(100vh-190px)]`}>
+          {showConversation && (!fullScreenResult || steps.length === 0) && (
+            <section className="col-span-12 lg:col-span-4 flex flex-col space-y-4 overflow-hidden h-[calc(100vh-190px)]">
             <div className="high-density-card flex flex-col min-h-[520px]">
               <div className="high-density-header flex justify-between items-center">
-                <div>
-                  <h2 className="high-density-label">Event Brief</h2>
+                <div className="flex-1 min-w-0">
+                  {isRenaming ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        autoFocus
+                        value={conversationTitle}
+                        onChange={(e) => setConversationTitle(e.target.value)}
+                        onBlur={() => setIsRenaming(false)}
+                        onKeyDown={(e) => e.key === 'Enter' && setIsRenaming(false)}
+                        className="bg-white border border-emerald-200 rounded-lg px-2 py-1 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-emerald-100 w-full"
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 group cursor-pointer" onClick={() => setIsRenaming(true)}>
+                      <h2 className="high-density-label truncate">{conversationTitle || "New Event Brief"}</h2>
+                      <Pencil className="w-3 h-3 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+                    </div>
+                  )}
                   <p className="text-[11px] text-slate-500 mt-1">Answer a few questions. The agents handle the rest.</p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1752,14 +1951,43 @@ return (
               </div>
 
               <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-[#fffaf0]" ref={chatScrollRef}>
+                {isChatting && !showSummary && (
+                  <div className="bg-white/80 backdrop-blur-sm border border-slate-100 rounded-2xl p-4 mb-4 shadow-sm">
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-600">Intake Progress</p>
+                        <p className="text-[9px] font-bold text-slate-400 mt-0.5">Planning Phase: {qIndex + 1} / {QUESTIONS.length}</p>
+                      </div>
+                      <div className="text-[11px] font-black text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md">
+                        {Math.floor(((qIndex + 1) / QUESTIONS.length) * 100)}%
+                      </div>
+                    </div>
+                    <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200/50">
+                      <motion.div 
+                        className="h-full bg-emerald-600 shadow-[0_0_10px_rgba(16,185,129,0.3)]"
+                        initial={{ width: 0 }}
+                        animate={{ width: `${((qIndex + 1) / QUESTIONS.length) * 100}%` }}
+                        transition={{ type: "spring", stiffness: 40, damping: 15 }}
+                      />
+                    </div>
+                  </div>
+                )}
                 <AnimatePresence initial={false}>
                   {messages.map((msg) => (
                     <motion.div
                       key={msg.id}
-                      initial={{ opacity: 0, x: msg.role === 'user' ? 20 : -20 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                      initial={{ opacity: 0, x: msg.role === 'user' ? 20 : -20, y: 10 }}
+                      animate={{ opacity: 1, x: 0, y: 0 }}
+                      className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                     >
+                      {msg.role === 'bot' && (
+                        <div className="w-8 h-8 rounded-full bg-white border border-slate-100 shadow-sm flex items-center justify-center flex-shrink-0 mt-1">
+                          {msg.isWeatherForecast ? <CloudRain className="w-4 h-4 text-sky-500" /> : 
+                           qIndex < 6 ? <UserCircle className="w-4 h-4 text-emerald-600" /> :
+                           qIndex < 12 ? <ChefHat className="w-4 h-4 text-amber-600" /> :
+                           <ClipboardList className="w-4 h-4 text-slate-600" />}
+                        </div>
+                      )}
                       <div className={`
                       max-w-[88%] px-4 py-3 text-[13px] leading-relaxed relative rounded-3xl shadow-sm
                       ${msg.role === 'user' ? 'bg-emerald-700 text-white rounded-br-md' :
@@ -1782,13 +2010,31 @@ return (
                                 {eventData.preferred_language === 'tagalog' ? 'I-update' : 'Update'}
                               </button>
                             </div>
+                            {msg.isFoodChoiceMode && (
+                               <div className="mt-4 flex flex-col gap-2">
+                                 <button
+                                   onClick={() => handleChatSubmit(undefined, "Suggest for me", msg.qKey)}
+                                   className="px-4 py-3 bg-emerald-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-md text-left flex justify-between items-center"
+                                 >
+                                   <span>🤖 Suggest for me</span>
+                                   <ArrowRight className="w-3 h-3 opacity-50" />
+                                 </button>
+                                 <button
+                                   onClick={() => handleChatSubmit(undefined, "I have specific food", msg.qKey)}
+                                   className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all text-left flex justify-between items-center"
+                                 >
+                                   <span>📝 I have specific food</span>
+                                   <ArrowRight className="w-3 h-3 opacity-50" />
+                                 </button>
+                               </div>
+                             )}
                           </div>
                         ) : (
                           <>
                             {msg.isWeatherForecast ? (
-                              <span className="font-semibold text-blue-900">
+                               <div className="whitespace-pre-wrap font-medium text-blue-950/90 py-2">
                                 {msg.content}
-                              </span>
+                              </div>
                             ) : msg.content}
                             
                             {msg.isWeatherChoice && (
@@ -1844,17 +2090,419 @@ return (
                                 </button>
                               </div>
                             )}
-                            {msg.isFoodChoiceMode && (
+                             {msg.isProteinChoice && (
+                               <div className="mt-4 space-y-4">
+                                 <div className="grid grid-cols-2 gap-2">
+                                   {[
+                                     ["🥩 Beef", "Beef"], ["🍗 Chicken", "Chicken"], 
+                                     ["🥓 Pork", "Pork"], ["🐟 Fish", "Fish"], 
+                                     ["🍤 Seafood", "Seafood"], ["💎 Others", "Others"]
+                                   ].map(([label, val]) => {
+                                     const isSelected = input.toLowerCase().includes(val.toLowerCase());
+                                     return (
+                                       <button 
+                                         key={val} 
+                                         onClick={() => {
+                                           if (val === "Others") {
+                                             document.querySelector('textarea')?.focus();
+                                             return;
+                                           }
+                                           const currentItems = input.split(',').map(i => i.trim()).filter(i => i && i !== "Others");
+                                           if (isSelected) {
+                                             const filtered = currentItems.filter(i => i.toLowerCase() !== val.toLowerCase());
+                                             setInput(filtered.join(', '));
+                                           } else {
+                                             setInput([...currentItems, val].join(', '));
+                                           }
+                                         }} 
+                                         className={`px-3 py-3 border rounded-2xl text-[9px] font-black uppercase tracking-widest transition-all shadow-sm flex items-center justify-center gap-2 ${isSelected ? 'bg-emerald-700 border-emerald-700 text-white shadow-emerald-900/20' : 'bg-white border-slate-200 text-slate-800 hover:border-emerald-500'}`}
+                                       >
+                                         {label}
+                                         {isSelected && <CheckCircle2 className="w-3 h-3" />}
+                                       </button>
+                                     );
+                                   })}
+                                 </div>
+                                 {input.trim() && (
+                                   <button 
+                                     onClick={(e) => handleChatSubmit(e as any, undefined, msg.qKey)}
+                                     className="w-full py-4 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-emerald-700 transition-all shadow-xl flex items-center justify-center gap-2"
+                                   >
+                                     Confirm Selection <ArrowRight className="w-3 h-3" />
+                                   </button>
+                                 )}
+                               </div>
+                             )}
+                             {msg.isVenueChoice && (
+                               <div className="mt-4 space-y-4">
+                                 <div className="grid grid-cols-2 gap-2">
+                                   {[
+                                     ["🏠 Indoor", "Indoor"], ["🌳 Outdoor", "Outdoor"], ["✨ Others", "Others"]
+                                   ].map(([label, val]) => {
+                                     const isSelected = input.toLowerCase().includes(val.toLowerCase());
+                                     return (
+                                       <button 
+                                         key={val} 
+                                         onClick={() => {
+                                           if (val === "Others") {
+                                             document.querySelector('textarea')?.focus();
+                                             return;
+                                           }
+                                           const currentItems = input.split(',').map(i => i.trim()).filter(i => i && i !== "Others");
+                                           if (isSelected) {
+                                             const filtered = currentItems.filter(i => i.toLowerCase() !== val.toLowerCase());
+                                             setInput(filtered.join(', '));
+                                           } else {
+                                             setInput([...currentItems, val].join(', '));
+                                           }
+                                         }} 
+                                         className={`px-3 py-3 border rounded-2xl text-[9px] font-black uppercase tracking-widest transition-all shadow-sm flex items-center justify-center gap-2 ${isSelected ? 'bg-emerald-700 border-emerald-700 text-white shadow-emerald-900/20' : 'bg-white border-slate-200 text-slate-800 hover:border-emerald-500'}`}
+                                       >
+                                         {label}
+                                         {isSelected && <CheckCircle2 className="w-3 h-3" />}
+                                       </button>
+                                     );
+                                   })}
+                                 </div>
+                                 {input.trim() && (
+                                   <button 
+                                     onClick={(e) => handleChatSubmit(e as any, undefined, msg.qKey)}
+                                     className="w-full py-4 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-emerald-700 transition-all shadow-xl flex items-center justify-center gap-2"
+                                   >
+                                     Confirm Selection <ArrowRight className="w-3 h-3" />
+                                   </button>
+                                 )}
+                               </div>
+                             )}
+                             {msg.isServiceChoice && (
+                               <div className="mt-4 space-y-4">
+                                 <div className="grid grid-cols-1 gap-2">
+                                   {[
+                                     ["🍽️ Buffet Style", "Buffet"], ["🍷 Plated / Sit-down", "Plated"], 
+                                     ["🍸 Cocktail / Finger Foods", "Cocktail"], ["✨ Others", "Others"]
+                                   ].map(([label, val]) => {
+                                     const isSelected = input.toLowerCase().includes(val.toLowerCase());
+                                     return (
+                                       <button 
+                                         key={val} 
+                                         onClick={() => {
+                                           if (val === "Others") {
+                                             document.querySelector('textarea')?.focus();
+                                             return;
+                                           }
+                                           const currentItems = input.split(',').map(i => i.trim()).filter(i => i && i !== "Others");
+                                           if (isSelected) {
+                                             const filtered = currentItems.filter(i => i.toLowerCase() !== val.toLowerCase());
+                                             setInput(filtered.join(', '));
+                                           } else {
+                                             setInput([...currentItems, val].join(', '));
+                                           }
+                                         }} 
+                                         className={`px-4 py-3 border rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all shadow-sm flex items-center justify-between ${isSelected ? 'bg-emerald-700 border-emerald-700 text-white shadow-emerald-900/20' : 'bg-white border-slate-200 text-slate-800 hover:border-emerald-500'}`}
+                                       >
+                                         <span>{label}</span>
+                                         {isSelected ? <CheckCircle2 className="w-3 h-3" /> : <ArrowRight className="w-3 h-3 opacity-30" />}
+                                       </button>
+                                     );
+                                   })}
+                                 </div>
+                                 {input.trim() && (
+                                   <button 
+                                     onClick={(e) => handleChatSubmit(e as any, undefined, msg.qKey)}
+                                     className="w-full py-4 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-emerald-700 transition-all shadow-xl flex items-center justify-center gap-2"
+                                   >
+                                     Confirm Selection <ArrowRight className="w-3 h-3" />
+                                   </button>
+                                 )}
+                               </div>
+                             )}
+                             {msg.isEventTimeChoice && (
+                               <div className="mt-4 space-y-4">
+                                 <div className="grid grid-cols-2 gap-2">
+                                   {[
+                                     ["🍳 Breakfast", "Breakfast"], ["🥞 Brunch", "Brunch"], 
+                                     ["☀️ Lunch", "Lunch"], ["🌙 Dinner", "Dinner"], 
+                                     ["✨ Others", "Others"]
+                                   ].map(([label, val]) => {
+                                     const isSelected = input.toLowerCase().includes(val.toLowerCase());
+                                     return (
+                                       <button 
+                                         key={val} 
+                                         onClick={() => {
+                                           if (val === "Others") {
+                                             document.querySelector('textarea')?.focus();
+                                             return;
+                                           }
+                                           const currentItems = input.split(',').map(i => i.trim()).filter(i => i && i !== "Others");
+                                           if (isSelected) {
+                                             const filtered = currentItems.filter(i => i.toLowerCase() !== val.toLowerCase());
+                                             setInput(filtered.join(', '));
+                                           } else {
+                                             setInput([...currentItems, val].join(', '));
+                                           }
+                                         }} 
+                                         className={`px-3 py-3 border rounded-2xl text-[9px] font-black uppercase tracking-widest transition-all shadow-sm flex items-center justify-center gap-2 ${isSelected ? 'bg-emerald-700 border-emerald-700 text-white shadow-emerald-900/20' : 'bg-white border-slate-200 text-slate-800 hover:border-emerald-500'}`}
+                                       >
+                                         {label}
+                                         {isSelected && <CheckCircle2 className="w-3 h-3" />}
+                                       </button>
+                                     );
+                                   })}
+                                 </div>
+                                 {input.trim() && (
+                                   <button 
+                                     onClick={(e) => handleChatSubmit(e as any, undefined, msg.qKey)}
+                                     className="w-full py-4 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-emerald-700 transition-all shadow-xl flex items-center justify-center gap-2"
+                                   >
+                                     Confirm Selection <ArrowRight className="w-3 h-3" />
+                                   </button>
+                                 )}
+                               </div>
+                             )}
+                             {msg.isBeverageChoice && (
+                               <div className="mt-4 space-y-4">
+                                 <div className="grid grid-cols-1 gap-2">
+                                   {[
+                                     ["🥤 Softdrinks & Juices", "Softdrinks & Juices"], 
+                                     ["🍺 With Alcohol / Bar", "With Alcohol"], 
+                                     ["💧 Basic Water Hydration", "Water Only"],
+                                     ["✨ Others", "Others"]
+                                   ].map(([label, val]) => {
+                                     const isSelected = input.toLowerCase().includes(val.toLowerCase());
+                                     return (
+                                       <button 
+                                         key={val} 
+                                         onClick={() => {
+                                           if (val === "Others") {
+                                             document.querySelector('textarea')?.focus();
+                                             return;
+                                           }
+                                           const currentItems = input.split(',').map(i => i.trim()).filter(i => i && i !== "Others");
+                                           if (isSelected) {
+                                             const filtered = currentItems.filter(i => i.toLowerCase() !== val.toLowerCase());
+                                             setInput(filtered.join(', '));
+                                           } else {
+                                             setInput([...currentItems, val].join(', '));
+                                           }
+                                         }} 
+                                         className={`px-4 py-3 border rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all shadow-sm flex items-center justify-between ${isSelected ? 'bg-emerald-700 border-emerald-700 text-white shadow-emerald-900/20' : 'bg-white border-slate-200 text-slate-800 hover:border-emerald-500'}`}
+                                       >
+                                         <span>{label}</span>
+                                         {isSelected ? <CheckCircle2 className="w-3 h-3" /> : <ArrowRight className="w-3 h-3 opacity-30" />}
+                                       </button>
+                                     );
+                                   })}
+                                 </div>
+                                 {input.trim() && (
+                                   <button 
+                                     onClick={(e) => handleChatSubmit(e as any, undefined, msg.qKey)}
+                                     className="w-full py-4 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-emerald-700 transition-all shadow-xl flex items-center justify-center gap-2"
+                                   >
+                                     Confirm Selection <ArrowRight className="w-3 h-3" />
+                                   </button>
+                                 )}
+                               </div>
+                             )}
+                             {msg.isStaffingChoice && (
+                               <div className="mt-4 space-y-4">
+                                 <div className="grid grid-cols-1 gap-2">
+                                   {[
+                                     ["🧑‍🍳 Full Service (with Waiters)", "Full Service"], 
+                                     ["📦 Drop-off (Self-service)", "Drop-off"],
+                                     ["✨ Others", "Others"]
+                                   ].map(([label, val]) => {
+                                     const isSelected = input.toLowerCase().includes(val.toLowerCase());
+                                     return (
+                                       <button 
+                                         key={val} 
+                                         onClick={() => {
+                                           if (val === "Others") {
+                                             document.querySelector('textarea')?.focus();
+                                             return;
+                                           }
+                                           const currentItems = input.split(',').map(i => i.trim()).filter(i => i && i !== "Others");
+                                           if (isSelected) {
+                                             const filtered = currentItems.filter(i => i.toLowerCase() !== val.toLowerCase());
+                                             setInput(filtered.join(', '));
+                                           } else {
+                                             setInput([...currentItems, val].join(', '));
+                                           }
+                                         }} 
+                                         className={`px-4 py-3 border rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all shadow-sm flex items-center justify-between ${isSelected ? 'bg-emerald-700 border-emerald-700 text-white shadow-emerald-900/20' : 'bg-white border-slate-200 text-slate-800 hover:border-emerald-500'}`}
+                                       >
+                                         <span>{label}</span>
+                                         {isSelected ? <CheckCircle2 className="w-3 h-3" /> : <ArrowRight className="w-3 h-3 opacity-30" />}
+                                       </button>
+                                     );
+                                   })}
+                                 </div>
+                                 {input.trim() && (
+                                   <button 
+                                     onClick={(e) => handleChatSubmit(e as any, undefined, msg.qKey)}
+                                     className="w-full py-4 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-emerald-700 transition-all shadow-xl flex items-center justify-center gap-2"
+                                   >
+                                     Confirm Selection <ArrowRight className="w-3 h-3" />
+                                   </button>
+                                 )}
+                               </div>
+                             )}
+                             {msg.isLanguageChoice && (
+                               <div className="mt-4 grid grid-cols-2 gap-2">
+                                 {["English", "Tagalog", "Spanish", "Japanese", "Others"].map((lang) => (
+                                   <button 
+                                     key={lang} 
+                                     onClick={() => {
+                                       if (lang === "Others") {
+                                         document.querySelector('textarea')?.focus();
+                                         return;
+                                       }
+                                       handleChatSubmit(undefined, lang, msg.qKey);
+                                     }} 
+                                     className="px-4 py-3 bg-white border border-slate-200 text-slate-800 rounded-2xl text-[10px] font-black uppercase hover:border-emerald-500 hover:bg-emerald-50 transition-all shadow-sm"
+                                   >
+                                     {lang}
+                                   </button>
+                                 ))}
+                               </div>
+                             )}
+                             {msg.isCuisineChoice && (
+                               <div className="mt-4 space-y-4">
+                                 <div className="grid grid-cols-2 gap-2">
+                                   {["Filipino", "Italian", "Japanese", "Chinese", "Mediterranean", "American", "Others"].map((c) => {
+                                     const isSelected = input.toLowerCase().includes(c.toLowerCase());
+                                     return (
+                                       <button 
+                                         key={c} 
+                                         onClick={() => {
+                                           if (c === "Others") {
+                                             document.querySelector('textarea')?.focus();
+                                             return;
+                                           }
+                                           const currentItems = input.split(',').map(i => i.trim()).filter(i => i && i !== "Others");
+                                           if (isSelected) {
+                                             const filtered = currentItems.filter(i => i.toLowerCase() !== c.toLowerCase());
+                                             setInput(filtered.join(', '));
+                                           } else {
+                                             setInput([...currentItems, c].join(', '));
+                                           }
+                                         }} 
+                                         className={`px-3 py-3 border rounded-2xl text-[9px] font-black uppercase tracking-widest transition-all shadow-sm flex items-center justify-center gap-2 ${isSelected ? 'bg-emerald-700 border-emerald-700 text-white shadow-emerald-900/20' : 'bg-white border-slate-200 text-slate-800 hover:border-emerald-500'}`}
+                                       >
+                                         {c}
+                                         {isSelected && <CheckCircle2 className="w-3 h-3" />}
+                                       </button>
+                                     );
+                                   })}
+                                 </div>
+                                 {(input.trim() || messages[messages.length-1].id === msg.id) && (
+                                   <button 
+                                     onClick={(e) => handleChatSubmit(e as any, undefined, msg.qKey)}
+                                     className="w-full py-4 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-emerald-700 transition-all shadow-xl flex items-center justify-center gap-2"
+                                   >
+                                     Confirm Selection <ArrowRight className="w-3 h-3" />
+                                   </button>
+                                 )}
+                               </div>
+                             )}
+                             {msg.isNearbyChoice && (
+                               <div className="mt-4 grid grid-cols-2 gap-2">
+                                 <button onClick={() => handleChatSubmit(undefined, "Yes", msg.qKey)} className="px-4 py-3 bg-emerald-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-md">Yes, please</button>
+                                 <button onClick={() => handleChatSubmit(undefined, "No", msg.qKey)} className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all">No thanks</button>
+                               </div>
+                             )}
+                             {msg.isDietaryChoice && (
+                               <div className="mt-4 space-y-4">
+                                 <div className="grid grid-cols-2 gap-2">
+                                   {["None", "Vegetarian", "Vegan", "Halal", "Gluten-Free", "Nut Allergy", "Dairy-Free", "Others"].map((d) => {
+                                     const isSelected = input.toLowerCase().includes(d.toLowerCase());
+                                     return (
+                                       <button 
+                                         key={d} 
+                                         onClick={() => {
+                                           if (d === "Others") {
+                                             document.querySelector('textarea')?.focus();
+                                             return;
+                                           }
+                                           if (d === "None") {
+                                             handleChatSubmit(undefined, "None", msg.qKey);
+                                             return;
+                                           }
+                                           const currentItems = input.split(',').map(i => i.trim()).filter(i => i && i !== "Others" && i !== "None");
+                                           if (isSelected) {
+                                             const filtered = currentItems.filter(i => i.toLowerCase() !== d.toLowerCase());
+                                             setInput(filtered.join(', '));
+                                           } else {
+                                             setInput([...currentItems, d].join(', '));
+                                           }
+                                         }} 
+                                         className={`px-3 py-3 border rounded-2xl text-[9px] font-black uppercase tracking-widest transition-all shadow-sm flex items-center justify-center gap-2 ${isSelected ? 'bg-emerald-700 border-emerald-700 text-white shadow-emerald-900/20' : 'bg-white border-slate-200 text-slate-800 hover:border-emerald-500'}`}
+                                       >
+                                         {d}
+                                         {isSelected && <CheckCircle2 className="w-3 h-3" />}
+                                       </button>
+                                     );
+                                   })}
+                                 </div>
+                                 {(input.trim() && !input.toLowerCase().includes("none")) && (
+                                   <button 
+                                     onClick={(e) => handleChatSubmit(e as any, undefined, msg.qKey)}
+                                     className="w-full py-4 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-emerald-700 transition-all shadow-xl flex items-center justify-center gap-2"
+                                   >
+                                     Confirm Selection <ArrowRight className="w-3 h-3" />
+                                   </button>
+                                 )}
+                               </div>
+                             )}
+                             {msg.isStyleChoice && (
+                               <div className="mt-4 space-y-4">
+                                 <div className="grid grid-cols-2 gap-2">
+                                   {["Grilled", "Fried", "Steamed", "Soups", "Veggies", "Roasted", "Raw/Salads", "Others"].map((s) => {
+                                     const isSelected = input.toLowerCase().includes(s.toLowerCase().replace('/salads', ''));
+                                     return (
+                                       <button 
+                                         key={s} 
+                                         onClick={() => {
+                                           if (s === "Others") {
+                                             document.querySelector('textarea')?.focus();
+                                             return;
+                                           }
+                                           const currentItems = input.split(',').map(i => i.trim()).filter(i => i && i !== "Others");
+                                           if (isSelected) {
+                                             const filtered = currentItems.filter(i => i.toLowerCase() !== s.toLowerCase().replace('/salads', ''));
+                                             setInput(filtered.join(', '));
+                                           } else {
+                                             setInput([...currentItems, s.replace('/salads', '')].join(', '));
+                                           }
+                                         }} 
+                                         className={`px-3 py-3 border rounded-2xl text-[9px] font-black uppercase tracking-widest transition-all shadow-sm flex items-center justify-center gap-2 ${isSelected ? 'bg-emerald-700 border-emerald-700 text-white shadow-emerald-900/20' : 'bg-white border-slate-200 text-slate-800 hover:border-emerald-500'}`}
+                                       >
+                                         {s}
+                                         {isSelected && <CheckCircle2 className="w-3 h-3" />}
+                                       </button>
+                                     );
+                                   })}
+                                 </div>
+                                 {input.trim() && (
+                                   <button 
+                                     onClick={(e) => handleChatSubmit(e as any, undefined, msg.qKey)}
+                                     className="w-full py-4 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-emerald-700 transition-all shadow-xl flex items-center justify-center gap-2"
+                                   >
+                                     Confirm Selection <ArrowRight className="w-3 h-3" />
+                                   </button>
+                                 )}
+                               </div>
+                             )}
+                             {msg.isFoodChoiceMode && (
                               <div className="mt-4 flex flex-col gap-2">
                                 <button
-                                  onClick={() => handleChatSubmit(undefined, "Suggest for me")}
+                                  onClick={() => handleChatSubmit(undefined, "Suggest for me", msg.qKey)}
                                   className="px-4 py-3 bg-emerald-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-md text-left flex justify-between items-center"
                                 >
                                   <span>🤖 Suggest for me</span>
                                   <ArrowRight className="w-3 h-3 opacity-50" />
                                 </button>
                                 <button
-                                  onClick={() => handleChatSubmit(undefined, "I have specific food")}
+                                  onClick={() => handleChatSubmit(undefined, "I have specific food", msg.qKey)}
                                   className="px-4 py-3 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all text-left flex justify-between items-center"
                                 >
                                   <span>📝 I have specific food</span>
@@ -1977,17 +2625,20 @@ return (
                     </motion.div>
                   )}
                 </AnimatePresence>
-                {isProcessing && (
-                  <div className="flex justify-start">
-                    <div className="bg-white border border-slate-100 px-6 py-4 rounded-[1.5rem] shadow-sm flex items-center gap-4">
+                {isProcessing && isChatting && (
+                  <div className="flex items-start gap-3">
+                    <div className="w-8 h-8 rounded-full bg-emerald-50 border border-emerald-100 flex items-center justify-center flex-shrink-0 animate-pulse">
+                      <Loader2 className="w-4 h-4 text-emerald-600 animate-spin" />
+                    </div>
+                    <div className="bg-white border border-slate-100 px-5 py-3 rounded-2xl rounded-tl-none shadow-sm flex flex-col gap-2">
                       <div className="flex space-x-1.5">
-                        <div className="w-1.5 h-1.5 bg-emerald-600 rounded-full animate-bounce [animation-duration:0.8s]"></div>
-                        <div className="w-1.5 h-1.5 bg-emerald-600 rounded-full animate-bounce [animation-duration:0.8s] [animation-delay:0.1s]"></div>
-                        <div className="w-1.5 h-1.5 bg-emerald-600 rounded-full animate-bounce [animation-duration:0.8s] [animation-delay:0.2s]"></div>
+                        <div className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-bounce [animation-duration:0.8s]"></div>
+                        <div className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-bounce [animation-duration:0.8s] [animation-delay:0.1s]"></div>
+                        <div className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-bounce [animation-duration:0.8s] [animation-delay:0.2s]"></div>
                       </div>
-                      {!isChatting && (
-                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Agents collaborating...</span>
-                      )}
+                      <span className="text-[8px] font-black uppercase tracking-[0.2em] text-emerald-600/60 animate-pulse">
+                        AI Agent processing request...
+                      </span>
                     </div>
                   </div>
                 )}
@@ -2011,22 +2662,33 @@ return (
                       className="w-full p-4 pr-24 bg-slate-50 text-slate-800 rounded-3xl text-sm leading-relaxed border border-slate-200 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 resize-none min-h-[96px] placeholder:text-slate-400 transition-all outline-none"
                       required
                     />
-                    <div className="absolute bottom-3 right-3 flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={handleVoiceInput}
-                        className={`p-2.5 rounded-full transition-all ${isListening ? 'bg-rose-600 text-white animate-pulse shadow-lg shadow-rose-600/20' : 'bg-white text-slate-500 border border-slate-200 hover:bg-emerald-50 hover:text-emerald-700'}`}
-                      >
-                        {isListening ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
-                      </button>
-                      <button
-                        type="submit"
-                        disabled={isProcessing || !isChatting}
-                        className="p-2.5 bg-emerald-700 text-white rounded-full hover:bg-emerald-800 disabled:bg-slate-300 transition-all shadow-lg shadow-emerald-800/15"
-                      >
-                        <Send className="w-3 h-3" />
-                      </button>
-                    </div>
+                      <div className="absolute bottom-3 right-3 flex items-center gap-2">
+                        {isListening && (
+                          <div className="flex items-center gap-0.5 px-3 py-2 bg-rose-50 rounded-full border border-rose-100 mr-1 animate-pulse">
+                            {[1, 2, 3, 4].map((i) => (
+                              <div 
+                                key={i} 
+                                className="w-0.5 bg-rose-500 rounded-full animate-bounce" 
+                                style={{ height: `${Math.random() * 8 + 4}px`, animationDelay: `${i * 0.1}s` }}
+                              />
+                            ))}
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={handleVoiceInput}
+                          className={`p-2.5 rounded-full transition-all ${isListening ? 'bg-rose-600 text-white animate-pulse shadow-lg shadow-rose-600/20 ring-4 ring-rose-500/10' : 'bg-white text-slate-500 border border-slate-200 hover:bg-emerald-50 hover:text-emerald-700 shadow-sm'}`}
+                        >
+                          {isListening ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={isProcessing || !isChatting}
+                          className="p-2.5 bg-emerald-700 text-white rounded-full hover:bg-emerald-800 disabled:bg-slate-300 transition-all shadow-lg shadow-emerald-800/15"
+                        >
+                          <Send className="w-3 h-3" />
+                        </button>
+                      </div>
                   </div>
                 </form>
               </div>
@@ -2073,10 +2735,11 @@ return (
                 })}
               </div>
             </div>}
-          </section>}
+          </section>
+        )}
 
           { }
-          <section className={`col-span-12 ${Object.keys(monitoringStep).length > 0 ? 'lg:col-span-12' : 'lg:col-span-8'} flex flex-col space-y-4 h-[calc(100vh-190px)] min-h-0`}>
+          <section className={`col-span-12 ${fullScreenResult || Object.keys(monitoringStep).length > 0 ? 'lg:col-span-12' : 'lg:col-span-8'} flex flex-col space-y-4 h-[calc(100vh-190px)] min-h-0`}>
             <div className="flex-1 overflow-y-auto pr-2 space-y-4 scroll-smooth custom-scrollbar pb-20" ref={scrollRef}>
               {/* Start New Plan banner — always visible when results exist */}
               {steps.length > 0 && (
@@ -2092,7 +2755,7 @@ return (
                 </div>
               )}
               <AnimatePresence mode="popLayout">
-                {steps.length === 0 && (
+                {steps.length === 0 && !isProcessing && (
                   <motion.div
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
@@ -2124,370 +2787,159 @@ return (
                           ))}
                         </div>
                       </div>
-                      <div className="relative min-h-[360px]">
-                        <img
-                          src="https://images.unsplash.com/photo-1555244162-803834f70033?auto=format&fit=crop&q=85&w=1000"
-                          alt="Prepared catering table"
-                          className="absolute inset-0 h-full w-full object-cover"
-                        />
-                        <div className="absolute inset-0 bg-gradient-to-t from-slate-950/45 to-transparent"></div>
+                      <div className="relative min-h-[360px] bg-slate-50 flex items-center justify-center">
+                         <div className="text-center p-10">
+                           <div className="w-20 h-20 rounded-3xl bg-white border border-slate-100 flex items-center justify-center mx-auto mb-6 shadow-sm">
+                             <ChefHat className="w-10 h-10 text-emerald-600" />
+                           </div>
+                           <p className="text-sm font-black text-slate-900 uppercase tracking-widest">CaterFlow Engine</p>
+                           <p className="text-[11px] text-slate-400 mt-2">Ready to architect your event</p>
+                         </div>
                       </div>
+                    </div>
+                  </motion.div>
+                )}
+
+                {steps.length === 0 && isProcessing && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="min-h-full bg-white border border-slate-200 rounded-[3rem] shadow-2xl shadow-emerald-900/5 flex flex-col items-center justify-center p-12 text-center"
+                  >
+                    <div className="relative mb-12">
+                      <div className="absolute inset-0 bg-emerald-400/20 blur-3xl rounded-full scale-150 animate-pulse" />
+                      <div className="relative w-32 h-32 rounded-[2.5rem] bg-emerald-900 flex items-center justify-center shadow-2xl border border-emerald-400/30">
+                        <Loader2 className="w-12 h-12 text-emerald-400 animate-spin" />
+                      </div>
+                    </div>
+                    
+                    <h2 className="text-3xl font-black text-slate-900 tracking-tight mb-4">Orchestrating AI Agents</h2>
+                    <p className="text-slate-500 max-w-sm mx-auto leading-relaxed mb-12 font-medium">
+                      Our multi-agent system is currently collaborating on your event blueprint. This usually takes 10-15 seconds...
+                    </p>
+                    
+                    <div className="w-full max-w-md bg-slate-50 rounded-3xl p-6 border border-slate-100">
+                       <div className="flex justify-between items-center mb-6">
+                         <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Collaborating Entities</span>
+                         <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600 animate-pulse">Syncing...</span>
+                       </div>
+                       <div className="grid grid-cols-2 gap-3">
+                         {['Concierge', 'Chef', 'Logistics', 'Finance'].map(agent => (
+                           <div key={agent} className="bg-white px-4 py-3 rounded-2xl border border-slate-100 flex items-center gap-2">
+                             <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                             <span className="text-[10px] font-bold text-slate-700">{agent} Agent</span>
+                           </div>
+                         ))}
+                       </div>
                     </div>
                   </motion.div>
                 )}
 
                 {steps.length > 0 && (
                   <motion.div
-                    key="plan-flow-overview"
+                    key="og-results-view"
                     initial={{ opacity: 0, y: 12 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="mb-6 rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm"
+                    className="space-y-6"
                   >
-                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
-                        <p className="text-[10px] font-black uppercase tracking-[0.22em] text-emerald-600">Dashboard Flow</p>
-                        <h2 className="mt-1 text-2xl font-black tracking-tight text-slate-950">Brief to executable catering plan</h2>
-                        <p className="mt-2 max-w-2xl text-xs leading-6 text-slate-500">
-                          Review the customer brief first, then inspect menu decisions, operations, and pricing from the selector below.
-                        </p>
+                    {/* Dashboard Highlights (OG style - simple cards) */}
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                      <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Total Budget</p>
+                        <p className="text-2xl font-black text-slate-900">{customerStep.budget || eventData.budget || '--'}</p>
                       </div>
-                      <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-right">
-                        <p className="text-[9px] font-black uppercase tracking-widest text-emerald-700">Current View</p>
-                        <p className="text-sm font-black text-emerald-950">{reportView === 'menu' ? 'Menu Strategy' : reportView === 'logistics' ? 'Ops & Logistics' : reportView === 'finance' ? 'Finance' : 'Full Workflow'}</p>
+                      <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Guest Count</p>
+                        <p className="text-2xl font-black text-slate-900">{customerStep.guests || eventData.guest_count || '--'}</p>
                       </div>
-                    </div>
-
-                    <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
-                      <InfoTile icon={<Users className="w-4 h-4" />} label="Servings" value={customerStep.guests || eventData.guest_count || '--'} />
-                      <InfoTile icon={<Calendar className="w-4 h-4" />} label="Date" value={customerStep.date || eventData.event_date || '--'} />
-                      <InfoTile icon={<MapPin className="w-4 h-4" />} label="Location" value={customerStep.location || eventData.event_location || '--'} />
-                      <InfoTile icon={<DollarSign className="w-4 h-4" />} label="Budget" value={customerStep.budget || eventData.budget || '--'} />
-                      <InfoTile icon={<ShieldCheck className="w-4 h-4" />} label="Readiness" value={monitoringStep.execution_readiness ? `${monitoringStep.execution_readiness}%` : isProcessing ? 'Planning' : '--'} />
-                    </div>
-
-                    <div className="mt-5 grid grid-cols-1 gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500 sm:grid-cols-5">
-                      {['Brief', 'Menu', 'Procurement', 'Logistics', 'Quote'].map((item, index) => (
-                        <div key={item} className={`rounded-xl border px-3 py-2 ${index <= (monitoringStep.execution_readiness ? 4 : steps.length > 5 ? 2 : 1) ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-slate-100 bg-slate-50'}`}>
-                          {item}
-                        </div>
-                      ))}
-                    </div>
-                  </motion.div>
-                )}
-
-                {Object.keys(monitoringStep).length > 0 && !showDetailedAgentView && (
-                  <motion.div
-                    key="final-summary-highlight"
-                    initial={{ opacity: 0, y: -20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="mb-8 overflow-hidden rounded-[2.5rem] border border-emerald-100 bg-white shadow-2xl shadow-emerald-900/8"
-                  >
-                    {/* Hero gradient header */}
-                    <div className="relative overflow-hidden bg-gradient-to-br from-slate-900 via-emerald-950 to-slate-900 p-8 md:p-10">
-                      <div className="absolute top-0 right-0 w-72 h-72 bg-emerald-500/10 rounded-full blur-3xl -translate-y-1/3 translate-x-1/3" />
-                      <div className="absolute bottom-0 left-0 w-48 h-48 bg-sky-500/10 rounded-full blur-2xl translate-y-1/3 -translate-x-1/3" />
-                      <div className="relative z-10">
-                        <div className="flex flex-wrap items-start justify-between gap-4">
-                          <div>
-                            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-emerald-400 mb-2">Multi-Agent Orchestration Complete</p>
-                            <h2 className="text-3xl md:text-4xl font-black tracking-tight text-white">Smart Catering Blueprint</h2>
-                            <p className="text-sm text-slate-300 mt-2 max-w-xl leading-relaxed">{monitoringStep.final_summary || 'Blueprint synchronized across all agents.'}</p>
-                          </div>
-                          <div className="flex flex-wrap gap-2 mt-2">
-                            <button
-                              onClick={() => setDashboardView('inventory-planner')}
-                              className="rounded-full bg-emerald-500 hover:bg-emerald-400 px-5 py-2.5 text-[11px] font-black uppercase tracking-wider text-white transition shadow-lg flex items-center gap-2"
-                            >
-                              <ShoppingBag className="w-3.5 h-3.5" />
-                              Inventory Plan
-                            </button>
-                            <button onClick={exportBlueprint} className="rounded-full bg-white/10 hover:bg-white/20 border border-white/20 px-5 py-2.5 text-[11px] font-black uppercase tracking-wider text-white transition">
-                              Export
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* KPI Stat Cards */}
-                        <div className="mt-8 grid grid-cols-2 md:grid-cols-3 gap-3">
-                          {[
-                            { label: 'Your Budget', value: customerStep.budget || eventData.budget || '--', color: 'from-emerald-500/20 to-emerald-600/10', border: 'border-emerald-500/30', text: 'text-emerald-300' },
-                            { label: 'Guests', value: customerStep.guests || eventData.guest_count || '--', color: 'from-sky-500/20 to-sky-600/10', border: 'border-sky-500/30', text: 'text-sky-300' },
-                            { label: 'Readiness', value: monitoringStep.execution_readiness ? `${monitoringStep.execution_readiness}%` : '--', color: 'from-violet-500/20 to-violet-600/10', border: 'border-violet-500/30', text: 'text-violet-300' },
-                          ].map(({ label, value, color, border, text }) => (
-                            <div key={label} className={`bg-gradient-to-br ${color} border ${border} rounded-2xl p-4`}>
-                              <p className="text-[9px] font-black uppercase tracking-[0.25em] text-white/50 mb-1">{label}</p>
-                              <p className={`text-xl font-black ${text} tracking-tight truncate`}>{String(value)}</p>
-                            </div>
-                          ))}
-                        </div>
+                      <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Readiness</p>
+                        <p className="text-2xl font-black text-emerald-600">{monitoringStep.execution_readiness ? `${monitoringStep.execution_readiness}%` : '--'}</p>
+                      </div>
+                      <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm flex items-center justify-center">
+                         <button onClick={restartChat} className="flex items-center gap-2 bg-slate-900 text-white px-6 py-3 rounded-full text-[10px] font-black uppercase tracking-widest hover:bg-emerald-700 transition shadow-lg">
+                           <ArrowRight className="w-3.5 h-3.5 rotate-180" />
+                           New Plan
+                         </button>
                       </div>
                     </div>
 
-                    {/* Results Grid */}
-                    <div className="p-8 space-y-6">
-                      {/* Menu Items */}
-                      {(menuStep.menu || []).length > 0 && (
-                        <div>
-                          <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400 mb-3">AI Recommendations ({(menuStep.menu || []).length})</p>
-                          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                            {(menuStep.menu || []).map((item: any, i: number) => (
-                              <div key={`${item.dish}-${i}`} className="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-emerald-200 hover:shadow-xl hover:shadow-emerald-900/10">
-                                <FoodImageFrame item={item} compact />
-                                <div className="p-4 space-y-3">
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div className="min-w-0">
-                                      <p className="text-sm font-black text-slate-950 leading-tight">{item.dish}</p>
-                                      <p className="mt-1 text-xs font-semibold text-slate-500 line-clamp-2">{item.description}</p>
-                                    </div>
-                                    {(item.price || item.portion_per_guest) && (
-                                      <span className="shrink-0 rounded-full bg-emerald-50 px-3 py-1 text-[10px] font-black text-emerald-700 border border-emerald-100">
-                                        {item.price || item.portion_per_guest}
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div className="flex flex-wrap gap-2">
-                                    {[(item.category || ''), ...(item.tags || [])].filter(Boolean).slice(0, 3).map((tag: string) => (
-                                      <span key={tag} className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[9px] font-black uppercase tracking-wider text-slate-500">{tag}</span>
-                                    ))}
-                                  </div>
-                                  {item.reasoning && <p className="text-xs leading-relaxed text-slate-600">{item.reasoning}</p>}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Metrics Table */}
-                      <div className="overflow-hidden rounded-2xl border border-slate-100">
-                        <table className="w-full">
-                          <thead>
-                            <tr className="bg-slate-50 border-b border-slate-100">
-                              <th className="px-5 py-3.5 text-left text-xs font-black uppercase tracking-[0.18em] text-slate-400">Metric</th>
-                              <th className="px-5 py-3.5 text-left text-xs font-black uppercase tracking-[0.18em] text-slate-400">Value</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-50">
-                            {buildSummaryRows().slice(0, 8).map(([label, value]) => (
-                              <tr key={label} className="hover:bg-slate-50/80 transition-colors">
-                                <td className="px-5 py-4 text-sm font-bold text-slate-500 uppercase tracking-wide">{label}</td>
-                                <td className="px-5 py-4 text-sm font-semibold text-slate-900">{String(value)}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                    {/* Dashboard Segment Navigation (User Request: "PA DASHBOARD DAPAT") */}
+                    <div className="space-y-6">
+                      <div className="flex flex-wrap gap-2 mb-4">
+                        {steps.map((step, i) => (
+                          <button
+                            key={i}
+                            onClick={() => setResultPageIndex(i)}
+                            className={`px-4 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${i === resultPageIndex 
+                              ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/20' 
+                              : 'bg-white text-slate-400 hover:bg-slate-50 border border-slate-100'}`}
+                          >
+                            {step.agent.replace(' Agent', '').replace('Phase 1: ', '').replace('Phase 2: ', '').replace('Phase 3: ', '').replace('Phase 4: ', '').split(' (')[0]}
+                          </button>
+                        ))}
                       </div>
 
-                      {/* Catering Shop Recommendations */}
-                      {(supplierStep.catering_shop_recommendations || []).length > 0 && (
-                        <div>
-                          <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400 mb-3">Recommended Catering Shops</p>
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                            {(supplierStep.catering_shop_recommendations || []).slice(0, 3).map((shop: any, i: number) => (
-                              <div key={i} className="bg-gradient-to-br from-slate-50 to-white border border-slate-200 rounded-2xl p-4 hover:border-emerald-200 hover:shadow-md transition-all">
-                                <div className="flex items-start justify-between mb-2">
-                                  <p className="text-sm font-black text-slate-900">{shop.name}</p>
-                                  <span className="text-xs font-black text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">{shop.match_score}</span>
-                                </div>
-                                <p className="text-xs text-slate-500 font-medium">{shop.area}</p>
-                                {shop.reason && <p className="text-xs text-slate-400 mt-2 leading-relaxed">{shop.reason}</p>}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
+                      <div className="flex items-center justify-between px-2">
+                         <div className="flex items-center gap-3">
+                           <div className="w-10 h-10 rounded-2xl bg-emerald-50 flex items-center justify-center text-emerald-600 border border-emerald-100">
+                             <ChefHat className="w-5 h-5" />
+                           </div>
+                           <div>
+                             <h3 className="text-xs font-black uppercase tracking-[0.2em] text-emerald-900">
+                               Phase {Math.floor(resultPageIndex / 3) + 1} Result
+                             </h3>
+                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">Segment {resultPageIndex + 1} of {steps.length}</p>
+                           </div>
+                         </div>
+                         <div className="flex gap-2">
+                           <button onClick={() => setFullScreenResult(!fullScreenResult)} className="text-[9px] font-black uppercase tracking-widest text-slate-400 hover:text-emerald-700 transition">
+                             {fullScreenResult ? 'Show Chat' : 'Go Full Screen'}
+                           </button>
+                           <button onClick={exportBlueprint} className="text-[9px] font-black uppercase tracking-widest text-slate-400 hover:text-emerald-700 transition">Export JSON</button>
+                         </div>
+                      </div>
+                      
+                      <div className="bg-white rounded-[3rem] border border-slate-200 p-8 shadow-2xl shadow-slate-200/50 min-h-[600px]">
+                        <AnimatePresence mode="wait">
+                          <motion.div
+                            key={`step-dashboard-${resultPageIndex}`}
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -10 }}
+                          >
+                            <AgentReport 
+                              step={steps[resultPageIndex]} 
+                              isExpanded={true} 
+                              onToggle={() => {}}
+                              handleChatSubmit={handleChatSubmit}
+                              variant="dashboard"
+                            />
+                          </motion.div>
+                        </AnimatePresence>
+                      </div>
 
-                      {/* Staffing & Logistics */}
-                      {logisticsStep.staffing_needs && (
-                        <div className="flex items-start gap-4 bg-amber-50 border border-amber-100 rounded-2xl p-5">
-                          <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center flex-shrink-0">
-                            <Users className="w-5 h-5 text-amber-700" />
-                          </div>
-                          <div>
-                            <p className="text-xs font-black uppercase tracking-widest text-amber-700 mb-1">Staffing & Operations</p>
-                            <p className="text-sm font-semibold text-slate-800 leading-relaxed">{logisticsStep.staffing_needs}</p>
-                          </div>
-                        </div>
-                      )}
-
-                      <div className="pt-2 flex justify-end">
-                        <button
-                          onClick={() => setShowDetailedAgentView(true)}
-                          className="flex items-center gap-2 bg-slate-900 hover:bg-emerald-800 text-white px-7 py-3.5 rounded-full text-sm font-black uppercase tracking-wider transition shadow-lg"
+                      <div className="flex items-center justify-between pt-6">
+                        <button 
+                          disabled={resultPageIndex === 0}
+                          onClick={() => setResultPageIndex(prev => prev - 1)}
+                          className="flex items-center gap-2 px-8 py-4 rounded-[2rem] bg-slate-100 text-slate-600 font-black uppercase tracking-widest text-[10px] disabled:opacity-30 hover:bg-slate-200 transition"
                         >
-                          View Detailed Agent Breakdown
-                          <ArrowRight className="w-4 h-4" />
+                          <ArrowRight className="w-3.5 h-3.5 rotate-180" />
+                          Back
+                        </button>
+
+                        <button 
+                          disabled={resultPageIndex === steps.length - 1}
+                          onClick={() => setResultPageIndex(prev => prev + 1)}
+                          className="flex items-center gap-2 px-10 py-4 rounded-[2rem] bg-emerald-700 text-white font-black uppercase tracking-widest text-[11px] disabled:opacity-30 hover:bg-emerald-800 transition shadow-xl shadow-emerald-900/20"
+                        >
+                          {resultPageIndex === steps.length - 1 ? 'Finish Review' : 'Next Segment'}
+                          <ArrowRight className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     </div>
                   </motion.div>
-                )}
-
-                { }
-                {(steps.length > 0 && (!Object.keys(monitoringStep).length || showDetailedAgentView)) && (
-                  <div key="agent-reports-container" className="space-y-12">
-                    {Object.keys(monitoringStep).length > 0 && (
-                      <div className="flex items-center mt-2 mb-[-20px]">
-                        <button
-                          onClick={() => setShowDetailedAgentView(false)}
-                          className="flex items-center gap-2 text-slate-500 hover:text-emerald-700 text-[10px] font-black uppercase tracking-[0.2em] transition"
-                        >
-                          <ArrowLeft className="w-4 h-4" />
-                          Back to Blueprint Summary
-                        </button>
-                      </div>
-                    )}
-                    {steps.length > 0 && (
-                      <div className="sticky top-0 z-20 flex items-center justify-between rounded-2xl border border-slate-200 bg-white/95 px-6 py-3 shadow-md backdrop-blur-lg">
-                        <div className="flex items-center gap-3">
-                          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Orchestration View</div>
-                        </div>
-                        <select
-                          value={reportView}
-                          onChange={(e) => setReportView(e.target.value as any)}
-                          className="bg-transparent text-[11px] font-black uppercase tracking-widest text-emerald-700 outline-none cursor-pointer hover:text-emerald-900 transition-colors"
-                        >
-                          <option value="menu">Start Here: Brief + Menu</option>
-                          <option value="logistics">Ops: Supplies + Delivery</option>
-                          <option value="finance">Finance: Quote + Readiness</option>
-                          <option value="all">Full Agent Trace</option>
-                        </select>
-                      </div>
-                    )}
-
-                    {(() => {
-                      const ORCHESTRATION_PHASES = [
-                        {
-                          id: 'phase-1',
-                          title: 'Phase 1: Concierge',
-                          subtitle: 'Intake & Requirement Engineering',
-                          desc: 'Extracting user intent, cultural adaptation, and dietary constraints.',
-                          agents: ['Phase 1: Concierge (User Intent)', 'Knowledge Base & RAG Agent', 'Dietary & Allergens Specialist']
-                        },
-                        {
-                          id: 'phase-2',
-                          title: 'Phase 2: Head Chef',
-                          subtitle: 'Creative Design & Risk Analysis',
-                          desc: 'Menu engineering balanced with weather risks and location intelligence.',
-                          agents: ['Phase 2: Head Chef (Menu Design)', 'Weather Intelligence', 'Contingency & Plan B Specialist']
-                        },
-                        {
-                          id: 'phase-3',
-                          title: 'Phase 3: Accountant',
-                          subtitle: 'Financial & Resource Optimization',
-                          desc: 'Cost audit, procurement mapping, and profit margin protection.',
-                          agents: ['Phase 3: Accountant (Cost Optimization)', 'Inventory & Procurement Specialist', 'Supplier Intelligence Specialist', 'Sustainability & Impact Specialist']
-                        },
-                        {
-                          id: 'phase-4',
-                          title: 'Phase 4: Logistics Lead',
-                          subtitle: 'Operational Execution',
-                          desc: 'T-minus timelines, staffing allocation, and delivery routing.',
-                          agents: ['Phase 4: Logistics Lead (Execution)']
-                        },
-                        {
-                          id: 'core-systems',
-                          title: 'Core AI Systems',
-                          subtitle: 'Integrity & Memory',
-                          desc: 'Cross-agent coordination, decision logging, and system health.',
-                          agents: ['Shared Memory Ledger', 'System Monitoring & QA']
-                        }
-                      ];
-
-                      const activePhases = ORCHESTRATION_PHASES.filter(phase =>
-                        visibleSteps.some(s => phase.agents.some(name => s.agent.includes(name)))
-                      );
-
-                      if (activePhases.length === 0) return null;
-
-                      // Ensure activePhaseIndex is within bounds
-                      const safeIndex = Math.min(activePhaseIndex, activePhases.length - 1);
-                      const currentPhase = activePhases[safeIndex];
-                      const phaseSteps = visibleSteps.filter(s => currentPhase.agents.some(name => s.agent.includes(name)));
-
-                      // Auto-advance during processing is handled via standard navigation now
-
-                      return (
-                        <div className="space-y-6 relative border border-slate-200 bg-white rounded-3xl p-6 shadow-sm">
-                          {/* Stepper Header */}
-                          <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-6">
-                            <div className="flex flex-col">
-                              <span className="text-[10px] font-black uppercase tracking-widest text-emerald-500 mb-1">
-                                Step {safeIndex + 1} of {activePhases.length}
-                              </span>
-                              <h2 className="text-xl font-bold text-slate-800">{currentPhase.title}</h2>
-                            </div>
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() => setActivePhaseIndex(Math.max(0, safeIndex - 1))}
-                                disabled={safeIndex === 0}
-                                className="flex items-center gap-1 px-4 py-2 text-xs font-semibold rounded-full border border-slate-200 text-slate-600 disabled:opacity-30 hover:bg-slate-50 transition"
-                              >
-                                Back
-                              </button>
-                              <button
-                                onClick={() => setActivePhaseIndex(Math.min(activePhases.length - 1, safeIndex + 1))}
-                                disabled={safeIndex === activePhases.length - 1}
-                                className="flex items-center gap-1 px-4 py-2 text-xs font-semibold rounded-full bg-emerald-600 text-white disabled:opacity-50 hover:bg-emerald-700 transition"
-                              >
-                                Next
-                              </button>
-                            </div>
-                          </div>
-
-                          <div className="flex flex-col gap-1 border-l-4 border-emerald-500 pl-4 py-2 bg-gradient-to-r from-emerald-50 to-transparent rounded-r-lg">
-                            <div className="flex items-center gap-2">
-                              <h3 className="text-sm font-black text-slate-900 uppercase tracking-tighter">{currentPhase.title}</h3>
-                              <span className="text-[10px] text-emerald-600 font-bold tracking-widest">{currentPhase.subtitle}</span>
-                            </div>
-                            <p className="text-[11px] text-slate-500 font-medium">{currentPhase.desc}</p>
-                          </div>
-
-                          <div className="space-y-4">
-                            {phaseSteps.map((step, idx) => {
-                              const realIndex = steps.indexOf(step);
-                              return (
-                                <motion.div
-                                  key={`phase-step-${step.agent}-${realIndex}`}
-                                  initial={{ opacity: 0, x: -10 }}
-                                  animate={{ opacity: 1, x: 0 }}
-                                  className={steps.find(s => s.agent.includes('Monitoring')) && !step.agent.includes('Monitoring') && !step.agent.includes('Shared Memory') ? "opacity-60 hover:opacity-100 transition-opacity" : ""}
-                                >
-                                  <AgentReport
-                                    step={step}
-                                    isExpanded={expandedStepIndex === realIndex}
-                                    onToggle={() => setExpandedStepIndex(expandedStepIndex === realIndex ? null : realIndex)}
-                                  />
-                                </motion.div>
-                              );
-                            })}
-                          </div>
-
-                          {/* Footer Stepper Controls */}
-                          <div className="flex justify-between items-center mt-8 pt-4 border-t border-slate-100">
-                            <div className="flex gap-1">
-                              {activePhases.map((_, i) => (
-                                <div
-                                  key={i}
-                                  onClick={() => setActivePhaseIndex(i)}
-                                  className={`h-1.5 rounded-full cursor-pointer transition-all duration-300 ${i === safeIndex ? 'w-6 bg-emerald-500' : 'w-2 bg-slate-200 hover:bg-emerald-200'}`}
-                                />
-                              ))}
-                            </div>
-                            {safeIndex < activePhases.length - 1 && (
-                              <button
-                                onClick={() => setActivePhaseIndex(safeIndex + 1)}
-                                className="text-xs font-bold text-emerald-600 hover:text-emerald-800 uppercase tracking-wider"
-                              >
-                                Continue to next step →
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })()}
-                  </div>
                 )}
 
                 {dashboardView === 'menu-editor' && (
@@ -2542,7 +2994,8 @@ return (
                 )}
                 {dashboardView === 'checkout' && (
                   <CheckoutPortal
-                    shop={matchedShop}
+                    eventId={activeConversationId || ''}
+                    shop={matchedShop || {}}
                     event={eventData}
                     blueprint={steps}
                     status={agreementStatus}
@@ -2728,6 +3181,73 @@ return (
                   >
                     Done
                   </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {isProcessing && !isChatting && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[500] flex items-center justify-center p-6 bg-slate-950/80 backdrop-blur-xl"
+            >
+              <motion.div
+                initial={{ scale: 0.9, y: 40 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.9, y: 40 }}
+                className="w-full max-w-lg bg-emerald-950 border border-emerald-500/30 rounded-[3rem] p-10 shadow-[0_0_100px_rgba(16,185,129,0.2)] space-y-8"
+              >
+                <div className="flex flex-col items-center text-center space-y-4">
+                  <div className="w-20 h-20 bg-emerald-500/10 rounded-[2rem] border border-emerald-500/20 flex items-center justify-center mb-2">
+                    <Loader2 className="w-10 h-10 text-emerald-400 animate-spin" />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.4em] text-emerald-400 mb-2">Multi-Agent Orchestration</p>
+                    <h2 className="text-2xl font-black text-white tracking-tight">Activating Catering Intelligence</h2>
+                    <p className="text-xs text-emerald-500/60 mt-2 max-w-sm">
+                      All specialist agents are coordinating to generate your menu, inventory list, logistics plan, and cost analysis.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  {[
+                    ['Knowledge Retrieval', 'Playbook'], ['Intake Analysis', 'Concierge'], 
+                    ['Dietary Safety', 'Allergens'], ['Menu Engineering', 'Head Chef'], 
+                    ['Inventory Weights', 'Procurement'], ['Supplier Mapping', 'Market'], 
+                    ['Weather Live Risk', 'Atmospheric'], ['Logistics Timeline', 'Traffic'], 
+                    ['Cost Optimization', 'Audit'], ['System Monitoring', 'QA Pulse'], 
+                    ['Shared Memory', 'Handoff']
+                  ].map(([agent, role], i) => (
+                    <div key={agent} className="flex items-center gap-3">
+                      <div className={`w-2 h-2 rounded-full ${i <= currentStepIndex ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-white/10'}`} />
+                      <div className="flex flex-col">
+                        <span className={`text-[9px] font-black uppercase tracking-[0.15em] ${i === currentStepIndex ? 'text-emerald-400' : i < currentStepIndex ? 'text-white/60' : 'text-white/10'}`}>
+                          {agent}
+                        </span>
+                        <span className="text-[7px] font-bold uppercase tracking-widest text-white/20">{role}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="space-y-3">
+                  <div className="flex justify-between items-end">
+                    <span className="text-[9px] font-black uppercase tracking-[0.2em] text-emerald-400/60">Collaborative Syncing...</span>
+                    <span className="text-2xl font-black text-white font-mono">{Math.min(100, Math.floor((currentStepIndex + 1) / 11 * 100))}%</span>
+                  </div>
+                  <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden border border-white/5">
+                    <motion.div 
+                      className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.5)]"
+                      initial={{ width: '0%' }}
+                      animate={{ width: `${((currentStepIndex + 1) / 11) * 100}%` }}
+                      transition={{ duration: 0.5 }}
+                    />
+                  </div>
                 </div>
               </motion.div>
             </motion.div>
@@ -3189,22 +3709,78 @@ function ProblemStatementFit({ stackStatus }: { stackStatus: any }) {
 }
 
 function FoodImageFrame({ item, compact = false }: { item: any, compact?: boolean }) {
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generatedUrl, setGeneratedUrl] = useState<string | null>(item.ai_image_url || null);
+
+  const handleGenerate = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isGenerating) return;
+    setIsGenerating(true);
+    try {
+      const url = await generateFoodImage(item.dish, item.description);
+      if (url) {
+        setGeneratedUrl(url);
+        item.ai_image_url = url; 
+      }
+    } catch (err) {
+      console.error("Image generation failed:", err);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   const height = compact ? "h-36" : "h-52";
-  if (item?.image_url) {
+  const displayUrl = generatedUrl || item.image_url;
+
+  if (displayUrl) {
     return (
-      <div className={`relative ${height} overflow-hidden bg-slate-100`}>
-        <img src={item.image_url} alt={item.dish} className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" />
+      <div className={`relative ${height} overflow-hidden bg-slate-100 group`}>
+        <img 
+          src={displayUrl} 
+          alt={item.dish} 
+          className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" 
+          onError={(e) => {
+            (e.target as HTMLImageElement).style.display = 'none';
+            setDisplayUrl('');
+          }}
+        />
         <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
+        <button 
+          onClick={handleGenerate}
+          disabled={isGenerating}
+          className="absolute bottom-3 right-3 bg-white/90 hover:bg-white text-slate-900 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-2 shadow-lg backdrop-blur transition-all active:scale-95 disabled:opacity-50"
+        >
+          {isGenerating ? (
+            <Loader2 className="w-3 h-3 animate-spin text-emerald-600" />
+          ) : (
+            <ChefHat className="w-3 h-3 text-emerald-600" />
+          )}
+          {isGenerating ? 'Generating...' : 'AI Gen'}
+        </button>
       </div>
     );
   }
 
   return (
-    <div className={`relative ${height} overflow-hidden bg-[radial-gradient(circle_at_20%_20%,#ecfdf5,transparent_36%),linear-gradient(135deg,#f8fafc,#dff7ea_55%,#fef3c7)]`}>
+    <div className={`relative ${height} overflow-hidden bg-[radial-gradient(circle_at_20%_20%,#ecfdf5,transparent_36%),linear-gradient(135deg,#f8fafc,#dff7ea_55%,#fef3c7)] group`}>
       <div className="absolute inset-x-6 bottom-5 h-14 rounded-full bg-white/35 blur-xl" />
       <div className="absolute inset-0 grid place-items-center">
-        <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-white/70 bg-white/55 text-emerald-700 shadow-lg backdrop-blur">
-          <Utensils className="h-7 w-7" />
+        <div className="flex flex-col items-center gap-3">
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-white/70 bg-white/55 text-emerald-700 shadow-lg backdrop-blur">
+            <Utensils className="h-7 w-7" />
+          </div>
+          <button 
+            onClick={handleGenerate}
+            disabled={isGenerating}
+            className="bg-white/90 hover:bg-white text-slate-900 px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-2 shadow-xl backdrop-blur transition-all active:scale-95 disabled:opacity-50 border border-emerald-100"
+          >
+            {isGenerating ? (
+              <Loader2 className="w-3 h-3 animate-spin text-emerald-600" />
+            ) : (
+              <ChefHat className="w-3 h-3 text-emerald-600" />
+            )}
+            {isGenerating ? 'Generating...' : '✨ Generate AI Image'}
+          </button>
         </div>
       </div>
     </div>
@@ -3274,24 +3850,12 @@ function FoodDetailModal({ item, onClose }: { item: any, onClose: () => void }) 
   );
 }
 
-function AgentReport({ step, isExpanded, onToggle }: { step: AgentStep, isExpanded: boolean, onToggle: () => void, key?: any }) {
+function AgentReport({ step, isExpanded, onToggle, handleChatSubmit, variant = 'accordion' }: { step: AgentStep, isExpanded: boolean, onToggle: () => void, handleChatSubmit: (e?: any, directInput?: string) => void, key?: any, variant?: 'accordion' | 'dashboard' }) {
   const { agent, data } = step;
   const [selectedFood, setSelectedFood] = useState<any>(null);
 
-  const getStatusColor = (agent: string) => {
-    if (agent.includes('Concierge')) return 'bg-white/40 text-emerald-800 border-white/50 shadow-sm';
-    if (agent.includes('Head Chef')) return 'bg-white/40 text-sky-800 border-white/50 shadow-sm';
-    if (agent.includes('Accountant')) return 'bg-white/40 text-amber-800 border-white/50 shadow-sm';
-    if (agent.includes('Logistics Lead')) return 'bg-white/40 text-rose-800 border-white/50 shadow-sm';
-    if (agent.includes('Dietary')) return 'bg-white/40 text-pink-800 border-white/50 shadow-sm';
-    if (agent.includes('Weather')) return 'bg-white/40 text-sky-800 border-white/50 shadow-sm';
-    if (agent.includes('Supplier')) return 'bg-white/40 text-amber-800 border-white/50 shadow-sm';
-    if (agent.includes('Inventory')) return 'bg-white/40 text-emerald-800 border-white/50 shadow-sm';
-    return 'bg-white/40 text-slate-800 border-white/50 shadow-sm';
-  };
-
   const getStatusText = (agent: string) => {
-    if (agent.includes('Concierge')) return 'INTENT';
+    if (agent.includes('Confirmation')) return 'INTENT';
     if (agent.includes('Head Chef')) return 'DESIGN';
     if (agent.includes('Accountant')) return 'OPTIMIZE';
     if (agent.includes('Logistics Lead')) return 'EXECUTE';
@@ -3303,15 +3867,25 @@ function AgentReport({ step, isExpanded, onToggle }: { step: AgentStep, isExpand
   };
 
   const renderContent = () => {
-    switch (agent) {
-      case 'Phase 1: Concierge (User Intent)':
+    if (!data || Object.keys(data).length === 0) {
+      return (
+        <div className="flex flex-col items-center justify-center py-8 text-center bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
+           <Loader2 className="w-5 h-5 text-emerald-500 animate-spin mb-2" />
+           <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Agent is analyzing your request...</p>
+           <p className="text-[9px] text-slate-400 mt-1 lowercase">this normally takes 3-5 seconds</p>
+        </div>
+      );
+    }
+
+    switch (true) {
+      case agent.includes('Confirmation') || agent.includes('Concierge'):
         return (
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
-              <InfoItem label="Event Type" value={data.event_type} />
-              <InfoItem label="Location" value={data.location} />
-              <InfoItem label="Cuisine" value={data.cuisine_preference} />
-              <InfoItem label="Service Style" value={data.service_style} />
+              <InfoItem label="Event Type" value={data.event_type || 'Scanning...'} />
+              <InfoItem label="Location" value={data.location || 'Pending...'} />
+              <InfoItem label="Cuisine" value={data.cuisine_preference || 'Standard'} />
+              <InfoItem label="Service Style" value={data.service_style || 'TBD'} />
             </div>
             {data.cultural_profile && (
               <div className="rounded-2xl border border-white/50 bg-white/30 backdrop-blur-md p-4 shadow-sm">
@@ -3323,60 +3897,108 @@ function AgentReport({ step, isExpanded, onToggle }: { step: AgentStep, isExpand
             )}
           </div>
         );
-      case 'Dietary & Allergens Specialist':
+      case agent.includes('Dietary'):
         return (
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-white/30 backdrop-blur-md p-4 border border-white/50 rounded-2xl shadow-sm">
               <span className="text-[10px] font-bold text-rose-700 uppercase block mb-1 tracking-tight">Allergies to Avoid</span>
-              <p className="text-xs text-slate-800 font-medium">{data.allergens_to_avoid?.length > 0 ? data.allergens_to_avoid.join(', ') : 'None'}</p>
+              <p className="text-xs text-slate-800 font-medium">{(data.allergens_to_avoid || data.allergens || []).length > 0 ? (Array.isArray(data.allergens_to_avoid || data.allergens) ? (data.allergens_to_avoid || data.allergens).join(', ') : String(data.allergens_to_avoid || data.allergens)) : 'No allergies detected'}</p>
             </div>
             <div className="bg-white/30 backdrop-blur-md p-4 border border-white/50 rounded-2xl shadow-sm">
               <span className="text-[10px] font-bold text-emerald-700 uppercase block mb-1 tracking-tight">Dietary Preferences</span>
-              <p className="text-xs text-slate-800 font-medium">{data.recommended_labels?.length > 0 ? data.recommended_labels.join(', ') : 'None'}</p>
+              <p className="text-xs text-slate-800 font-medium">{(data.recommended_labels || data.dietary_needs || []).length > 0 ? (Array.isArray(data.recommended_labels || data.dietary_needs) ? (data.recommended_labels || data.dietary_needs).join(', ') : String(data.recommended_labels || data.dietary_needs)) : 'Standard diet'}</p>
             </div>
           </div>
         );
-      case 'Phase 2: Head Chef (Menu Design)':
+      case agent.includes('Head Chef'):
         return (
-          <div className="space-y-4">
+          <div className="space-y-6">
             <AnimatePresence>
               {selectedFood && (
                 <FoodDetailModal item={selectedFood} onClose={() => setSelectedFood(null)} />
               )}
             </AnimatePresence>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {(data.menu || data.dishes)?.map((item: any, i: number) => (
-                <button
-                  key={i}
-                  onClick={() => setSelectedFood(item)}
-                  className="text-left bg-white border border-slate-200 rounded-3xl overflow-hidden flex flex-col group transition-all hover:border-emerald-300 hover:shadow-lg shadow-sm cursor-pointer"
-                >
-                  <div className="relative overflow-hidden">
-                    <FoodImageFrame item={item} compact />
-                    <div className="absolute top-3 right-3">
-                      <span className="text-[8px] font-black uppercase tracking-widest bg-white/20 backdrop-blur text-white px-2 py-1 rounded-full border border-white/30">Tap for details</span>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+              {(data.menu || data.dishes || data.recommendations || []).length > 0 ? (
+                (data.menu || data.dishes || data.recommendations || []).map((item: any, i: number) => (
+                  <div key={i} className="flex flex-col bg-white border border-slate-200 rounded-3xl overflow-hidden group transition-all hover:border-emerald-300 hover:shadow-xl shadow-sm">
+                    <div className="relative overflow-hidden cursor-pointer" onClick={() => setSelectedFood(item)}>
+                      <FoodImageFrame item={item} compact />
+                      <div className="absolute top-3 right-3 flex gap-2">
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleChatSubmit(undefined, `Replace '${item.dish}' with something else.`);
+                          }}
+                          className="bg-white/90 backdrop-blur px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest text-slate-600 hover:text-emerald-600 hover:scale-105 transition shadow-md flex items-center gap-1.5"
+                          title="Retry / Replace"
+                        >
+                          <Zap className="w-3 h-3" />
+                          Regenerate
+                        </button>
+                      </div>
+                      <div className="absolute bottom-3 left-4 right-4">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-[8px] font-black uppercase tracking-widest bg-emerald-500 text-white px-2 py-0.5 rounded-md shadow-sm">AI Recommended</span>
+                          <p className="text-[9px] font-black uppercase tracking-widest text-emerald-300">
+                            {item.category || item.tags?.[0] || 'Selection'}
+                          </p>
+                        </div>
+                        <span className="text-base font-black text-white tracking-tight line-clamp-1">{item.dish}</span>
+                      </div>
                     </div>
-                    <div className="absolute bottom-3 left-4 right-4">
-                      <p className="text-[9px] font-black uppercase tracking-widest text-emerald-300 mb-0.5">
-                        {item.category || item.tags?.[0] || 'AI Recommendation'}
-                      </p>
-                      <span className="text-base font-black text-white tracking-tight line-clamp-1">{item.dish}</span>
+                    <div className="p-5 flex-1 flex flex-col space-y-4">
+                      <p className="text-xs text-slate-600 leading-relaxed line-clamp-2 font-medium">{item.description}</p>
+                      
+                      <div className="relative">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 block mb-1.5 ml-1">Special Notes (e.g. "more chili")</label>
+                        <input 
+                          type="text"
+                          placeholder="Add note..."
+                          className="w-full bg-slate-50 border border-slate-100 rounded-xl px-3 py-2.5 text-xs font-semibold text-slate-700 outline-none focus:border-emerald-300 focus:bg-white transition"
+                          onBlur={(e) => {
+                            if (e.target.value) {
+                               handleChatSubmit(undefined, `For ${item.dish}, please note: ${e.target.value}`);
+                            }
+                          }}
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 pt-3 border-t border-slate-50">
+                        <div className="bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-100">
+                           <p className="text-[8px] font-black text-emerald-600 uppercase tracking-widest mb-0.5">Portion</p>
+                           <p className="text-xs text-emerald-800 font-bold truncate">{item.portion_per_guest || '--'}</p>
+                        </div>
+                        <div className="bg-sky-50 px-3 py-1.5 rounded-xl border border-sky-100">
+                           <p className="text-[8px] font-black text-sky-600 uppercase tracking-widest mb-0.5">Price</p>
+                           <p className="text-xs text-sky-800 font-bold truncate">{item.price || '--'}</p>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                  <div className="p-4 flex-1 flex flex-col">
-                    <p className="text-xs text-slate-600 leading-relaxed line-clamp-2 font-medium flex-1">{item.description}</p>
-                    <div className="mt-3 grid grid-cols-2 gap-2 pt-3 border-t border-slate-100">
-                      <span className="text-xs text-emerald-700 font-bold bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100 truncate">{item.portion_per_guest || '--'}</span>
-                      <span className="text-xs text-sky-700 font-bold bg-sky-50 px-3 py-1 rounded-full border border-sky-100 truncate">{item.price || '--'}</span>
-                    </div>
-                  </div>
-                </button>
-              ))}
+                ))
+              ) : (
+                <div className="col-span-full py-12 text-center bg-slate-50 rounded-3xl border border-dashed border-slate-200">
+                   <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">No menu items generated for this phase.</p>
+                </div>
+              )}
+
+              <button 
+                onClick={() => handleChatSubmit(undefined, "Add one more dish to the menu.")}
+                className="flex flex-col items-center justify-center gap-3 p-8 rounded-3xl border-2 border-dashed border-slate-200 text-slate-400 hover:border-emerald-300 hover:text-emerald-600 hover:bg-emerald-50/30 transition-all group min-h-[300px]"
+              >
+                <div className="w-12 h-12 rounded-2xl bg-slate-50 flex items-center justify-center border border-slate-100 group-hover:bg-emerald-100 group-hover:border-emerald-200 transition-all">
+                  <PlusCircle className="w-6 h-6" />
+                </div>
+                <div className="text-center">
+                  <p className="text-[11px] font-black uppercase tracking-widest">Add More Dishes</p>
+                  <p className="text-[9px] font-bold mt-1 opacity-60">Let the AI suggest an addition</p>
+                </div>
+              </button>
             </div>
           </div>
         );
-
-      case 'Inventory & Procurement Specialist':
+      case agent.includes('Inventory'):
         return (
           <div className="space-y-3">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
@@ -3396,50 +4018,49 @@ function AgentReport({ step, isExpanded, onToggle }: { step: AgentStep, isExpand
             )}
           </div>
         );
-      case 'Supplier Intelligence Specialist':
+      case agent.includes('Supplier'):
         return (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {(data.catering_shop_recommendations || data.supplier_matches || []).slice(0, 4).map((supplier: any, i: number) => (
+            {(data.suppliers || data.catering_shop_recommendations || data.supplier_matches || []).length > 0 ? (data.suppliers || data.catering_shop_recommendations || data.supplier_matches || []).slice(0, 4).map((supplier: any, i: number) => (
               <div key={i} className="rounded-2xl border border-white/50 bg-white/30 backdrop-blur-md p-4 shadow-sm hover:shadow-md transition-shadow">
                 <div className="flex items-start justify-between gap-3 mb-3">
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-black text-slate-800">{supplier.name}</p>
-                    <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500 mt-0.5">{supplier.area || supplier.market}</p>
+                    <p className="truncate text-sm font-black text-slate-800">{supplier.name || supplier.shop_name}</p>
+                    <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500 mt-0.5">{supplier.area || supplier.market || supplier.location}</p>
                   </div>
-                  <span className="rounded-full bg-white/50 border border-white/60 px-3 py-1 text-[10px] font-black text-emerald-800 shadow-sm">{supplier.score || supplier.match_score}</span>
+                  <span className="rounded-full bg-white/50 border border-white/60 px-3 py-1 text-[10px] font-black text-emerald-800 shadow-sm">{supplier.score || supplier.match_score || supplier.rating || 'A+'}</span>
                 </div>
-                <p className="text-[10px] text-slate-600 leading-relaxed font-medium line-clamp-2">{supplier.reason || supplier.specialties}</p>
-                {supplier.contact && (
+                <p className="text-[10px] text-slate-600 leading-relaxed font-medium line-clamp-2">{supplier.reason || supplier.specialties || supplier.description}</p>
+                {(supplier.contact || supplier.phone) && (
                   <p className="mt-3 pt-3 border-t border-white/30 text-[10px] font-bold text-emerald-700 flex items-center gap-1.5 break-all">
                     <span className="bg-emerald-500/10 p-1 rounded-full"><svg className="w-3 h-3 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg></span>
-                    {supplier.contact}
+                    {supplier.contact || supplier.phone}
                   </p>
                 )}
               </div>
-            ))}
+            )) : <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Scanning local supplier database...</p>}
           </div>
         );
-      case 'Phase 3: Accountant (Cost Optimization)':
+      case agent.includes('Accountant'):
         return (
           <div className="space-y-4">
             <div className="rounded-3xl border border-white/60 bg-white/40 backdrop-blur-md p-6 text-center shadow-sm">
               <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] drop-shadow-sm">Total Projected Cost</span>
-              <p className="mt-2 text-4xl font-black text-slate-900 tracking-tight drop-shadow-sm">{data.optimized_quote}</p>
+              <p className="mt-2 text-4xl font-black text-slate-900 tracking-tight drop-shadow-sm">{data.optimized_quote || data.total_cost || data.grand_total || 'Calculating...'}</p>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-white/30 backdrop-blur-md p-5 border border-white/50 rounded-2xl shadow-sm text-center">
                 <span className="text-[9px] font-bold text-slate-500 uppercase block mb-1">Cost Per Guest</span>
-                <p className="text-xl font-black text-slate-800 drop-shadow-sm">{data.unit_cost?.split('/')[0] || '--'}</p>
+                <p className="text-xl font-black text-slate-800 drop-shadow-sm">{String(data.unit_cost || data.cost_per_guest || '--').split('/')[0]}</p>
               </div>
               <div className="bg-white/30 backdrop-blur-md p-5 border border-white/50 rounded-2xl shadow-sm text-center">
-                <span className="text-[9px] font-bold text-slate-500 uppercase block mb-1">Profit Yield</span>
-                <p className="text-xl font-black text-emerald-700 drop-shadow-sm">{data.profit_margin}</p>
+                <span className="text-[9px] font-bold text-slate-500 uppercase block mb-1">Value Efficiency</span>
+                <p className="text-xl font-black text-emerald-700 drop-shadow-sm">{data.profit_margin || data.efficiency_score || '98%'}</p>
               </div>
             </div>
           </div>
         );
-      case 'Weather Intelligence':
-      case 'Weather Intelligence Agent':
+      case agent.includes('Weather'):
         return (
           <div className="space-y-3">
             <div className="flex items-center gap-4 bg-white/30 backdrop-blur-md p-4 rounded-2xl border border-white/50 shadow-sm">
@@ -3453,7 +4074,7 @@ function AgentReport({ step, isExpanded, onToggle }: { step: AgentStep, isExpand
             </div>
           </div>
         );
-      case 'Phase 4: Logistics Lead (Execution)':
+      case agent.includes('Logistics Lead'):
         return (
           <div className="space-y-4">
             <div className="bg-white/30 backdrop-blur-md p-5 border border-white/50 rounded-2xl shadow-sm">
@@ -3477,13 +4098,32 @@ function AgentReport({ step, isExpanded, onToggle }: { step: AgentStep, isExpand
             </div>
           </div>
         );
+      case agent.includes('Knowledge') || agent.includes('RAG'):
+        return (
+          <div className="bg-emerald-50/50 p-6 border border-emerald-100 rounded-3xl">
+             <div className="flex items-center gap-2 mb-3">
+               <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+               <p className="text-[10px] font-black uppercase tracking-widest text-emerald-600">Institutional Knowledge Access</p>
+             </div>
+             <p className="text-xs text-slate-700 leading-relaxed font-medium italic">"{data.insights || data.summary || data.content || 'Synthesizing historical event data to optimize current planning parameters...'}"</p>
+          </div>
+        );
       default:
-        return <div className="text-[8px] text-slate-500/60 font-mono uppercase italic break-all opacity-50">{JSON.stringify(data).substring(0, 100)}...</div>;
+        return (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+             {Object.entries(data).length > 0 ? Object.entries(data).map(([k, v]: [string, any]) => (
+               <div key={k} className="bg-slate-50 p-3 rounded-2xl border border-slate-100">
+                  <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 mb-1">{k.replace(/_/g, ' ')}</p>
+                  <p className="text-xs font-bold text-slate-800 break-words">{typeof v === 'object' ? 'Structured Data' : String(v)}</p>
+               </div>
+             )) : <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest py-4">Processing granular metrics...</p>}
+          </div>
+        );
     }
   };
 
   const getPhaseGradient = (agent: string) => {
-    if (agent.includes('Concierge')) return 'from-emerald-900 via-emerald-950 to-slate-900';
+    if (agent.includes('Confirmation')) return 'from-emerald-900 via-emerald-950 to-slate-900';
     if (agent.includes('Head Chef')) return 'from-sky-900 via-slate-900 to-slate-900';
     if (agent.includes('Accountant')) return 'from-amber-900 via-slate-900 to-slate-900';
     if (agent.includes('Logistics Lead')) return 'from-rose-900 via-slate-900 to-slate-900';
@@ -3495,45 +4135,63 @@ function AgentReport({ step, isExpanded, onToggle }: { step: AgentStep, isExpand
   };
 
   return (
-    <div className="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm hover:shadow-md transition-all duration-300 mb-4">
-      {/* Dark gradient header */}
-      <div
-        onClick={onToggle}
-        className={`relative overflow-hidden bg-gradient-to-br ${getPhaseGradient(agent)} cursor-pointer select-none`}
-      >
-        <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full blur-2xl -translate-y-1/2 translate-x-1/2" />
-        <div className="relative z-10 flex items-center justify-between px-6 py-5">
-          <div className="flex items-center gap-3">
-            <div className={`w-2 h-2 rounded-full ${isExpanded ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-white/30'} transition-all`} />
-            <h2 className="text-sm font-black uppercase tracking-widest text-white">
-              {agent.replace(' Agent', '').replace('Phase 1: ', '').replace('Phase 2: ', '').replace('Phase 3: ', '').replace('Phase 4: ', '')}
-            </h2>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="text-[9px] px-3 py-1.5 rounded-full font-black uppercase tracking-widest bg-white/15 border border-white/20 text-white/80">
-              {getStatusText(agent)}
-            </span>
-            <motion.div animate={{ rotate: isExpanded ? 180 : 0 }} transition={{ duration: 0.3 }} className="text-white/60">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M19 9l-7 7-7-7" /></svg>
-            </motion.div>
-          </div>
-        </div>
-      </div>
-      <AnimatePresence initial={false}>
-        {isExpanded && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.4, ease: [0.04, 0.62, 0.23, 0.98] }}
-            className="overflow-hidden"
+    <div className={variant === 'accordion' ? "overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm hover:shadow-md transition-all duration-300 mb-4" : ""}>
+      {variant === 'accordion' ? (
+        <>
+          <div
+            onClick={onToggle}
+            className={`relative overflow-hidden bg-gradient-to-br ${getPhaseGradient(agent)} cursor-pointer select-none`}
           >
-            <div className="p-6 border-t border-slate-100">
-              {renderContent()}
+            <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full blur-2xl -translate-y-1/2 translate-x-1/2" />
+            <div className="relative z-10 flex items-center justify-between px-6 py-5">
+              <div className="flex items-center gap-3">
+                <div className={`w-2 h-2 rounded-full ${isExpanded ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-white/30'} transition-all`} />
+                <h2 className="text-sm font-black uppercase tracking-widest text-white">
+                  {agent.replace(' Agent', '').replace('Phase 1: ', '').replace('Phase 2: ', '').replace('Phase 3: ', '').replace('Phase 4: ', '')}
+                </h2>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-[9px] px-3 py-1.5 rounded-full font-black uppercase tracking-widest bg-white/15 border border-white/20 text-white/80">
+                  {getStatusText(agent)}
+                </span>
+                <motion.div animate={{ rotate: isExpanded ? 180 : 0 }} transition={{ duration: 0.3 }} className="text-white/60">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M19 9l-7 7-7-7" /></svg>
+                </motion.div>
+              </div>
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          </div>
+          <AnimatePresence initial={false}>
+            {isExpanded && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.4, ease: [0.04, 0.62, 0.23, 0.98] }}
+                className="overflow-hidden"
+              >
+                <div className="p-6 border-t border-slate-100">
+                  {renderContent()}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </>
+      ) : (
+        <div className="p-0">
+           <div className="mb-8 flex items-center justify-between border-b border-slate-100 pb-6">
+              <div>
+                <h2 className="text-2xl font-black text-slate-900 tracking-tight">
+                  {agent.replace(' Agent', '').replace('Phase 1: ', '').replace('Phase 2: ', '').replace('Phase 3: ', '').replace('Phase 4: ', '')}
+                </h2>
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mt-1">Operational Segment Analysis</p>
+              </div>
+              <span className="px-4 py-2 rounded-2xl bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest shadow-lg">
+                {getStatusText(agent)}
+              </span>
+           </div>
+           {renderContent()}
+        </div>
+      )}
     </div>
   );
 }

@@ -15,7 +15,7 @@ async function test() {
   try {
     console.log("Calling Gemini...");
     const response = await ai.models.generateContent({
-      model: "gemini-1.5-flash",
+      model: "models/gemini-1.5-flash",
       contents: `You are the CaterFlow Senior Concierge. 
       User Input: "I wanna use tagalog"
       Current Question Context: "Hi! I'm your AI Catering Assistant. What type of event are you planning? (e.g. Wedding, Birthday, Corporate)"

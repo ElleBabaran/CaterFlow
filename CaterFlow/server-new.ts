@@ -57,6 +57,7 @@ async function startServer() {
     // Mongoose Schemas (consolidated - single database)
     const EventSchema = new mongoose.Schema({
       userId: { type: String, required: true, index: true },
+      title: String,
       rawInput: String,
       messages: Array,
       eventData: Object,

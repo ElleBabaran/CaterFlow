@@ -118,9 +118,25 @@ export function MessageBubble({
               </div>
             )}
 
-            {(msg.isFoodChoiceMode || msg.isPortionControlMode) && (
+            {(msg.isFoodChoiceMode || msg.isPortionControlMode || msg.isProteinChoice) && (
               <div className="mt-6 flex flex-col gap-3">
-                {msg.isFoodChoiceMode ? (
+                {msg.isProteinChoice ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      ["🥩 Beef", "Beef"], ["🍗 Chicken", "Chicken"], 
+                      ["🥓 Pork", "Pork"], ["🐟 Fish", "Fish"], 
+                      ["🍤 Seafood", "Seafood"], ["🍱 Mixed/All", "Mixed/All"]
+                    ].map(([label, val]) => (
+                      <button 
+                        key={val} 
+                        onClick={() => onActionChoice?.(val)} 
+                        className="px-4 py-3 bg-white border border-slate-200 text-slate-800 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:border-emerald-500 hover:bg-emerald-50 transition-all shadow-sm"
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                ) : msg.isFoodChoiceMode ? (
                   <>
                     <button onClick={() => onActionChoice?.("Suggest for me")} className="premium-button premium-button-primary">🤖 Suggest for me</button>
                     <button onClick={() => onActionChoice?.("I have specific food")} className="premium-button premium-button-secondary">📝 I have specific food</button>

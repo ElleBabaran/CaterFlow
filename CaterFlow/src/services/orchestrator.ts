@@ -12,60 +12,52 @@ import {
 } from "./knowledgeBase";
 import { parseBudgetDetails } from "./budget";
 
+import { 
+  NATIVE_GEMINI_KEYS,
+  BASE_URL as PEKPIK_BASE_URL,
+  DEEPSEEK_KEYS,
+  GPT_KEYS
+} from "./aiConfig";
+
 export const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
 export const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 
-export const openaiKey = import.meta.env.VITE_OPENAI_API_KEY || "";
+const BASE_SYSTEM_INSTRUCTIONS = `You are the CaterFlow AI Orchestrator. 
+Your goal is to build a high-end catering blueprint.
+STRICT RULES:
+1. Output ONLY the raw content, reply, or JSON. NEVER include introductory phrases like "Here is the summary", "Certainly", or "Warm Tagalog translation".
+2. Use NATURAL, MODERN, and CONVERSATIONAL vocabulary for all languages. 
+   - For Tagalog: Use modern, everyday Tagalog (Taglish is okay). Avoid archaic/deep words (e.g., use "plano" instead of "balangkas", "check" instead of "siyasatin").
+3. Respond directly. If asked for a translation, provide ONLY the translated text.`;
 
 async function callAI(prompt: string, jsonMode = false, systemInstruction = "", responseSchema?: any) {
-  // Try OpenAI first (User request: "use openai instead")
-  if (openaiKey) {
-    try {
-      const finalPrompt = jsonMode ? `${prompt}\n\nIMPORTANT: Respond ONLY with a valid JSON object matching this schema or structure.` : prompt;
+  const finalSystemInstruction = systemInstruction 
+    ? `${BASE_SYSTEM_INSTRUCTIONS}\n\nAdditional Role: ${systemInstruction}` 
+    : BASE_SYSTEM_INSTRUCTIONS;
 
-      const res = await fetch("https://aiapiv2.pekpik.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${openaiKey}`
-        },
-        body: JSON.stringify({
-          model: "deepseek-chat",
-          messages: [
-            ...(systemInstruction ? [{ role: "system", content: systemInstruction }] : []),
-            { role: "user", content: finalPrompt }
-          ],
-          response_format: jsonMode ? { type: "json_object" } : undefined
-        })
-      });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error.message);
-      return data.choices?.[0].message.content || null;
-    } catch (err) {
-      console.warn("[CaterFlow] OpenAI primary engine failed, trying Gemini as failover...", err);
+  // Primary Reliable Path: Server-Side AI Proxy (Azure Foundry)
+  try {
+    const response = await fetch("/api/ai/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, systemInstruction: finalSystemInstruction, jsonMode }),
+    });
+
+    if (response.ok) {
+      const payload = await response.json();
+      return payload.content?.trim() || null;
+    } else {
+      const errData = await response.json().catch(() => ({}));
+      console.warn("[CaterFlow] Server AI failed, using fallback.", errData.error || response.status);
     }
+  } catch (e) {
+    console.warn("[CaterFlow] AI Connection Error, using fallback.", e);
   }
 
-  // Failover to Gemini
-  if (ai) {
-    try {
-      const response = await ai.models.generateContent({
-        model: "gemini-2.0-flash-lite",
-        contents: systemInstruction ? `${systemInstruction}\n\n${prompt}` : prompt,
-        config: {
-          responseMimeType: jsonMode ? "application/json" : "text/plain",
-          responseSchema: jsonMode ? responseSchema : undefined
-        }
-      });
-      return response.text?.trim() || null;
-    } catch (err: any) {
-      console.error("[CaterFlow] All AI engines failed:", err);
-      return null;
-    }
-  }
-
-  return null;
+  return null; // Return null to allow calling functions to use their own fallbacks
 }
+
+
 
 export function parseAIJSON(text: string | null | undefined): any {
   if (!text) return {};
@@ -92,16 +84,16 @@ const AGENT_ORDER = [
 ];
 
 const AGENT_DISPLAY_NAMES: Record<string, string> = {
-  ConciergeAgent: "Phase 1: Concierge (User Intent)",
+  ConciergeAgent: "Plan Confirmation (Intake Summary)",
   DietarySpecialist: "Dietary & Allergens Specialist",
-  HeadChefAgent: "Phase 2: Head Chef (Menu Design)",
+  HeadChefAgent: "Phase 1: Head Chef (Menu Design)",
   InventorySpecialist: "Inventory & Procurement Specialist",
   SupplierSpecialist: "Supplier Intelligence Specialist",
   WeatherIntelligence: "Weather Intelligence",
   ContingencyAgent: "Contingency & Plan B Specialist",
   SustainabilityAgent: "Sustainability & Impact Specialist",
-  LogisticsLeadAgent: "Phase 4: Logistics Lead (Execution)",
-  AccountantAgent: "Phase 3: Accountant (Cost Optimization)",
+  LogisticsLeadAgent: "Phase 3: Logistics Lead (Execution)",
+  AccountantAgent: "Phase 2: Accountant (Cost Optimization)",
   MonitoringAgent: "System Monitoring & QA",
 };
 
@@ -205,7 +197,7 @@ export async function predictWeather(location: string, date: string, language: s
     let analysis = {
       score: 7,
       risk: "Low",
-      recommendation: "Please ensure standard food safety protocols are followed. (Detailed AI analysis temporarily unavailable)."
+      recommendation: "Please ensure standard food safety protocols are followed."
     };
 
     try {
@@ -257,16 +249,19 @@ export async function predictWeather(location: string, date: string, language: s
     }
 
     const formattedSummary =
-      `🌤 Weather Forecast — ${location}\n` +
-      `📅 Date: ${targetDayStr} \n\n` +
-      `Condition: ${weatherInfo.condition}\n` +
-      `Temperature: ${weatherInfo.temp} \n` +
-      `Rain Chance: ${weatherInfo.rain} \n` +
-      `Humidity: ${weatherInfo.humidity} \n` +
-      `Wind Speed: ${weatherInfo.wind} \n\n` +
-      `Event Suitability Score: ${analysis.score}/10 \n` +
-      `Risk Level: ${(analysis.risk || "Unknown").toUpperCase()} \n\n` +
-      `Recommendation: ${analysis.recommendation}`;
+      `🌤 WEATHER INTELLIGENCE REPORT\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `📍 Location: ${location}\n` +
+      `📅 Event Date: ${targetDayStr}\n\n` +
+      `🌡 Condition: ${weatherInfo.condition}\n` +
+      `🌡 Temperature: ${weatherInfo.temp}\n` +
+      `💧 Rain Chance: ${weatherInfo.rain}\n` +
+      `☁ Humidity: ${weatherInfo.humidity}\n` +
+      `💨 Wind Speed: ${weatherInfo.wind}\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `📊 EVENT SUITABILITY SCORE: ${analysis.score}/10\n` +
+      `⚠️ RISK LEVEL: ${(analysis.risk || "Unknown").toUpperCase()}\n\n` +
+      `💡 CHEF'S RECOMMENDATION:\n${analysis.recommendation}`;
 
     return {
       source: "Weather Intelligence System",
@@ -632,7 +627,15 @@ async function runInventorySpecialist(customer: any, menuData: any) {
   const guests = Number(customer.guests || 100);
   const menu = menuData.menu || [];
   try {
-    const prompt = "You are the CaterFlow Inventory Specialist. Calculate procurement for " + guests + " guests. Menu: " + JSON.stringify(menu.map((m: any) => m.dish));
+    const SYSTEM_INSTRUCTIONS = `You are the CaterFlow AI Orchestrator. 
+Your goal is to build a high-end catering blueprint.
+STRICT RULES:
+1. Output ONLY the raw content or JSON. NEVER include introductory phrases like "Here is the summary" or "Certainly, I can help".
+2. Use NATURAL, MODERN, and CONVERSATIONAL vocabulary for all languages. 
+   - For Tagalog: Use modern, everyday Tagalog (Taglish is okay if it sounds more natural). Avoid archaic or "deep" words (e.g., use "plano" instead of "balangkas", "check" instead of "siyasatin").
+3. Preserve all emojis and formatting requested.
+4. If the user asks in a specific language, respond in that language using a warm but professional tone.`;
+    const prompt = SYSTEM_INSTRUCTIONS + "\n\nYou are the CaterFlow Inventory Specialist. Calculate procurement for " + guests + " guests. Menu: " + JSON.stringify(menu.map((m: any) => m.dish));
     const schema = {
       type: Type.OBJECT,
       properties: {
