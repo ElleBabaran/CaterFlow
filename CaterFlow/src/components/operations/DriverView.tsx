@@ -59,8 +59,8 @@ export function DriverView({ event, logistics }: { event: any, logistics: any })
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="p-6 space-y-8 max-w-6xl mx-auto">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div className="flex items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-[var(--accent-color)]/10 border border-[var(--accent-color)]/20 flex items-center justify-center">
-            <Navigation className="w-6 h-6 text-[var(--accent-color)]" />
+          <div className="w-12 h-12 rounded-2xl bg-[var(--app-accent)]/10 border border-[var(--app-accent)]/20 flex items-center justify-center">
+            <Navigation className="w-6 h-6 text-[var(--app-accent)]" />
           </div>
           <div>
             <h2 className="text-xl font-black text-slate-900 uppercase tracking-widest">Delivery Command</h2>
@@ -111,7 +111,7 @@ export function DriverView({ event, logistics }: { event: any, logistics: any })
             <div className="relative flex justify-between items-center px-4">
               <div className="absolute left-8 right-8 h-0.5 bg-slate-100 top-1/2 -translate-y-1/2 -z-10" />
               <div 
-                className="absolute left-8 h-0.5 bg-[var(--accent-color)] top-1/2 -translate-y-1/2 -z-10 transition-all duration-700" 
+                className="absolute left-8 h-0.5 bg-[var(--app-accent)] top-1/2 -translate-y-1/2 -z-10 transition-all duration-700" 
                 style={{ width: `${(steps.findIndex(s => s.id === status) / (steps.length - 1)) * 100}%` }}
               />
               
@@ -128,8 +128,8 @@ export function DriverView({ event, logistics }: { event: any, logistics: any })
                   >
                     <div className={`
                       w-12 h-12 rounded-2xl flex items-center justify-center transition-all border-2
-                      ${isCompleted ? 'bg-[var(--accent-color)] border-[var(--accent-color)] text-white shadow-lg shadow-[var(--accent-color)]/20' : 'bg-white border-slate-100 text-slate-300 group-hover:border-[var(--accent-color)]/30'}
-                      ${isActive ? 'ring-4 ring-[var(--accent-color)]/10 scale-110' : ''}
+                      ${isCompleted ? 'bg-[var(--app-accent)] border-[var(--app-accent)] text-white shadow-lg shadow-[var(--app-accent)]/20' : 'bg-white border-slate-100 text-slate-300 group-hover:border-[var(--app-accent)]/30'}
+                      ${isActive ? 'ring-4 ring-[var(--app-accent)]/10 scale-110' : ''}
                     `}>
                       <Icon className="w-5 h-5" />
                     </div>
@@ -144,7 +144,7 @@ export function DriverView({ event, logistics }: { event: any, logistics: any })
         </div>
 
         <div className="space-y-6">
-          <div className="staff-card p-6 bg-[var(--accent-color)] text-white shadow-xl shadow-[var(--accent-color)]/20">
+          <div className="staff-card p-6 bg-[var(--app-accent)] text-white shadow-xl shadow-[var(--app-accent)]/20">
             <div className="flex items-center gap-3 mb-6">
               <div className="p-2 bg-white/20 rounded-xl">
                 <Clock className="w-5 h-5" />
@@ -159,7 +159,7 @@ export function DriverView({ event, logistics }: { event: any, logistics: any })
                 <p className="text-[9px] font-black uppercase tracking-widest opacity-60 mb-1">Current Traffic</p>
                 <p className="text-sm font-bold">Moderate Condition (EDSA)</p>
               </div>
-              <button className="w-full bg-white text-[var(--accent-color)] rounded-2xl py-4 text-xs font-black uppercase tracking-widest shadow-xl hover:bg-slate-50 transition-all active:scale-95">
+              <button className="w-full bg-white text-[var(--app-accent)] rounded-2xl py-4 text-xs font-black uppercase tracking-widest shadow-xl hover:bg-slate-50 transition-all active:scale-95">
                 Update Status
               </button>
             </div>
@@ -174,7 +174,7 @@ export function DriverView({ event, logistics }: { event: any, logistics: any })
                 'Special Handling: Fragile AI-recommended platter',
               ].map((note, i) => (
                 <div key={i} className="flex gap-3 items-start">
-                  <div className="w-1.5 h-1.5 rounded-full bg-[var(--accent-color)] mt-1.5 flex-shrink-0" />
+                  <div className="w-1.5 h-1.5 rounded-full bg-[var(--app-accent)] mt-1.5 flex-shrink-0" />
                   <p className="text-xs font-medium text-slate-600 leading-relaxed uppercase tracking-tight">{note}</p>
                 </div>
               ))}
@@ -188,7 +188,7 @@ export function DriverView({ event, logistics }: { event: any, logistics: any })
                   <div key={i} className="flex gap-3 items-start">
                      <div className="w-1 h-8 rounded-full bg-slate-100 flex-shrink-0" />
                      <div>
-                        <p className="text-[10px] font-black text-[var(--accent-color)] mb-0.5">{t.time}</p>
+                        <p className="text-[10px] font-black text-[var(--app-accent)] mb-0.5">{t.time}</p>
                         <p className="text-[11px] font-bold text-slate-700 leading-tight">{t.activity}</p>
                      </div>
                   </div>

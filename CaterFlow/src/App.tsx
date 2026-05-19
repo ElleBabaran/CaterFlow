@@ -70,6 +70,7 @@ import { ShopDetailsModal } from './components/discovery/ShopDetailsModal';
 import { MarketplaceChat } from './components/chat/MarketplaceChat';
 import { OrderQR } from './components/plan/OrderQR';
 import { PublicOrderView } from './components/plan/PublicOrderView';
+import { PostFinalizationView } from './components/plan/PostFinalizationView';
 
 
 
@@ -1556,18 +1557,18 @@ const showFinance = dashboardView === 'finance' || dashboardView === 'summary';
 
 return (
   <div className={`app-shell flex flex-col h-screen w-full font-sans overflow-hidden transition-all duration-500 ${highContrast ? 'high-contrast' : ''
-    } ${workspaceRole === 'admin' ? 'admin-theme bg-[var(--bg-color)]' : workspaceRole === 'staff' ? 'staff-theme bg-[#fffbeb]' : 'customer-theme bg-[#fbf7ee]'}`}>
+    } ${workspaceRole === 'admin' ? 'admin-theme bg-[var(--app-bg)]' : workspaceRole === 'staff' ? 'staff-theme bg-[#fffbeb]' : 'customer-theme bg-[#fbf7ee]'}`}>
 
     {workspaceRole === 'admin' ? (
-      <div className="flex-1 flex flex-col overflow-hidden bg-[var(--bg-color)]">
-        <header className="h-14 bg-[var(--header-bg)] flex items-center justify-between px-6 flex-shrink-0 z-30 border-b border-[var(--border-color)]">
+      <div className="flex-1 flex flex-col overflow-hidden bg-[var(--app-bg)]">
+        <header className="h-14 bg-[var(--header-bg)] flex items-center justify-between px-6 flex-shrink-0 z-30 border-b border-[var(--app-border)]">
           <div className="flex items-center space-x-3">
-            <div className="w-8 h-8 bg-[var(--accent-color)] rounded-xl flex items-center justify-center font-bold text-lg text-white">C</div>
-            <h1 className="text-sm font-bold tracking-[0.08em] text-[var(--text-color)]">CaterFlow <span className="text-slate-500 font-normal text-[10px] ml-2 uppercase tracking-[0.18em]">Admin Portal</span></h1>
+            <div className="w-8 h-8 bg-[var(--app-accent)] rounded-xl flex items-center justify-center font-bold text-lg text-white">C</div>
+            <h1 className="text-sm font-bold tracking-[0.08em] text-[var(--app-text)]">CaterFlow <span className="text-slate-500 font-normal text-[10px] ml-2 uppercase tracking-[0.18em]">Admin Portal</span></h1>
           </div>
           <div className="flex items-center space-x-4">
-            <div className="flex items-center gap-3 pl-4 border-l border-[var(--border-color)]">
-              <img src={user.photoURL || undefined} className="w-6 h-6 rounded-full border border-[var(--border-color)]" alt="User" />
+            <div className="flex items-center gap-3 pl-4 border-l border-[var(--app-border)]">
+              <img src={user.photoURL || undefined} className="w-6 h-6 rounded-full border border-[var(--app-border)]" alt="User" />
               <button onClick={() => auth.signOut()} className="text-slate-500 hover:text-rose-500 transition-colors">
                 <LogOut className="w-4 h-4" />
               </button>
@@ -1576,7 +1577,7 @@ return (
         </header>
 
         <div className="flex-1 flex overflow-hidden">
-          <aside className="w-64 bg-[var(--header-bg)] border-r border-[var(--border-color)] flex flex-col p-4 space-y-2">
+          <aside className="w-64 bg-[var(--header-bg)] border-r border-[var(--app-border)] flex flex-col p-4 space-y-2">
             {[
               ['admin-inbox', 'Inbox / Chats', Inbox],
               ['shop-setup', 'My Catering Shop', Store],
@@ -1587,7 +1588,7 @@ return (
               <button
                 key={key}
                 onClick={() => setDashboardView(key as any)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all ${dashboardView === key ? 'bg-[var(--accent-color)] text-slate-950 shadow-lg shadow-[var(--accent-color)]/20' : 'text-slate-400 hover:bg-white/5'
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all ${dashboardView === key ? 'bg-[var(--app-accent)] text-slate-950 shadow-lg shadow-[var(--app-accent)]/20' : 'text-slate-400 hover:bg-white/5'
                   }`}
               >
                 <Icon className="w-4 h-4" />
@@ -1595,15 +1596,15 @@ return (
               </button>
             ))}
 
-            <div className="mt-auto pt-4 border-t border-[var(--border-color)]">
-              <div className="p-4 bg-[var(--accent-color)]/5 border border-[var(--accent-color)]/10 rounded-2xl">
-                <p className="text-[10px] font-black text-[var(--accent-color)] uppercase tracking-widest mb-1">Owner Mode</p>
+            <div className="mt-auto pt-4 border-t border-[var(--app-border)]">
+              <div className="p-4 bg-[var(--app-accent)]/5 border border-[var(--app-accent)]/10 rounded-2xl">
+                <p className="text-[10px] font-black text-[var(--app-accent)] uppercase tracking-widest mb-1">Owner Mode</p>
                 <p className="text-[9px] text-slate-500 leading-relaxed font-medium">You are managing your catering business operations.</p>
               </div>
             </div>
           </aside>
 
-          <main className="flex-1 bg-[var(--bg-color)] overflow-y-auto p-8">
+          <main className="flex-1 bg-[var(--app-bg)] overflow-y-auto p-8">
             <AnimatePresence mode="wait">
               {dashboardView === 'admin-inbox' && (
                 <AdminInbox
@@ -1708,7 +1709,7 @@ return (
       <>
         <header className="h-14 bg-white/90 backdrop-blur-md flex items-center justify-between px-6 border-b border-slate-200 flex-shrink-0 z-20">
           <div className="flex items-center space-x-3">
-            <div className="w-8 h-8 bg-[var(--accent-color)] rounded-xl flex items-center justify-center font-bold text-lg text-white">C</div>
+            <div className="w-8 h-8 bg-[var(--app-accent)] rounded-xl flex items-center justify-center font-bold text-lg text-white">C</div>
             <h1 className="text-sm font-bold tracking-[0.08em] text-slate-950">
               CaterFlow
               <span className="text-slate-400 font-normal text-[10px] ml-2 uppercase tracking-[0.18em]">
@@ -1770,7 +1771,7 @@ return (
           </div>
         </header>
 
-        <main className={`flex-1 grid grid-cols-12 gap-5 p-5 overflow-hidden relative bg-[var(--bg-color)] ${fullScreenResult ? 'full-screen-results' : ''}`}>
+        <main className={`flex-1 grid grid-cols-12 gap-5 p-5 overflow-hidden relative bg-[var(--app-bg)] ${fullScreenResult ? 'full-screen-results' : ''}`}>
           {(!fullScreenResult || steps.length === 0) && (
             <section className="col-span-12 lg:col-span-4 flex flex-col space-y-4 h-[calc(100vh-190px)] min-h-0">
                {/* Chat UI ... */}
@@ -1788,7 +1789,7 @@ return (
                 <div
                   key={key}
                   className={`rounded-full px-3 py-1 text-[9px] font-black uppercase tracking-widest transition-all ${dashboardView === key
-                    ? 'bg-[var(--accent-color)] text-white shadow-md'
+                    ? 'bg-[var(--app-accent)] text-white shadow-md'
                     : 'bg-slate-100 text-slate-400'
                     }`}
                 >

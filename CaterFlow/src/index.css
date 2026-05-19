@@ -1,27 +1,30 @@
 @import "tailwindcss";
 
+@source "./src/**/*.{ts,tsx}";
+@source "./index.html";
+
 @theme {
   --font-sans: "Segoe UI", "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 
   --animate-shake: shake 0.5s ease-in-out;
+}
 
-  @keyframes shake {
-    0%, 100% { transform: translateX(0); }
-    25% { transform: translateX(-5px); }
-    50% { transform: translateX(5px); }
-    75% { transform: translateX(-5px); }
-  }
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-5px); }
+  50% { transform: translateX(5px); }
+  75% { transform: translateX(-5px); }
 }
 
 :root {
-  --bg-color: #fbf7ee;
-  --text-color: #1e2b22;
+  --app-bg: #fbf7ee;
+  --app-text: #1e2b22;
   --card-bg: rgba(255, 255, 255, 0.92);
   --header-bg: rgba(248, 250, 247, 0.95);
-  --border-color: rgba(15, 23, 42, 0.08);
-  --grid-color: rgba(16, 185, 129, 0.04);
-  --accent-color: #166534;
+  --app-border: rgba(15, 23, 42, 0.08);
+  --app-grid: rgba(16, 185, 129, 0.04);
+  --app-accent: #166534;
   --primary-emerald: #166534;
   --primary-tomato: #e4572e;
   --primary-gold: #f2b84b;
@@ -31,22 +34,23 @@
 }
 
 [data-theme='light'] {
-  --bg-color: #fbf7ee;
-  --text-color: #0f172a;
+  --app-bg: #fbf7ee;
+  --app-text: #0f172a;
   --card-bg: #ffffff;
   --header-bg: #f8fafc;
-  --border-color: #e2e8f0;
-  --grid-color: rgba(99, 102, 241, 0.05);
-  --accent-color: #166534;
+  --app-border: #e2e8f0;
+  --app-grid: rgba(99, 102, 241, 0.05);
+  --app-accent: #166534;
   --card-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
 }
 
-@layer base {
-  body {
-    background-color: var(--bg-color);
-    color: var(--text-color);
-    @apply font-sans selection:bg-emerald-700 selection:text-white transition-colors duration-300;
-  }
+body {
+  background-color: var(--app-bg);
+  color: var(--app-text);
+  @apply font-sans transition-colors duration-300;
+}
+body::selection {
+  @apply bg-emerald-700 text-white;
 }
 
 .high-density-label {
@@ -55,13 +59,13 @@
 
 .high-density-card {
   background-color: var(--card-bg);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--app-border);
   box-shadow: var(--card-shadow);
   @apply backdrop-blur-md rounded-2xl overflow-hidden transition-all duration-300;
 }
 
 .high-density-header {
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--app-border);
   background-color: var(--header-bg);
   @apply p-3 flex justify-between items-center transition-all duration-300;
 }
@@ -108,8 +112,8 @@
 
 .cyber-grid {
   background-image: 
-    linear-gradient(var(--grid-color) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid-color) 1px, transparent 1px);
+    linear-gradient(var(--app-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--app-grid) 1px, transparent 1px);
   background-size: 30px 30px;
 }
 
@@ -122,12 +126,12 @@
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: var(--border-color);
+  background: var(--app-border);
   border-radius: 2px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: var(--accent-color);
+  background: var(--app-accent);
 }
 
 .neon-border-emerald,
@@ -138,7 +142,7 @@
 
 .neon-text-emerald,
 .neon-text-violet {
-  color: var(--accent-color);
+  color: var(--app-accent);
   text-shadow: none;
 }
 
@@ -147,12 +151,12 @@
 }
 
 .high-contrast {
-  --bg-color: #000000 !important;
-  --text-color: #ffffff !important;
+  --app-bg: #000000 !important;
+  --app-text: #ffffff !important;
   --card-bg: #000000 !important;
   --header-bg: #000000 !important;
-  --border-color: #ffff00 !important;
-  --accent-color: #ffff00 !important;
+  --app-border: #ffff00 !important;
+  --app-accent: #ffff00 !important;
   --card-shadow: none !important;
 }
 
@@ -214,7 +218,10 @@
 }
 
 @utility premium-stat-card {
-  @apply bg-white border border-slate-200 rounded-[2rem] p-6 shadow-sm hover:shadow-xl transition-all duration-500 hover:-translate-y-1;
+  @apply bg-white border border-slate-200 rounded-[2rem] p-6 shadow-sm transition-all duration-500;
+  &:hover {
+    @apply shadow-xl -translate-y-1;
+  }
 }
 
 @keyframes float {
@@ -228,27 +235,27 @@
 }
 
 .admin-theme {
-  --accent-color: var(--primary-emerald);
-  --bg-color: #fbf7ee;
+  --app-accent: var(--primary-emerald);
+  --app-bg: #fbf7ee;
   --card-bg: rgba(255, 255, 255, 0.6);
   --header-bg: rgba(248, 250, 247, 0.6);
-  --text-color: #1e2b22;
-  --border-color: rgba(15, 23, 42, 0.08);
+  --app-text: #1e2b22;
+  --app-border: rgba(15, 23, 42, 0.08);
   --input-bg: rgba(255, 255, 255, 0.5);
 }
 
 @utility admin-card {
   background-color: var(--card-bg);
-  border: 1px solid var(--border-color);
-  color: var(--text-color);
+  border: 1px solid var(--app-border);
+  color: var(--app-text);
   @apply rounded-3xl shadow-xl backdrop-blur-xl;
 }
 
 .admin-input {
   background-color: var(--input-bg);
-  border: 1px solid var(--border-color);
-  color: var(--text-color);
-  @apply rounded-2xl px-4 py-3 text-sm focus:border-[var(--accent-color)] focus:ring-1 focus:ring-[var(--accent-color)] outline-none transition-all backdrop-blur-md;
+  border: 1px solid var(--app-border);
+  color: var(--app-text);
+  @apply rounded-2xl px-4 py-3 text-sm focus:border-[var(--app-accent)] focus:ring-1 focus:ring-[var(--app-accent)] outline-none transition-all backdrop-blur-md;
 }
 
 .admin-label {
@@ -256,53 +263,74 @@
 }
 
 .admin-button-primary {
-  background-color: var(--accent-color);
+  background-color: var(--app-accent);
   color: white;
-  @apply rounded-2xl px-6 py-3 text-xs font-black uppercase tracking-widest hover:opacity-90 transition-all shadow-lg shadow-[var(--accent-color)]/20 active:scale-95;
+  @apply rounded-2xl px-6 py-3 text-xs font-black uppercase tracking-widest transition-all shadow-lg shadow-[var(--app-accent)]/20;
+  &:hover {
+    @apply opacity-90;
+  }
+  &:active {
+    @apply scale-95;
+  }
 }
 
 .admin-button-secondary {
   background-color: rgba(255, 255, 255, 0.6);
-  border: 1px solid var(--border-color);
-  color: var(--text-color);
-  @apply rounded-2xl px-6 py-3 text-xs font-black uppercase tracking-widest hover:bg-white/80 transition-all active:scale-95 backdrop-blur-md;
+  border: 1px solid var(--app-border);
+  color: var(--app-text);
+  @apply rounded-2xl px-6 py-3 text-xs font-black uppercase tracking-widest transition-all backdrop-blur-md;
+  &:hover {
+    @apply bg-white/80;
+  }
+  &:active {
+    @apply scale-95;
+  }
 }
 
 .staff-theme {
-  --accent-color: #ff6347; /* Tomato */
-  --bg-color: #fffbeb;    /* Cream */
+  --app-accent: #ff6347; /* Tomato */
+  --app-bg: #fffbeb;    /* Cream */
   --card-bg: #ffffff;
   --header-bg: #ffffff;
-  --text-color: #1e293b;
-  --border-color: rgba(0, 0, 0, 0.08);
+  --app-text: #1e293b;
+  --app-border: rgba(0, 0, 0, 0.08);
   --input-bg: rgba(0, 0, 0, 0.02);
 }
 
 .staff-card {
   background-color: var(--card-bg);
-  border: 1px solid var(--border-color);
-  color: var(--text-color);
+  border: 1px solid var(--app-border);
+  color: var(--app-text);
   @apply rounded-3xl shadow-sm;
 }
 
 .staff-button-primary {
-  background-color: var(--accent-color);
+  background-color: var(--app-accent);
   color: white;
-  @apply rounded-2xl px-6 py-3 text-xs font-black uppercase tracking-widest hover:opacity-90 transition-all shadow-lg shadow-[var(--accent-color)]/20 active:scale-95;
+  @apply rounded-2xl px-6 py-3 text-xs font-black uppercase tracking-widest transition-all shadow-lg shadow-[var(--app-accent)]/20;
+  &:hover {
+    @apply opacity-90;
+  }
+  &:active {
+    @apply scale-95;
+  }
 }
 
 
 .customer-theme {
-  --accent-color: var(--primary-emerald);
-  --bg-color: #fbf7ee;
+  --app-accent: var(--primary-emerald);
+  --app-bg: #fbf7ee;
 }
 
 /* Premium UI Overhaul Additions */
 @utility premium-card {
-  @apply bg-white border border-slate-200/60 rounded-[3rem] p-8 shadow-sm hover:shadow-2xl hover:shadow-emerald-900/5 transition-all duration-500 hover:-translate-y-2 overflow-hidden relative;
+  @apply bg-white border border-slate-200/60 rounded-[3rem] p-8 shadow-sm transition-all duration-500 overflow-hidden relative;
+  &:hover {
+    @apply shadow-2xl shadow-emerald-900/5 -translate-y-2;
+  }
 }
 
-@utility premium-gradient-bg {
+.premium-gradient-bg {
   @apply bg-gradient-to-br from-slate-900 via-slate-800 to-emerald-950 text-white;
 }
 
@@ -319,7 +347,10 @@
 }
 
 .premium-button-primary {
-  @apply bg-slate-900 text-white hover:bg-emerald-700 shadow-slate-900/20;
+  @apply bg-slate-900 text-white shadow-slate-900/20;
+  &:hover {
+    @apply bg-emerald-700;
+  }
 }
 
 /* Loading Skeletons */
@@ -336,7 +367,7 @@
 }
 
 @utility skeleton-card {
-  @apply premium-card border-slate-100;
+  @apply bg-white border border-slate-100 rounded-[3rem] p-8 shadow-sm hover:shadow-2xl hover:shadow-emerald-900/5 transition-all duration-500 hover:-translate-y-2 overflow-hidden relative;
 }
 
 @utility skeleton-text {

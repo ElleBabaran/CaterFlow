@@ -117,11 +117,11 @@ export function AdminShopSetup({ profile, onSave }: { profile: any; onSave: (dat
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="p-6 space-y-8 max-w-2xl mx-auto">
       <div className="flex items-center gap-4">
-        <div className="w-12 h-12 rounded-2xl bg-[var(--accent-color)]/10 border border-[var(--accent-color)]/20 flex items-center justify-center">
-          <Store className="w-6 h-6 text-[var(--accent-color)]" />
+        <div className="w-12 h-12 rounded-2xl bg-[var(--app-accent)]/10 border border-[var(--app-accent)]/20 flex items-center justify-center">
+          <Store className="w-6 h-6 text-[var(--app-accent)]" />
         </div>
         <div>
-          <h2 className="text-lg font-black text-[var(--text-color)] uppercase tracking-widest">Shop Profile</h2>
+          <h2 className="text-lg font-black text-[var(--app-text)] uppercase tracking-widest">Shop Profile</h2>
           <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Appear on the CaterFlow map and get recommended to customers</p>
         </div>
       </div>
@@ -209,7 +209,7 @@ export function AdminShopSetup({ profile, onSave }: { profile: any; onSave: (dat
             placeholder="https://images.unsplash.com/..."
           />
           {shopImage && (
-            <div className="mt-3 h-40 w-full overflow-hidden rounded-2xl border border-[var(--border-color)] shadow-inner">
+            <div className="mt-3 h-40 w-full overflow-hidden rounded-2xl border border-[var(--app-border)] shadow-inner">
               <img src={shopImage} alt="Shop preview" className="w-full h-full object-cover opacity-80" />
             </div>
           )}
@@ -234,7 +234,7 @@ export function AdminShopSetup({ profile, onSave }: { profile: any; onSave: (dat
         {/* Interactive Map */}
         <div className="space-y-3">
           <label className="admin-label">📍 Pin Your Shop on the Map</label>
-          <div className="h-64 overflow-hidden rounded-2xl border border-[var(--border-color)] shadow-inner z-0 relative">
+          <div className="h-64 overflow-hidden rounded-2xl border border-[var(--app-border)] shadow-inner z-0 relative">
             <MapContainer center={coords ? [coords.lat, coords.lng] : [14.5995, 120.9842]} zoom={coords ? 15 : 11} style={{ height: '100%', width: '100%' }}>
               <TileLayer
                 attribution='&copy; OpenStreetMap'
@@ -244,7 +244,7 @@ export function AdminShopSetup({ profile, onSave }: { profile: any; onSave: (dat
             </MapContainer>
           </div>
           <div className="flex items-center justify-between">
-             <p className="text-[9px] text-[var(--accent-color)] font-bold flex items-center gap-1 uppercase tracking-widest">
+             <p className="text-[9px] text-[var(--app-accent)] font-bold flex items-center gap-1 uppercase tracking-widest">
                <ShieldCheck className="w-3 h-3" /> {coords ? 'Verified Address on Map' : 'Click map to pin location'}
              </p>
              {coords && <p className="text-[9px] text-slate-500 font-mono">Lat: {coords.lat.toFixed(4)}, Lng: {coords.lng.toFixed(4)}</p>}
