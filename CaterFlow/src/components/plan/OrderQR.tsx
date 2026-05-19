@@ -1,6 +1,6 @@
 import React from 'react';
-import { QRCodeSVG } from 'qrcode.react';
-import { motion } from 'framer-motion';
+import { QRCodeCanvas } from 'qrcode.react';
+import { motion } from 'motion/react';
 import {
   QrCode,
   Download,
@@ -64,22 +64,12 @@ export const OrderQR: React.FC<OrderQRProps> = ({ orderId, orderData }) => {
   ].filter(t => t.value && t.value !== 'TBD' && t.value !== '1');
 
   const handleDownloadQR = () => {
-    const svg = document.getElementById('order-qr-svg');
-    if (!svg) return;
-    const svgData = new XMLSerializer().serializeToString(svg);
-    const canvas = document.createElement('canvas');
-    canvas.width = 256;
-    canvas.height = 256;
-    const ctx = canvas.getContext('2d');
-    const img = new Image();
-    img.onload = () => {
-      ctx?.drawImage(img, 0, 0);
-      const link = document.createElement('a');
-      link.download = `caterflow-order-${orderId.slice(-6)}.png`;
-      link.href = canvas.toDataURL('image/png');
-      link.click();
-    };
-    img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
+    const canvas = document.getElementById('order-qr-canvas') as HTMLCanvasElement;
+    if (!canvas) return;
+    const link = document.createElement('a');
+    link.download = `caterflow-order-${orderId.slice(-6)}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
   };
 
   return (
@@ -158,8 +148,8 @@ export const OrderQR: React.FC<OrderQRProps> = ({ orderId, orderData }) => {
       {/* QR Code */}
       <div className="relative p-6 bg-slate-50 rounded-[2.5rem] border-2 border-dashed border-slate-200 group text-center">
         <div className="bg-white p-6 rounded-[2rem] shadow-xl inline-block transition-transform duration-500 group-hover:scale-105">
-          <QRCodeSVG
-            id="order-qr-svg"
+          <QRCodeCanvas
+            id="order-qr-canvas"
             value={publicUrl}
             size={180}
             level="H"

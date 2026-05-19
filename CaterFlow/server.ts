@@ -102,6 +102,8 @@ async function startServer() {
     messages: [{
       senderId: String,
       text: String,
+      type: { type: String, default: 'text' },
+      attachment: mongoose.Schema.Types.Mixed,
       timestamp: { type: Date, default: Date.now }
     }],
     status: { type: String, default: 'open' }
@@ -212,6 +214,25 @@ async function startServer() {
       const user = await UserProfile.findOneAndUpdate({ uid: auth.uid }, { $set: update }, { upsert: true, returnDocument: 'after' });
       res.json({ success: true, shop: { _id: (shop as any)._id, name: (shop as any).name, location: (shop as any).location }, user });
     } catch (err) { res.status(500).json({ error: "Failed to link staff to shop" }); }
+  });
+
+  app.get("/api/staff/orders", requireAuth, async (req, res) => {
+    try {
+      const auth = (req as any).auth;
+      const profile = await UserProfile.findOne({ uid: auth.uid });
+      if (!profile || !profile.shopId) {
+        return res.json([]);
+      }
+      const events = await Event.find({
+        $or: [
+          { "eventData.selectedShop._id": profile.shopId },
+          { "eventData.shopId": profile.shopId }
+        ]
+      }).sort({ updatedAt: -1 });
+      res.json(events);
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch staff shop orders" });
+    }
   });
 
   // Get shop by PIN (for staff to verify before linking)
@@ -604,6 +625,34 @@ async function startServer() {
     } catch (err) { res.status(500).json({ error: "Failed to update event" }); }
   });
 
+  app.post("/api/events/:id/delivery-status", requireAuth, async (req, res) => {
+    try {
+      const { status, deliveryLocation } = req.body;
+      const event = await Event.findById(req.params.id);
+      if (!event) return res.status(404).json({ error: "Event not found" });
+      
+      const eventData = event.eventData || {};
+      eventData.delivery_status = status;
+      if (deliveryLocation) {
+        eventData.deliveryLocation = deliveryLocation;
+        eventData.event_location = deliveryLocation;
+      }
+      // Map progress statuses to state
+      if (status === 'delivery_approved') {
+        eventData.agreement_status = 'delivery_approved';
+      } else if (status === 'completed') {
+        eventData.agreement_status = 'completed';
+      }
+      event.eventData = eventData;
+      event.markModified('eventData');
+      
+      await event.save();
+      res.json({ success: true, event });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to update delivery status" });
+    }
+  });
+
   app.delete("/api/events/:id", requireAuth, async (req, res) => {
     try {
       const auth = (req as any).auth;
@@ -695,7 +744,7 @@ async function startServer() {
   app.post("/api/chat/send", requireAuth, async (req, res) => {
     try {
       const auth = (req as any).auth;
-      const { eventId, text, shopId } = req.body;
+      const { eventId, text, shopId, type = 'text', attachment } = req.body;
       let chat = await Chat.findOne({ eventId });
       if (!chat) {
         const participants = [auth.uid];
@@ -705,7 +754,13 @@ async function startServer() {
         }
         chat = new Chat({ eventId, participants, messages: [] });
       }
-      chat.messages.push({ senderId: auth.uid, text, timestamp: new Date() });
+      chat.messages.push({ 
+        senderId: auth.uid, 
+        text, 
+        type,
+        attachment,
+        timestamp: new Date() 
+      });
       await chat.save();
       res.json(chat);
     } catch (err) { res.status(500).json({ error: "Failed to send message" }); }

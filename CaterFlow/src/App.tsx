@@ -8,7 +8,6 @@ import {
   DollarSign,
   Users,
   ArrowRight,
-  ArrowLeft,
   CheckCircle2,
   Loader2,
   Calendar,
@@ -36,7 +35,11 @@ import {
   Store,
   Inbox,
   ShoppingBag,
-  QrCode
+  QrCode,
+  Zap,
+  PlusCircle,
+  FileText,
+  Sparkles
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -71,6 +74,9 @@ import { MarketplaceChat } from './components/chat/MarketplaceChat';
 import { OrderQR } from './components/plan/OrderQR';
 import { PublicOrderView } from './components/plan/PublicOrderView';
 import { PostFinalizationView } from './components/plan/PostFinalizationView';
+import { CheckoutPortal } from './components/checkout/CheckoutPortal';
+import { CustomerTrackingMap } from './components/operations/CustomerTrackingMap';
+import { StaffShopJoin } from './components/operations/StaffShopJoin';
 
 
 
@@ -261,6 +267,10 @@ export default function App() {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [workspaceRole, setWorkspaceRole] = useState<WorkspaceRole>('customer');
+  const [staffShopLinked, setStaffShopLinked] = useState<boolean | null>(null); // null = unknown
+  const [adminPlans, setAdminPlans] = useState<any[]>([]);
+  const [newOrderToast, setNewOrderToast] = useState(false);
+  const [prevOrderCount, setPrevOrderCount] = useState(0);
   const [signupRole, setSignupRole] = useState<WorkspaceRole>('customer');
   const [reportView, setReportView] = useState<'all' | 'menu' | 'logistics' | 'finance'>('menu');
   const [dashboardView, setDashboardView] = useState<'conversation' | 'blueprint' | 'discovery' | 'marketplace-chat' | 'qr' | 'summary' | 'operations' | 'finance' | 'admin-dashboard' | 'admin-inbox' | 'shop-setup' | 'inventory-planner' | 'menu-editor' | 'checkout' | 'staff-tasks' | 'delivery'>('conversation');
@@ -269,9 +279,21 @@ export default function App() {
   const [showDetailedAgentView, setShowDetailedAgentView] = useState<boolean>(false);
   const [resultPageIndex, setResultPageIndex] = useState(0);
   const [fullScreenResult, setFullScreenResult] = useState(false);
+
+  useEffect(() => {
+    if (dashboardView === 'conversation') {
+      setFullScreenResult(false);
+    } else {
+      setFullScreenResult(true);
+    }
+  }, [dashboardView]);
   const [useFoundry, setUseFoundry] = useState(false);
   const [stackStatus, setStackStatus] = useState<any>(null);
   const [skipRoleLoad, setSkipRoleLoad] = useState(false);
+  const [staffPin, setStaffPin] = useState("");
+  const [staffInfo, setStaffInfo] = useState("");
+  const [staffOrders, setStaffOrders] = useState<any[]>([]);
+  const [selectedStaffOrder, setSelectedStaffOrder] = useState<any>(null);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -298,6 +320,7 @@ export default function App() {
   const [localTimeline, setLocalTimeline] = useState<any[]>([]);
   const [staffTasks, setStaffTasks] = useState<any[]>([]);
   const [showAccessibilityPanel, setShowAccessibilityPanel] = useState(false);
+  const [selectedSpecIndex, setSelectedSpecIndex] = useState<number | null>(null);
   const [highContrast, setHighContrast] = useState(false);
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [dbConnected, setDbConnected] = useState<boolean | null>(null);
@@ -308,11 +331,12 @@ export default function App() {
   const [shopProfile, setShopProfile] = useState<any>(null);
   const [availableShops, setAvailableShops] = useState<any[]>([]);
   const [matchedShop, setMatchedShop] = useState<any>(null);
-  const [agreementStatus, setAgreementStatus] = useState<'none' | 'suggested' | 'accepted' | 'finalized'>('none');
+  const [agreementStatus, setAgreementStatus] = useState<'none' | 'suggested' | 'accepted' | 'finalized' | 'delivery_approved'>('none');
   const [chatMessages, setChatMessages] = useState<any[]>([]);
   const [showCheckout, setShowCheckout] = useState(false);
   const [showRolePicker, setShowRolePicker] = useState(false);
   const [pendingGoogleUser, setPendingGoogleUser] = useState<any>(null);
+  const [wizardStep, setWizardStep] = useState<number>(1);
 
   const sanitizeForFirestore = (data: any): any => {
     if (Array.isArray(data)) {
@@ -390,9 +414,17 @@ export default function App() {
       if (profile && profile.role) {
         setWorkspaceRole(profile.role);
         setSignupRole(profile.role);
-        if (profile.role === 'admin') setDashboardView('admin-inbox');
-        else if (profile.role === 'staff') setDashboardView('staff-tasks');
-        else setDashboardView('conversation');
+        if (profile.role === 'admin') {
+          setDashboardView('admin-inbox');
+          fetchAdminPlans(activeUser);
+        } else if (profile.role === 'staff') {
+          // Check if staff has a shop linked
+          const hasShop = !!(profile.shopId || profile.linkedShopId);
+          setStaffShopLinked(hasShop);
+          setDashboardView('staff-tasks');
+        } else {
+          setDashboardView('conversation');
+        }
         return;
       }
 
@@ -408,6 +440,23 @@ export default function App() {
   const handleGoogleRoleConfirm = async () => {
     if (!pendingGoogleUser) return;
     try {
+      if (signupRole === 'staff') {
+        if (!staffPin.trim()) {
+          alert("Shop PIN is required for staff members");
+          return;
+        }
+        const pinCheck = await fetch(`/api/shops/by-pin/${staffPin}`);
+        if (!pinCheck.ok) {
+          alert("Invalid Admin Shop PIN. Please check with your owner/admin.");
+          return;
+        }
+        const shopInfoData = await pinCheck.json();
+        if (!shopInfoData) {
+          alert("No shop found for this PIN.");
+          return;
+        }
+      }
+
       const newProfile = await mongoService.saveUser({
         uid: pendingGoogleUser.uid,
         email: pendingGoogleUser.email,
@@ -415,6 +464,27 @@ export default function App() {
         photoURL: pendingGoogleUser.photoURL,
         role: signupRole,
       });
+
+      if (signupRole === 'staff') {
+        try {
+          const token = await pendingGoogleUser.getIdToken();
+          await fetch('/api/users/link-shop', {
+            method: 'POST',
+            headers: { 
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}` 
+            },
+            body: JSON.stringify({
+              pin: staffPin,
+              staffInfo,
+              name: pendingGoogleUser.displayName || pendingGoogleUser.email || 'CaterFlow User'
+            })
+          });
+        } catch (linkErr) {
+          console.error("Failed to link staff member during Google role confirm:", linkErr);
+        }
+      }
+
       const finalRole = newProfile.role || signupRole;
       setWorkspaceRole(finalRole);
       if (finalRole === 'admin') setDashboardView('admin-inbox');
@@ -445,6 +515,50 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    const loadPublicOrder = async () => {
+      if (!publicOrderId) return;
+      try {
+        const res = await fetch(`/api/public/orders/${publicOrderId}`);
+        if (res.ok) {
+          const data = await res.json();
+          setEventData(data.event || {});
+          setLocalMenu(data.menu || []);
+          if (data.event?.selectedShop) {
+            setMatchedShop(data.event.selectedShop);
+          }
+          if (data.status) {
+            setAgreementStatus(data.status);
+          }
+          
+          setSteps([
+            { agent: 'Phase 1: Customer Intake (Concierge)', data: data.event || {} },
+            { agent: 'Phase 2: Head Chef (Menu Design)', data: { menu: data.menu || [] } },
+            { agent: 'Phase 4: Logistics Lead (Execution)', data: data.logistics || {} },
+            { agent: 'Phase 3: Accountant (Cost Optimization)', data: data.pricing || {} },
+            { agent: 'System Monitoring & QA', data: data.monitoring || {} }
+          ]);
+
+          setDashboardView('summary');
+          setFullScreenResult(true);
+          setResultPageIndex(0);
+
+          setMessages([
+            {
+              id: 'bot-order-loaded',
+              role: 'bot',
+              content: `👋 **Welcome back!** I've successfully loaded the active blueprint for your event: **${data.title || 'Catering Plan'}**.\n\nYou can review your optimized menu, logistics schedule, weather alerts, and total price breakdown below!`,
+              timestamp: new Date()
+            }
+          ]);
+        }
+      } catch (err) {
+        console.error("Failed to load public order from URL:", err);
+      }
+    };
+    loadPublicOrder();
+  }, [publicOrderId]);
+
   const fetchHistory = async (uid: string) => {
     try {
       const result = await mongoService.fetchEvents(uid);
@@ -455,6 +569,79 @@ export default function App() {
       console.error("Error fetching history from MongoDB:", err);
     }
   };
+
+  const fetchStaffOrders = async () => {
+    try {
+      const token = await user?.getIdToken();
+      const res = await fetch('/api/staff/orders', {
+        headers: { 'Authorization': `Bearer ${token || ''}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        // Detect new orders and show toast
+        setPrevOrderCount(prev => {
+          if (prev > 0 && data.length > prev) {
+            setNewOrderToast(true);
+            setTimeout(() => setNewOrderToast(false), 5000);
+          }
+          return data.length;
+        });
+        setStaffOrders(data);
+        if (data.length > 0 && !selectedStaffOrder) {
+          setSelectedStaffOrder(data[0]);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to fetch staff orders:", err);
+    }
+  };
+
+  const fetchAdminPlans = async (activeUser?: any) => {
+    try {
+      const currentUser = activeUser || user;
+      if (!currentUser) return;
+      const token = await currentUser.getIdToken();
+      const res = await fetch('/api/plans/inbox', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAdminPlans(Array.isArray(data) ? data : (data.plans || []));
+      }
+    } catch (err) {
+      console.error("Failed to fetch admin plans:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (workspaceRole === 'staff' && user) {
+      fetchStaffOrders();
+      // Poll for new orders every 15 seconds
+      const pollInterval = setInterval(fetchStaffOrders, 15000);
+      return () => clearInterval(pollInterval);
+    }
+  }, [workspaceRole, user]);
+
+  useEffect(() => {
+    if (workspaceRole === 'admin' && user) {
+      fetchAdminPlans();
+      // Poll for new admin plans every 20 seconds
+      const adminPollInterval = setInterval(fetchAdminPlans, 20000);
+      return () => clearInterval(adminPollInterval);
+    }
+  }, [workspaceRole, user]);
+
+  useEffect(() => {
+    if (selectedStaffOrder) {
+      const logisticsStep = selectedStaffOrder.steps?.find((s: any) => s.agent.includes('Logistics'));
+      const timeline = logisticsStep?.data?.timeline || [];
+      const tasksList = timeline.map((t: any) => ({
+        ...t,
+        completed: !!t.completed
+      }));
+      setStaffTasks(tasksList);
+    }
+  }, [selectedStaffOrder]);
 
   useEffect(() => {
     if (ttsEnabled && messages.length > 0) {
@@ -564,366 +751,377 @@ export default function App() {
     const textToSubmit = directInput !== undefined ? directInput : input;
     if (!textToSubmit.trim() || isProcessing) return;
 
-    const userText = textToSubmit.trim();
-    const activeQIndex = targetKey ? QUESTIONS.findIndex(q => q.key === targetKey) : qIndex;
-    if (activeQIndex === -1) return;
-    
-    const currentQuestion = QUESTIONS[activeQIndex];
+    try {
+      const userText = textToSubmit.trim();
+      const activeQIndex = targetKey ? QUESTIONS.findIndex(q => q.key === targetKey) : qIndex;
+      if (activeQIndex === -1) return;
+      
+      const currentQuestion = QUESTIONS[activeQIndex];
 
-    const newMessages: Message[] = [...messages.map(m => (
-      m.isMenuCompositionChoice || m.isFoodChoiceMode || m.isPortionControlMode || 
-      m.isProteinChoice || m.isVenueChoice || m.isServiceChoice || 
-      m.isEventTimeChoice || m.isBeverageChoice || m.isStaffingChoice
-    ) ? { 
-      ...m, 
-      isMenuCompositionChoice: false, 
-      isFoodChoiceMode: false, 
-      isPortionControlMode: false,
-      isProteinChoice: false,
-      isVenueChoice: false,
-      isServiceChoice: false,
-      isEventTimeChoice: false,
-      isBeverageChoice: false,
-      isStaffingChoice: false
-    } : m), {
-      id: `user-${Date.now()}`,
-      role: 'user',
-      content: userText,
-      qKey: currentQuestion.key,
-      timestamp: new Date()
-    }];
-    setMessages(newMessages);
-    if (directInput === undefined) setInput("");
+      const newMessages: Message[] = [...messages.map(m => (
+        m.isMenuCompositionChoice || m.isFoodChoiceMode || m.isPortionControlMode || 
+        m.isProteinChoice || m.isVenueChoice || m.isServiceChoice || 
+        m.isEventTimeChoice || m.isBeverageChoice || m.isStaffingChoice
+      ) ? { 
+        ...m, 
+        isMenuCompositionChoice: false, 
+        isFoodChoiceMode: false, 
+        isPortionControlMode: false,
+        isProteinChoice: false,
+        isVenueChoice: false,
+        isServiceChoice: false,
+        isEventTimeChoice: false,
+        isBeverageChoice: false,
+        isStaffingChoice: false
+      } : m), {
+        id: `user-${Date.now()}`,
+        role: 'user',
+        content: userText,
+        qKey: currentQuestion.key,
+        timestamp: new Date()
+      }];
+      setMessages(newMessages);
+      if (directInput === undefined) setInput("");
 
 
-    let refinedAmount = userText;
-    const currencyRegex = /[\$\£\€\¥\₱\₹]|(USD|PHP|EUR|GBP|AED|CAD|AUD|JPY|CNY|PESO|PESOS)/i;
+      let refinedAmount = userText;
+      const currencyRegex = /[\$\£\€\¥\₱\₹]|(USD|PHP|EUR|GBP|AED|CAD|AUD|JPY|CNY|PESO|PESOS)/i;
 
-    if (currentQuestion.key === 'budget' && eventData.budget && !hasCurrencyMarker(eventData.budget)) {
-      if (currencyRegex.test(userText) || /^\w{3}$/.test(userText)) {
-        refinedAmount = `${eventData.budget} ${userText}`;
-      }
-    }
-
-    const isLanguageStep = currentQuestion.key === 'preferred_language';
-    const newEventData = { ...eventData, [currentQuestion.key]: refinedAmount };
-
-    if (currentQuestion.key === 'budget') {
-      const hasCurrency = hasCurrencyMarker(refinedAmount);
-      if (!hasCurrency && /^\d+$/.test(refinedAmount.replace(/[,. ]/g, ''))) {
-        setEventData(newEventData);
-        setMessages([...newMessages, {
-          id: `bot-currency-${Date.now()}`,
-          role: 'bot',
-          content: "I've noted the amount! Just to be precise, which currency are you using? (e.g., $, ₱, USD, PHP, Pesos)",
-          timestamp: new Date()
-        }]);
-        saveConversation();
-        return;
-      }
-    }
-
-    setEventData(newEventData);
-
-      if (activeQIndex < QUESTIONS.length - 1) {
-        setIsProcessing(true);
-
-        if (currentQuestion.key === 'event_location' && userText.length > 2) {
-          prefetchWeather(userText, newEventData.event_date || 'TBD', newEventData.preferred_language || 'english');
-        }
-
-        let nextIdx = activeQIndex + 1;
-
-      const processingLanguage = isLanguageStep ? (eventData.preferred_language || 'english') : newEventData.preferred_language;
-      const intakeResult = await processIntake(userText, currentQuestion.key, currentQuestion.text, processingLanguage);
-
-      const intent = intakeResult.intent;
-      const validation = intakeResult.validation;
-      const reaction = intakeResult.reaction?.text;
-
-      if (isWaitingForWeather) {
-        const isYes = /yes|oo|sige|yup|sure|game|okay|ok/i.test(userText);
-        const isNo = /no|hindi|ayoko|huwag|don't|stop/i.test(userText);
-        if (isYes || isNo) {
-          handleWeatherChoice(isYes);
-          return;
+      if (currentQuestion.key === 'budget' && eventData.budget && !hasCurrencyMarker(eventData.budget)) {
+        if (currencyRegex.test(userText) || /^\w{3}$/.test(userText)) {
+          refinedAmount = `${eventData.budget} ${userText}`;
         }
       }
 
-      if (currentQuestion.key === 'specific_food_items' && intent.type === 'ANSWER') {
-        const existing = eventData.specific_food_items || "";
-        const updatedFood = existing ? `${existing}, ${userText}` : userText;
-        setEventData(prev => ({ ...prev, specific_food_items: updatedFood }));
+      const isLanguageStep = currentQuestion.key === 'preferred_language';
+      const newEventData = { ...eventData, [currentQuestion.key]: refinedAmount };
 
-        setIsProcessing(false);
-        setMessages(prev => [...prev, {
-          id: `bot-more-food-${Date.now()}`,
-          role: 'bot',
-          content: reaction ? `${reaction}\n\nAnything else?` : "Got it. Anything else?",
-          timestamp: new Date()
-        }]);
-        saveConversation();
-        return;
-      }
-
-      if (currentQuestion.key === 'food_style_preference' && intent.type === 'ANSWER') {
-        const existing = eventData.food_style_preference || "";
-        const updated = existing ? `${existing}, ${userText}` : userText;
-        setEventData(prev => ({ ...prev, food_style_preference: updated }));
-
-        const lang = newEventData.preferred_language;
-        const followUp = lang === 'tagalog'
-          ? "Noted! May iba pa bang cooking style na gusto mo? (o sabihing 'tapos na')"
-          : lang === 'spanish'
-            ? "Anotado! Algún otro estilo de cocina? (o di 'listo')"
-            : "Got it! Any other cooking styles you'd like? (or say 'done')";
-
-        setIsProcessing(false);
-        setMessages(prev => [...prev, {
-          id: `bot-style-more-${Date.now()}`,
-          role: 'bot',
-          content: reaction ? `${reaction}\n\n${followUp}` : followUp,
-          timestamp: new Date()
-        }]);
-        saveConversation();
-        return;
-      }
-
-      if (currentQuestion.key === 'specific_food_items' && intent.type === 'DONE') {
-        nextIdx = activeQIndex + 1;
-      } else if (intent.type === 'DONE') {
-        nextIdx = activeQIndex + 1;
-      }
-
-      if (currentQuestion.key === 'food_choice_mode') {
-        const isSuggest = /suggest|chef|mag-suggest|kayo/i.test(userText);
-        const isSpecific = /specific|ako|meron|mayroon/i.test(userText);
-        if (isSuggest && !isSpecific) {
-          const specificIdx = QUESTIONS.findIndex(q => q.key === 'specific_food_items');
-          if (specificIdx !== -1 && nextIdx === specificIdx) nextIdx++;
-        }
-      }
-
-      const isDateStep = currentQuestion.key === 'event_date' && eventData.event_location && !isWaitingForWeather;
-      if (isDateStep && validation.valid) {
-        setIsProcessing(true);
-        setIsWaitingForWeather(true);
-        const weather = await predictWeather(eventData.event_location, userText, newEventData.preferred_language);
-        if (weather) {
-          if (reaction) {
-            setMessages(prev => [...prev, {
-              id: `bot-react-${Date.now()}`,
-              role: 'bot',
-              content: reaction,
-              timestamp: new Date()
-            }]);
-          }
-
-          setMessages(prev => [...prev, {
-            id: `bot-weather-${Date.now()}`,
+      if (currentQuestion.key === 'budget') {
+        const hasCurrency = hasCurrencyMarker(refinedAmount);
+        if (!hasCurrency && /^\d+$/.test(refinedAmount.replace(/[,. ]/g, ''))) {
+          setEventData(newEventData);
+          setMessages([...newMessages, {
+            id: `bot-currency-${Date.now()}`,
             role: 'bot',
-            content: weather.summary,
-            weatherData: weather.raw_data,
-            weatherLocation: eventData.event_location,
-            isWeatherForecast: true,
-            timestamp: new Date()
-          }]);
-
-          const weatherChoiceText = eventData.preferred_language === 'tagalog'
-            ? "Iba-base ba natin yung mga food suggestion sa forecast na ito?"
-            : "Should we base the food suggestions on this weather forecast?";
-          
-          const translatedChoice = await translateText(weatherChoiceText, newEventData.preferred_language);
-          setMessages(prev => [...prev, {
-            id: `bot-weather-choice-${Date.now()}`,
-            role: 'bot',
-            content: translatedChoice,
-            isWeatherChoice: true,
+            content: "I've noted the amount! Just to be precise, which currency are you using? (e.g., $, ₱, USD, PHP, Pesos)",
             timestamp: new Date()
           }]);
           saveConversation();
+          return;
         }
-        setIsProcessing(false);
-        return;
       }
 
-      if (intent.type === 'LANGUAGE_CHANGE') {
-        const newLang = normalizeLanguage(intent.value || 'english');
-        
-        const updatedEventData = { ...newEventData, preferred_language: newLang };
-        setEventData(updatedEventData);
+      setEventData(newEventData);
 
-        let prefix = `Sure, I'll speak in ${newLang.charAt(0).toUpperCase() + newLang.slice(1)}! `;
-        if (newLang === 'tagalog') prefix = "Sige po, magta-Tagalog na ako. ";
-        else if (newLang === 'spanish') prefix = "¡Claro! Hablaré en español. ";
-        else if (newLang === 'japanese') prefix = "承知いたしました。日本語でお話しします。 ";
-        else if (newLang === 'chinese') prefix = "好的，我会用中文跟您交流！ ";
-        else if (newLang === 'indonesian') prefix = "Baik, saya akan berbicara dalam Bahasa Indonesia. ";
-        else if (newLang === 'korean') prefix = "네, 한국어로 말씀드리겠습니다. ";
+        if (activeQIndex < QUESTIONS.length - 1) {
+          setIsProcessing(true);
 
-        const translatedPrefix = await translateText(prefix, newLang);
+          if (currentQuestion.key === 'event_location' && userText.length > 2) {
+            prefetchWeather(userText, newEventData.event_date || 'TBD', newEventData.preferred_language || 'english');
+          }
 
-        if (currentQuestion.key === 'preferred_language') {
-          setTimeout(async () => {
-            const nextIdxVal = qIndex + 1;
-            setQIndex(nextIdxVal);
-            const questionText = getQuestionText(nextIdxVal, newLang);
-            const localizedQuestion = await translateText(questionText, newLang);
+          let nextIdx = activeQIndex + 1;
 
-            setMessages(prev => [...prev, {
-              id: `bot-lang-${Date.now()}`,
-              role: 'bot',
-              content: `${translatedPrefix}\n\n${localizedQuestion}`,
-              qKey: QUESTIONS[nextIdxVal].key,
-              isMenuCompositionChoice: QUESTIONS[nextIdxVal].key === 'menu_composition',
-              isFoodChoiceMode: QUESTIONS[nextIdxVal].key === 'food_choice_mode',
-              isPortionControlMode: QUESTIONS[nextIdxVal].key === 'portion_control_mode',
-              isProteinChoice: QUESTIONS[nextIdxVal].key === 'protein_preferences',
-              isVenueChoice: QUESTIONS[nextIdxVal].key === 'venue_type',
-              isServiceChoice: QUESTIONS[nextIdxVal].key === 'service_style',
-              isEventTimeChoice: QUESTIONS[nextIdxVal].key === 'event_time',
-              isBeverageChoice: QUESTIONS[nextIdxVal].key === 'beverage_plan',
-              isStaffingChoice: QUESTIONS[nextIdxVal].key === 'staffing_needs',
-              timestamp: new Date()
-            }]);
-            saveConversation();
-            setIsProcessing(false);
-          }, 300);
+        const processingLanguage = isLanguageStep ? (eventData.preferred_language || 'english') : newEventData.preferred_language;
+        const intakeResult = await processIntake(userText, currentQuestion.key, currentQuestion.text, processingLanguage);
+
+        const intent = intakeResult.intent;
+        const validation = intakeResult.validation;
+        const reaction = intakeResult.reaction?.text;
+
+        if (isWaitingForWeather) {
+          const isYes = /yes|oo|sige|yup|sure|game|okay|ok/i.test(userText);
+          const isNo = /no|hindi|ayoko|huwag|don't|stop/i.test(userText);
+          if (isYes || isNo) {
+            handleWeatherChoice(isYes);
+            return;
+          }
+        }
+
+        if (currentQuestion.key === 'specific_food_items' && intent.type === 'ANSWER') {
+          const existing = eventData.specific_food_items || "";
+          const updatedFood = existing ? `${existing}, ${userText}` : userText;
+          setEventData(prev => ({ ...prev, specific_food_items: updatedFood }));
+
+          setIsProcessing(false);
+          setMessages(prev => [...prev, {
+            id: `bot-more-food-${Date.now()}`,
+            role: 'bot',
+            content: reaction ? `${reaction}\n\nAnything else?` : "Got it. Anything else?",
+            timestamp: new Date()
+          }]);
+          saveConversation();
           return;
         }
 
-        const repeatedQuestion = getQuestionText(qIndex, newLang);
-        const localizedRepeated = await translateText(repeatedQuestion, newLang);
+        if (currentQuestion.key === 'food_style_preference' && intent.type === 'ANSWER') {
+          const existing = eventData.food_style_preference || "";
+          const updated = existing ? `${existing}, ${userText}` : userText;
+          setEventData(prev => ({ ...prev, food_style_preference: updated }));
 
-        setMessages(prev => [...prev, {
-          id: `bot-lang-${Date.now()}`,
-          role: 'bot',
-          content: `${translatedPrefix}${localizedRepeated}`,
-          isMenuCompositionChoice: currentQuestion.key === 'menu_composition',
-          isFoodChoiceMode: currentQuestion.key === 'food_choice_mode',
-          isPortionControlMode: currentQuestion.key === 'portion_control_mode',
-          timestamp: new Date()
-        }]);
-        saveConversation();
-        setIsProcessing(false);
-        return;
-      }
+          const lang = newEventData.preferred_language;
+          const followUp = lang === 'tagalog'
+            ? "Noted! May iba pa bang cooking style na gusto mo? (o sabihing 'tapos na')"
+            : lang === 'spanish'
+              ? "Anotado! Algún otro estilo de cocina? (o di 'listo')"
+              : "Got it! Any other cooking styles you'd like? (or say 'done')";
 
-      if (intent.type === 'GENERAL_REQUEST') {
-        const cmd = (intent.value || "").toLowerCase();
-        if (cmd.includes('restart') || cmd.includes('reset') || cmd.includes('ulitin')) {
-          deleteConversation();
+          setIsProcessing(false);
+          setMessages(prev => [...prev, {
+            id: `bot-style-more-${Date.now()}`,
+            role: 'bot',
+            content: reaction ? `${reaction}\n\n${followUp}` : followUp,
+            timestamp: new Date()
+          }]);
+          saveConversation();
+          return;
+        }
+
+        if (currentQuestion.key === 'specific_food_items' && intent.type === 'DONE') {
+          nextIdx = activeQIndex + 1;
+        } else if (intent.type === 'DONE') {
+          nextIdx = activeQIndex + 1;
+        }
+
+        if (currentQuestion.key === 'food_choice_mode') {
+          const isSuggest = /suggest|chef|mag-suggest|kayo/i.test(userText);
+          const isSpecific = /specific|ako|meron|mayroon/i.test(userText);
+          if (isSuggest && !isSpecific) {
+            const specificIdx = QUESTIONS.findIndex(q => q.key === 'specific_food_items');
+            if (specificIdx !== -1 && nextIdx === specificIdx) nextIdx++;
+          }
+        }
+
+        const isDateStep = currentQuestion.key === 'event_date' && eventData.event_location && !isWaitingForWeather;
+        if (isDateStep && validation.valid) {
+          setIsProcessing(true);
+          setIsWaitingForWeather(true);
+          const weather = await predictWeather(eventData.event_location, userText, newEventData.preferred_language);
+          if (weather) {
+            if (reaction) {
+              setMessages(prev => [...prev, {
+                id: `bot-react-${Date.now()}`,
+                role: 'bot',
+                content: reaction,
+                timestamp: new Date()
+              }]);
+            }
+
+            setMessages(prev => [...prev, {
+              id: `bot-weather-${Date.now()}`,
+              role: 'bot',
+              content: weather.summary,
+              weatherData: weather.raw_data,
+              weatherLocation: eventData.event_location,
+              isWeatherForecast: true,
+              timestamp: new Date()
+            }]);
+
+            const weatherChoiceText = eventData.preferred_language === 'tagalog'
+              ? "Iba-base ba natin yung mga food suggestion sa forecast na ito?"
+              : "Should we base the food suggestions on this weather forecast?";
+            
+            const translatedChoice = await translateText(weatherChoiceText, newEventData.preferred_language);
+            setMessages(prev => [...prev, {
+              id: `bot-weather-choice-${Date.now()}`,
+              role: 'bot',
+              content: translatedChoice,
+              isWeatherChoice: true,
+              timestamp: new Date()
+            }]);
+            saveConversation();
+          }
           setIsProcessing(false);
           return;
         }
 
-        const fallbackMsg = eventData.preferred_language === 'tagalog'
-          ? "Pasensya na, kaya ko lang tumulong sa catering planning sa ngayon."
-          : "I'm sorry, I can only help with catering planning right now.";
-        
-        const localizedFallback = await translateText(fallbackMsg, newEventData.preferred_language);
-        const localizedQuestion = await translateText(currentQuestion.text, newEventData.preferred_language);
+        if (intent.type === 'LANGUAGE_CHANGE') {
+          const newLang = normalizeLanguage(intent.value || 'english');
+          
+          const updatedEventData = { ...newEventData, preferred_language: newLang };
+          setEventData(updatedEventData);
 
-        setMessages(prev => [...prev, {
-          id: `bot-gen-${Date.now()}`,
-          role: 'bot',
-          content: reaction ? `${reaction}\n\n${localizedQuestion}` : `${localizedFallback}\n\n${localizedQuestion}`,
-          timestamp: new Date()
-        }]);
-        saveConversation();
-        setIsProcessing(false);
-        return;
-      }
+          let prefix = `Sure, I'll speak in ${newLang.charAt(0).toUpperCase() + newLang.slice(1)}! `;
+          if (newLang === 'tagalog') prefix = "Sige po, magta-Tagalog na ako. ";
+          else if (newLang === 'spanish') prefix = "¡Claro! Hablaré en español. ";
+          else if (newLang === 'japanese') prefix = "承知いたしました。日本語でお話しします。 ";
+          else if (newLang === 'chinese') prefix = "好的，我会用中文跟您交流！ ";
+          else if (newLang === 'indonesian') prefix = "Baik, saya akan berbicara dalam Bahasa Indonesia. ";
+          else if (newLang === 'korean') prefix = "네, 한국어로 말씀드리겠습니다. ";
 
-      if (!validation.valid) {
-        const langToUse = eventData.preferred_language || 'english';
-        const localizedQuestion = await translateText(currentQuestion.text, langToUse);
-        
-        setMessages(prev => [...prev, {
-          id: `bot-err-${Date.now()}`,
-          role: 'bot',
-          content: `${validation.message || "Please provide a more specific answer."}\n\n${localizedQuestion}`,
-          qKey: currentQuestion.key,
-          isMenuCompositionChoice: currentQuestion.key === 'menu_composition',
-          isFoodChoiceMode: currentQuestion.key === 'food_choice_mode',
-          isPortionControlMode: currentQuestion.key === 'portion_control_mode',
-          timestamp: new Date()
-        }]);
-        saveConversation();
-        setIsProcessing(false);
-        return;
-      }
+          const translatedPrefix = await translateText(prefix, newLang);
 
-      const actualNextQuestionText = getQuestionText(nextIdx, newEventData.preferred_language);
-      const localizedNextQuestion = await translateText(actualNextQuestionText, newEventData.preferred_language);
-      const botMessage = reaction ? `${reaction}\n\n${localizedNextQuestion}` : localizedNextQuestion;
+          if (currentQuestion.key === 'preferred_language') {
+            setTimeout(async () => {
+              const nextIdxVal = qIndex + 1;
+              setQIndex(nextIdxVal);
+              const questionText = getQuestionText(nextIdxVal, newLang);
+              const localizedQuestion = await translateText(questionText, newLang);
 
-      setTimeout(() => {
-        setQIndex(nextIdx);
-        const nextKey = QUESTIONS[nextIdx].key;
-        
-        setMessages(prev => [...prev, {
-          id: `bot-q-${Date.now()}`,
-          role: 'bot',
-          content: botMessage,
-          qKey: nextKey,
-          isMenuCompositionChoice: nextKey === 'menu_composition',
-          isFoodChoiceMode: nextKey === 'food_choice_mode',
-          isPortionControlMode: nextKey === 'portion_control_mode',
-          isProteinChoice: nextKey === 'protein_preferences',
-          isVenueChoice: nextKey === 'venue_type',
-          isServiceChoice: nextKey === 'service_style',
-          isEventTimeChoice: nextKey === 'event_time',
-          isBeverageChoice: nextKey === 'beverage_plan',
-          isStaffingChoice: nextKey === 'staffing_needs',
-          isLanguageChoice: nextKey === 'preferred_language',
-          isCuisineChoice: nextKey === 'cuisine_preference',
-          isNearbyChoice: nextKey === 'nearby_suggestions',
-          isDietaryChoice: nextKey === 'dietary_needs',
-          isStyleChoice: nextKey === 'food_style_preference',
-          timestamp: new Date()
-        }]);
-        saveConversation();
-        setIsProcessing(false);
-      }, 200);
-    } else {
-      if (isConfirming || showSummary) {
-        const updatedSpecial = `${newEventData.special_requests || ""}\nAdditional info: ${userText}`.trim();
-        const finalEventData = { ...newEventData, special_requests: updatedSpecial };
-        setEventData(finalEventData);
-        setIsProcessing(true);
-        setTimeout(() => {
-          setIsConfirming(true);
-          setShowSummary(true);
+              setMessages(prev => [...prev, {
+                id: `bot-lang-${Date.now()}`,
+                role: 'bot',
+                content: `${translatedPrefix}\n\n${localizedQuestion}`,
+                qKey: QUESTIONS[nextIdxVal].key,
+                isMenuCompositionChoice: QUESTIONS[nextIdxVal].key === 'menu_composition',
+                isFoodChoiceMode: QUESTIONS[nextIdxVal].key === 'food_choice_mode',
+                isPortionControlMode: QUESTIONS[nextIdxVal].key === 'portion_control_mode',
+                isProteinChoice: QUESTIONS[nextIdxVal].key === 'protein_preferences',
+                isVenueChoice: QUESTIONS[nextIdxVal].key === 'venue_type',
+                isServiceChoice: QUESTIONS[nextIdxVal].key === 'service_style',
+                isEventTimeChoice: QUESTIONS[nextIdxVal].key === 'event_time',
+                isBeverageChoice: QUESTIONS[nextIdxVal].key === 'beverage_plan',
+                isStaffingChoice: QUESTIONS[nextIdxVal].key === 'staffing_needs',
+                timestamp: new Date()
+              }]);
+              saveConversation();
+              setIsProcessing(false);
+            }, 300);
+            return;
+          }
+
+          const repeatedQuestion = getQuestionText(qIndex, newLang);
+          const localizedRepeated = await translateText(repeatedQuestion, newLang);
+
           setMessages(prev => [...prev, {
-            id: `sys-review-update-${Date.now()}`,
+            id: `bot-lang-${Date.now()}`,
             role: 'bot',
-            content: "Got it! I've added that to your request. Here is the updated summary:",
+            content: `${translatedPrefix}${localizedRepeated}`,
+            isMenuCompositionChoice: currentQuestion.key === 'menu_composition',
+            isFoodChoiceMode: currentQuestion.key === 'food_choice_mode',
+            isPortionControlMode: currentQuestion.key === 'portion_control_mode',
+            timestamp: new Date()
+          }]);
+          saveConversation();
+          setIsProcessing(false);
+          return;
+        }
+
+        if (intent.type === 'GENERAL_REQUEST') {
+          const cmd = (intent.value || "").toLowerCase();
+          if (cmd.includes('restart') || cmd.includes('reset') || cmd.includes('ulitin')) {
+            deleteConversation();
+            setIsProcessing(false);
+            return;
+          }
+
+          const fallbackMsg = eventData.preferred_language === 'tagalog'
+            ? "Pasensya na, kaya ko lang tumulong sa catering planning sa ngayon."
+            : "I'm sorry, I can only help with catering planning right now.";
+          
+          const localizedFallback = await translateText(fallbackMsg, newEventData.preferred_language);
+          const localizedQuestion = await translateText(currentQuestion.text, newEventData.preferred_language);
+
+          setMessages(prev => [...prev, {
+            id: `bot-gen-${Date.now()}`,
+            role: 'bot',
+            content: reaction ? `${reaction}\n\n${localizedQuestion}` : `${localizedFallback}\n\n${localizedQuestion}`,
+            timestamp: new Date()
+          }]);
+          saveConversation();
+          setIsProcessing(false);
+          return;
+        }
+
+        if (!validation.valid) {
+          const langToUse = eventData.preferred_language || 'english';
+          const localizedQuestion = await translateText(currentQuestion.text, langToUse);
+          
+          setMessages(prev => [...prev, {
+            id: `bot-err-${Date.now()}`,
+            role: 'bot',
+            content: `${validation.message || "Please provide a more specific answer."}\n\n${localizedQuestion}`,
+            qKey: currentQuestion.key,
+            isMenuCompositionChoice: currentQuestion.key === 'menu_composition',
+            isFoodChoiceMode: currentQuestion.key === 'food_choice_mode',
+            isPortionControlMode: currentQuestion.key === 'portion_control_mode',
+            timestamp: new Date()
+          }]);
+          saveConversation();
+          setIsProcessing(false);
+          return;
+        }
+
+        const actualNextQuestionText = getQuestionText(nextIdx, newEventData.preferred_language);
+        const localizedNextQuestion = await translateText(actualNextQuestionText, newEventData.preferred_language);
+        const botMessage = reaction ? `${reaction}\n\n${localizedNextQuestion}` : localizedNextQuestion;
+
+        setTimeout(() => {
+          setQIndex(nextIdx);
+          const nextKey = QUESTIONS[nextIdx].key;
+          
+          setMessages(prev => [...prev, {
+            id: `bot-q-${Date.now()}`,
+            role: 'bot',
+            content: botMessage,
+            qKey: nextKey,
+            isMenuCompositionChoice: nextKey === 'menu_composition',
+            isFoodChoiceMode: nextKey === 'food_choice_mode',
+            isPortionControlMode: nextKey === 'portion_control_mode',
+            isProteinChoice: nextKey === 'protein_preferences',
+            isVenueChoice: nextKey === 'venue_type',
+            isServiceChoice: nextKey === 'service_style',
+            isEventTimeChoice: nextKey === 'event_time',
+            isBeverageChoice: nextKey === 'beverage_plan',
+            isStaffingChoice: nextKey === 'staffing_needs',
+            isLanguageChoice: nextKey === 'preferred_language',
+            isCuisineChoice: nextKey === 'cuisine_preference',
+            isNearbyChoice: nextKey === 'nearby_suggestions',
+            isDietaryChoice: nextKey === 'dietary_needs',
+            isStyleChoice: nextKey === 'food_style_preference',
             timestamp: new Date()
           }]);
           saveConversation();
           setIsProcessing(false);
         }, 200);
-        return;
-      }
-
-      if (!isChatting || steps.length > 0) {
-        const isNewPlanRequest = /new|restart|ulit|bago|start|another|fresh/i.test(userText);
-        if (isNewPlanRequest || (!isConfirming && !showSummary)) {
-          restartChat();
+      } else {
+        if (isConfirming || showSummary) {
+          const updatedSpecial = `${newEventData.special_requests || ""}\nAdditional info: ${userText}`.trim();
+          const finalEventData = { ...newEventData, special_requests: updatedSpecial };
+          setEventData(finalEventData);
+          setIsProcessing(true);
+          setTimeout(() => {
+            setIsConfirming(true);
+            setShowSummary(true);
+            setMessages(prev => [...prev, {
+              id: `sys-review-update-${Date.now()}`,
+              role: 'bot',
+              content: "Got it! I've added that to your request. Here is the updated summary:",
+              timestamp: new Date()
+            }]);
+            saveConversation();
+            setIsProcessing(false);
+          }, 200);
           return;
         }
-      }
 
-      setIsConfirming(true);
-      setShowSummary(true);
+        if (!isChatting || steps.length > 0) {
+          const isNewPlanRequest = /new|restart|ulit|bago|start|another|fresh/i.test(userText);
+          if (isNewPlanRequest || (!isConfirming && !showSummary)) {
+            restartChat();
+            return;
+          }
+        }
+
+        setIsConfirming(true);
+        setShowSummary(true);
+        setMessages(prev => [...prev, {
+          id: `sys-review-${Date.now()}`,
+          role: 'bot',
+          content: "I've gathered all the details! Please review the summary below. Is everything correct, or would you like to add anything else?",
+          timestamp: new Date()
+        }]);
+        saveConversation();
+      }
+    } catch (err) {
+      console.error("Critical error in handleChatSubmit:", err);
       setMessages(prev => [...prev, {
-        id: `sys-review-${Date.now()}`,
+        id: `sys-err-fallback-${Date.now()}`,
         role: 'bot',
-        content: "I've gathered all the details! Please review the summary below. Is everything correct, or would you like to add anything else?",
+        content: "I encountered a brief connection issue. Can you please try sending that again?",
         timestamp: new Date()
       }]);
-      saveConversation();
+      setIsProcessing(false);
     }
   };
 
@@ -953,13 +1151,18 @@ const handleConfirmOrder = async () => {
       setSteps(prev => [...prev, step]);
       setCurrentStepIndex(prev => prev + 1);
 
-      if ((step.agent.includes('Head Chef') || step.agent.includes('Phase 2')) && (step.data.menu || step.data.dishes || step.data.recommendations)) {
-        setLocalMenu(step.data.menu || step.data.dishes || step.data.recommendations);
+      if (step.agent.includes('Head Chef') || step.agent.includes('Phase 2')) {
+        const menuArray = Array.isArray(step.data.menu) ? step.data.menu :
+                          Array.isArray(step.data.dishes) ? step.data.dishes :
+                          Array.isArray(step.data.recommendations) ? step.data.recommendations : [];
+        if (menuArray.length > 0) {
+          setLocalMenu(menuArray);
+        }
       }
-      if (step.agent.includes('Inventory') && step.data.procurement_list) {
+      if (step.agent.includes('Inventory') && Array.isArray(step.data.procurement_list)) {
         setLocalInventory(step.data.procurement_list);
       }
-      if ((step.agent.includes('Logistics') || step.agent.includes('Phase 4')) && step.data.timeline) {
+      if ((step.agent.includes('Logistics') || step.agent.includes('Phase 4')) && Array.isArray(step.data.timeline)) {
         setLocalTimeline(step.data.timeline);
         setStaffTasks(step.data.timeline.map((t: any) => ({ ...t, completed: false })));
       }
@@ -1002,6 +1205,30 @@ const handleConfirmOrder = async () => {
           console.error("Error auto-saving to MongoDB:", err);
         }
       }
+
+      // Format AI response message
+      const menuText = (Array.isArray(result.data.menu?.menu) ? result.data.menu.menu : []).map((m: any) => `- **${m.dish}**: ${m.description} *(Portion: ${m.portion_per_guest || '--'})*`).join('\n');
+      const costText = `- **Total Quote**: ${result.data.pricing?.optimized_quote || 'TBD'}\n- **Cost per Guest**: ${result.data.pricing?.unit_cost || 'TBD'}`;
+      const logisticsText = (Array.isArray(result.data.logistics?.timeline) ? result.data.logistics.timeline : []).slice(0, 5).map((t: any) => `- **${t.time}**: ${t.activity}`).join('\n');
+      const supplierText = (Array.isArray(result.data.suppliers?.catering_shop_recommendations) ? result.data.suppliers.catering_shop_recommendations : []).slice(0, 3).map((s: any) => `- **${s.name}** (${s.area}) - Match Score: ${s.match_score || '--'}`).join('\n');
+      
+      const finalMessage = `🎉 **I've completed your catering blueprint!**\n\n` +
+      `🍽️ **Menu Recommendations**\n${menuText}\n\n` +
+      `💰 **Estimated Budget**\n${costText}\n\n` +
+      `⏱️ **Key Logistics**\n${logisticsText}\n\n` +
+      `🏪 **Recommended Shops**\n${supplierText}\n\n` +
+      `Would you like to adjust any part of this plan? I can refine the menu, change the budget, or update any details!`;
+
+      setMessages(prev => [...prev, {
+        id: `bot-final-result-${Date.now()}`,
+        role: 'bot',
+        content: finalMessage,
+        timestamp: new Date()
+      }]);
+
+      // Auto-navigate to full-screen results check tab
+      setDashboardView('summary');
+      setFullScreenResult(true);
     }
   } catch (error: any) {
     console.error("Orchestration error:", error);
@@ -1045,6 +1272,9 @@ const loadFromHistory = (item: any) => {
   setIsChatting(!item.steps?.length);
   setShowHistory(false);
   setCurrentStepIndex(item.steps?.length || -1);
+  const menuFromSteps = item.steps?.find((s: any) => s.agent.includes('Head Chef'))?.data?.menu || [];
+  setLocalMenu(menuFromSteps);
+  setAgreementStatus(item.eventData?.agreement_status || item.agreement_status || 'none');
 };
 
 
@@ -1058,6 +1288,30 @@ const restartChat = () => {
   setIsChatting(true);
   setSteps([]);
   setCurrentStepIndex(-1);
+};
+
+const handleFinalizeAgreement = async (finalMenu?: any[]) => {
+  setAgreementStatus('finalized');
+  setDashboardView('post-finalization');
+  if (finalMenu) {
+    setLocalMenu(finalMenu);
+  }
+  if (activeConversationId) {
+    try {
+      await mongoService.updateEvent(activeConversationId, {
+        ...eventData,
+        agreement_status: 'finalized',
+        ...(finalMenu ? { final_menu: finalMenu } : {})
+      });
+      setEventData((prev: any) => ({
+        ...prev,
+        agreement_status: 'finalized',
+        ...(finalMenu ? { final_menu: finalMenu } : {})
+      }));
+    } catch (err) {
+      console.error("Failed to finalize agreement in MongoDB:", err);
+    }
+  }
 };
 
 const serializeMessages = () => messages.map((msg) => ({
@@ -1271,11 +1525,13 @@ const weatherStep = findStepData('Weather');
 const logisticsStep = findStepData('Logistics');
 const pricingStep = findStepData('Accountant');
 const monitoringStep = findStepData(['System Monitoring', 'Monitoring']);
+const dietaryStep = findStepData('Dietary');
 const nextBestActions = [
-  ...(weatherStep.recommendations || []),
-  ...(monitoringStep.qa_checks || []),
-  ...(logisticsStep.timeline || []).slice(0, 2).map((item: any) => item.activity || item.event || item.note).filter(Boolean),
+  ...(Array.isArray(weatherStep.recommendations) ? weatherStep.recommendations : []),
+  ...(Array.isArray(monitoringStep.qa_checks) ? monitoringStep.qa_checks : []),
+  ...(Array.isArray(logisticsStep.timeline) ? logisticsStep.timeline.slice(0, 2).map((item: any) => item.activity || item.event || item.note).filter(Boolean) : []),
 ].filter(Boolean);
+
 
 const visibleSteps = steps.filter((step) => {
   if (reportView === 'all') return true;
@@ -1293,20 +1549,14 @@ const handleEmailAuth = async (e: React.FormEvent) => {
       await loginWithEmail(email, password);
     } else {
       if (!name.trim()) throw new Error("Name is required");
-      setSkipRoleLoad(true);
-      const userCredential = await signupWithEmail(email, password, name, signupRole);
+      
+      const userCredential = await signupWithEmail(email, password, name, 'customer');
 
       await mongoService.saveUser({
         uid: userCredential.user.uid,
         email: userCredential.user.email,
-        name,
-        role: signupRole
+        name
       });
-
-      setWorkspaceRole(signupRole);
-      if (signupRole === 'admin') setDashboardView('admin-inbox');
-      else if (signupRole === 'staff') setDashboardView('operations');
-      setSkipRoleLoad(false);
     }
   } catch (err: any) {
     setAuthError(err.message || "Authentication failed");
@@ -1358,6 +1608,33 @@ if (showRolePicker) {
             </button>
           ))}
         </div>
+        {signupRole === 'staff' && (
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Admin Shop PIN</label>
+              <input
+                type="text"
+                placeholder="EX: 123456"
+                maxLength={6}
+                value={staffPin}
+                onChange={(e) => setStaffPin(e.target.value)}
+                className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-xs focus:ring-2 focus:ring-emerald-500 outline-none shadow-sm"
+                required
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Position / Info</label>
+              <input
+                type="text"
+                placeholder="EX: LEAD CHEF"
+                value={staffInfo}
+                onChange={(e) => setStaffInfo(e.target.value)}
+                className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-xs focus:ring-2 focus:ring-emerald-500 outline-none shadow-sm"
+                required
+              />
+            </div>
+          </div>
+        )}
         <button
           onClick={handleGoogleRoleConfirm}
           className="w-full min-h-12 bg-emerald-700 hover:bg-emerald-800 text-white font-black transition-all active:scale-[0.98] shadow-xl shadow-emerald-800/20 uppercase text-xs tracking-[0.18em] rounded-2xl"
@@ -1445,39 +1722,17 @@ if (!user) {
           <div className="space-y-6">
             <form onSubmit={handleEmailAuth} className="space-y-4">
               {authMode === 'signup' && (
-                <>
-                  <div className="space-y-1">
-                    <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Full Name</label>
-                    <input
-                      type="text"
-                      placeholder="EX: JOHN DOE"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none shadow-sm"
-                      required
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Workspace Role</label>
-                    <div className="grid grid-cols-2 gap-3">
-                      {[
-                        ['customer', 'Customer', 'Submit event brief, review menu, track plan'],
-                        ['admin', 'Admin', 'Owner dashboard, pricing, supplier decisions'],
-                        ['staff', 'Staff', 'Prep board, dispatch, execution tasks'],
-                      ].map(([role, title, copy]) => (
-                        <button
-                          key={role}
-                          type="button"
-                          onClick={() => setSignupRole(role as WorkspaceRole)}
-                          className={`rounded-2xl border p-4 text-left transition ${signupRole === role ? 'border-emerald-600 bg-emerald-50 shadow-sm' : 'border-slate-200 bg-white hover:border-emerald-200'}`}
-                        >
-                          <p className={`text-xs font-black uppercase tracking-[0.18em] ${signupRole === role ? 'text-emerald-800' : 'text-slate-700'}`}>{title}</p>
-                          <p className="mt-2 text-[10px] leading-4 text-slate-500">{copy}</p>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </>
+                <div className="space-y-1">
+                  <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Full Name</label>
+                  <input
+                    type="text"
+                    placeholder="EX: JOHN DOE"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none shadow-sm"
+                    required
+                  />
+                </div>
               )}
               <div className="space-y-1">
                 <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Email Address</label>
@@ -1557,18 +1812,30 @@ const showFinance = dashboardView === 'finance' || dashboardView === 'summary';
 
 return (
   <div className={`app-shell flex flex-col h-screen w-full font-sans overflow-hidden transition-all duration-500 ${highContrast ? 'high-contrast' : ''
-    } ${workspaceRole === 'admin' ? 'admin-theme bg-[var(--app-bg)]' : workspaceRole === 'staff' ? 'staff-theme bg-[#fffbeb]' : 'customer-theme bg-[#fbf7ee]'}`}>
+    } ${workspaceRole === 'admin' ? 'admin-theme bg-[var(--bg-color)]' : workspaceRole === 'staff' ? 'staff-theme bg-[#fffbeb]' : 'customer-theme bg-[#fbf7ee]'}`}>
 
     {workspaceRole === 'admin' ? (
-      <div className="flex-1 flex flex-col overflow-hidden bg-[var(--app-bg)]">
-        <header className="h-14 bg-[var(--header-bg)] flex items-center justify-between px-6 flex-shrink-0 z-30 border-b border-[var(--app-border)]">
+      <div className="flex-1 flex flex-col overflow-hidden bg-[var(--bg-color)]">
+        <header className="h-14 bg-[var(--header-bg)] flex items-center justify-between px-6 flex-shrink-0 z-30 border-b border-[var(--border-color)]">
           <div className="flex items-center space-x-3">
-            <div className="w-8 h-8 bg-[var(--app-accent)] rounded-xl flex items-center justify-center font-bold text-lg text-white">C</div>
-            <h1 className="text-sm font-bold tracking-[0.08em] text-[var(--app-text)]">CaterFlow <span className="text-slate-500 font-normal text-[10px] ml-2 uppercase tracking-[0.18em]">Admin Portal</span></h1>
+            <div className="w-8 h-8 bg-[var(--accent-color)] rounded-xl flex items-center justify-center font-bold text-lg text-white">C</div>
+            <h1 className="text-sm font-bold tracking-[0.08em] text-[var(--text-color)]">CaterFlow <span className="text-slate-500 font-normal text-[10px] ml-2 uppercase tracking-[0.18em]">Admin Portal</span></h1>
           </div>
           <div className="flex items-center space-x-4">
-            <div className="flex items-center gap-3 pl-4 border-l border-[var(--app-border)]">
-              <img src={user.photoURL || undefined} className="w-6 h-6 rounded-full border border-[var(--app-border)]" alt="User" />
+            {adminPlans.filter((p: any) => p.status === 'pending').length > 0 && (
+              <button 
+                onClick={() => setDashboardView('admin-inbox')}
+                className="relative p-2 text-slate-400 hover:text-emerald-500 hover:bg-white/5 rounded-xl transition-all"
+                title="Pending Customer Chats"
+              >
+                <MessageSquare className="w-5 h-5 text-emerald-500" />
+                <span className="absolute -top-1 -right-1 bg-rose-500 text-white font-black text-[9px] w-4 h-4 rounded-full flex items-center justify-center animate-pulse">
+                  {adminPlans.filter((p: any) => p.status === 'pending').length}
+                </span>
+              </button>
+            )}
+            <div className="flex items-center gap-3 pl-4 border-l border-[var(--border-color)]">
+              <img src={user.photoURL || undefined} className="w-6 h-6 rounded-full border border-[var(--border-color)]" alt="User" />
               <button onClick={() => auth.signOut()} className="text-slate-500 hover:text-rose-500 transition-colors">
                 <LogOut className="w-4 h-4" />
               </button>
@@ -1577,7 +1844,7 @@ return (
         </header>
 
         <div className="flex-1 flex overflow-hidden">
-          <aside className="w-64 bg-[var(--header-bg)] border-r border-[var(--app-border)] flex flex-col p-4 space-y-2">
+          <aside className="w-64 bg-[var(--header-bg)] border-r border-[var(--border-color)] flex flex-col p-4 space-y-2">
             {[
               ['admin-inbox', 'Inbox / Chats', Inbox],
               ['shop-setup', 'My Catering Shop', Store],
@@ -1588,34 +1855,74 @@ return (
               <button
                 key={key}
                 onClick={() => setDashboardView(key as any)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all ${dashboardView === key ? 'bg-[var(--app-accent)] text-slate-950 shadow-lg shadow-[var(--app-accent)]/20' : 'text-slate-400 hover:bg-white/5'
+                className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all ${dashboardView === key ? 'bg-[var(--accent-color)] text-slate-950 shadow-lg shadow-[var(--accent-color)]/20' : 'text-slate-400 hover:bg-white/5'
                   }`}
               >
-                <Icon className="w-4 h-4" />
-                {label}
+                <div className="flex items-center gap-3">
+                  <Icon className="w-4 h-4" />
+                  <span>{label}</span>
+                </div>
+                {key === 'admin-inbox' && adminPlans.filter((p: any) => p.status === 'pending').length > 0 && (
+                  <span className="bg-rose-500 text-white font-black text-[9px] w-4.5 h-4.5 rounded-full flex items-center justify-center animate-pulse">
+                    {adminPlans.filter((p: any) => p.status === 'pending').length}
+                  </span>
+                )}
               </button>
             ))}
 
-            <div className="mt-auto pt-4 border-t border-[var(--app-border)]">
-              <div className="p-4 bg-[var(--app-accent)]/5 border border-[var(--app-accent)]/10 rounded-2xl">
-                <p className="text-[10px] font-black text-[var(--app-accent)] uppercase tracking-widest mb-1">Owner Mode</p>
+            <div className="mt-auto pt-4 border-t border-[var(--border-color)]">
+              <div className="p-4 bg-[var(--accent-color)]/5 border border-[var(--accent-color)]/10 rounded-2xl">
+                <p className="text-[10px] font-black text-[var(--accent-color)] uppercase tracking-widest mb-1">Owner Mode</p>
                 <p className="text-[9px] text-slate-500 leading-relaxed font-medium">You are managing your catering business operations.</p>
               </div>
             </div>
           </aside>
 
-          <main className="flex-1 bg-[var(--app-bg)] overflow-y-auto p-8">
+          <main className="flex-1 bg-[var(--bg-color)] overflow-y-auto p-8">
             <AnimatePresence mode="wait">
               {dashboardView === 'admin-inbox' && (
                 <AdminInbox
-                  plans={[]}
+                  plans={adminPlans}
                   adminUid={user.uid}
                   adminName={user.displayName || 'Admin'}
                   onSendMessage={async (planId, text) => {
-                    console.log(`Sending to ${planId}: ${text}`);
+                    try {
+                      const token = await user.getIdToken();
+                      const plan = adminPlans.find(p => p._id === planId);
+                      const targetId = plan ? plan.eventId : planId;
+                      await fetch('/api/chat/send', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                        body: JSON.stringify({ eventId: targetId, message: text, senderRole: 'admin' })
+                      });
+                    } catch (err) { console.error('Chat send failed:', err); }
                   }}
-                  onUpdateStatus={(id, status) => {
-                    console.log(`Status of ${id} changed to ${status}`);
+                  onUpdateStatus={async (id, status, extraFields) => {
+                    try {
+                      const token = await user.getIdToken();
+                      const plan = adminPlans.find(p => p._id === id);
+                      if (!plan) return;
+
+                      await fetch(`/api/plans/${id}/status`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                        body: JSON.stringify({ status })
+                      });
+
+                      await fetch(`/api/events/${plan.eventId}/delivery-status`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                        body: JSON.stringify({
+                          status,
+                          deliveryLocation: extraFields?.deliveryLocation || plan.location
+                        })
+                      });
+
+                      if (status === 'delivery_approved') {
+                        setAgreementStatus('delivery_approved');
+                      }
+                      fetchAdminPlans();
+                    } catch (err) { console.error('Status update failed:', err); }
                   }}
                 />
               )}
@@ -1639,34 +1946,149 @@ return (
                 <ShopDiscovery
                   eventData={eventData}
                   onSelectShop={(id) => setShowShopDetails(id)}
+                  onClose={() => {
+                    setDashboardView('conversation');
+                    setFullScreenResult(false);
+                  }}
                 />
               )}
-              {dashboardView === 'marketplace-chat' && selectedShop && (
-                <div className="space-y-6">
-                  <MarketplaceChat
-                    eventId={activeConversationId || ''}
-                    shop={selectedShop}
-                    currentUser={user}
-                    eventData={eventData}
-                    menuItems={localMenu}
-                  />
-                  <div className="flex justify-center">
-                    <button
-                      onClick={() => setDashboardView('qr')}
-                      className="px-8 py-4 bg-white border border-slate-200 rounded-2xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-emerald-600 hover:border-emerald-200 transition-all shadow-sm flex items-center gap-2"
-                    >
-                      <QrCode className="w-4 h-4" />
-                      Generate Order QR Code
-                    </button>
+              {dashboardView === 'marketplace-chat' && (
+                <div className="grid grid-cols-12 gap-6 h-[calc(100vh-140px)]">
+                  {/* Left Column: Conversations Box / Sidebar */}
+                  <div className="col-span-4 bg-white/80 backdrop-blur-md rounded-[2.5rem] border border-slate-200 overflow-hidden flex flex-col shadow-xl">
+                    <div className="p-6 border-b border-slate-100 bg-gradient-to-r from-emerald-50/50 to-transparent flex items-center justify-between flex-shrink-0">
+                      <div>
+                        <h3 className="text-sm font-black uppercase tracking-wider text-slate-800">My Conversations</h3>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">Chat history with catering providers</p>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setDashboardView('conversation');
+                          setFullScreenResult(false);
+                        }}
+                        className="p-2 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-xl transition-all"
+                        title="Close Chat & Return to Chatbot"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+                    <div className="flex-grow overflow-y-auto p-4 space-y-3 custom-scrollbar min-h-0">
+                      {(() => {
+                        const convos = history.filter(h => h.eventData?.selectedShop || h.selectedShop || h.matchedShop || h.event_type);
+                        if (convos.length === 0) {
+                          return (
+                            <div className="text-center py-10 text-slate-400">
+                              <p className="text-[10px] font-black uppercase tracking-widest">No active chats</p>
+                              <p className="text-[9px] mt-1 font-medium leading-relaxed">Start planning or discover shops to open a conversation.</p>
+                            </div>
+                          );
+                        }
+                        return convos.map((convo) => {
+                          const shop = convo.eventData?.selectedShop || convo.selectedShop || convo.matchedShop;
+                          if (!shop) return null;
+                          const isActive = selectedShop?._id === shop._id && activeConversationId === convo._id;
+                          return (
+                            <button
+                              key={convo._id}
+                              onClick={() => {
+                                setSelectedShop(shop);
+                                setActiveConversationId(convo._id);
+                                setEventData(convo);
+                                if (convo.eventData?.menu) {
+                                  setLocalMenu(convo.eventData.menu);
+                                }
+                              }}
+                              className={`w-full flex items-center gap-3 p-4 rounded-3xl transition-all border text-left ${
+                                isActive 
+                                  ? 'bg-emerald-50 border-emerald-200 shadow-md shadow-emerald-900/5' 
+                                  : 'bg-white border-slate-100 hover:border-slate-200 hover:bg-slate-50/50'
+                              }`}
+                            >
+                              <div className="w-10 h-10 rounded-2xl bg-slate-900 text-emerald-400 flex items-center justify-center font-black text-sm flex-shrink-0">
+                                {shop.name?.charAt(0) || 'C'}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[11px] font-black text-slate-800 uppercase truncate">{shop.name}</p>
+                                <p className="text-[9px] text-slate-400 font-bold uppercase truncate mt-0.5">{convo.event_type || 'Event Planning'}</p>
+                              </div>
+                              <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+                                <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">
+                                  {convo.event_date || 'TBD'}
+                                </span>
+                                {isActive && (
+                                  <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                                )}
+                              </div>
+                            </button>
+                          );
+                        });
+                      })()}
+                    </div>
+                  </div>
+
+                  {/* Right Column: Active Conversation Chatbox */}
+                  <div className="col-span-8 flex flex-col h-full min-h-0">
+                    {selectedShop && activeConversationId ? (
+                      <div className="flex-grow flex flex-col h-full min-h-0">
+                        <MarketplaceChat
+                          eventId={activeConversationId || ''}
+                          shop={selectedShop}
+                          currentUser={user}
+                          eventData={eventData}
+                          menuItems={localMenu}
+                          chatbotHistory={messages}
+                          onClose={() => {
+                            if (steps.length > 0) {
+                              setDashboardView('summary');
+                              setFullScreenResult(true);
+                            } else {
+                              setDashboardView('conversation');
+                              setFullScreenResult(false);
+                            }
+                          }}
+                        />
+                        <div className="flex justify-center mt-4">
+                          <button
+                            onClick={() => setDashboardView('qr')}
+                            className="px-8 py-3 bg-white border border-slate-200 rounded-2xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-emerald-600 hover:border-emerald-200 transition-all shadow-sm flex items-center gap-2"
+                          >
+                            <QrCode className="w-4 h-4" />
+                            Generate Order QR Code
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex-grow bg-white/60 border border-slate-200 rounded-[2.5rem] flex flex-col items-center justify-center text-center p-8 h-full shadow-sm">
+                        <div className="w-20 h-20 bg-slate-50 rounded-[1.8rem] flex items-center justify-center mb-6 shadow-inner animate-pulse">
+                          <MessageSquare className="w-10 h-10 text-slate-300" />
+                        </div>
+                        <h4 className="text-sm font-black text-slate-800 uppercase tracking-wider">Select a conversation</h4>
+                        <p className="text-[10px] text-slate-400 uppercase tracking-widest mt-2 max-w-xs font-bold leading-relaxed">
+                          Choose a catering chatroom from the list to view messages and negotiate.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
               {dashboardView === 'qr' && activeConversationId && (
                 <div className="py-10">
                   <OrderQR orderId={activeConversationId} orderData={{ menu: localMenu, event: eventData }} />
-                  <div className="mt-8 text-center">
-                    <button onClick={() => setDashboardView('marketplace-chat')} className="text-xs font-bold text-slate-400 hover:text-slate-600 uppercase tracking-widest">
+                  <div className="mt-8 text-center flex justify-center gap-6">
+                    <button 
+                      onClick={() => setDashboardView('marketplace-chat')} 
+                      className="text-xs font-black text-slate-500 hover:text-slate-700 uppercase tracking-widest bg-slate-100 hover:bg-slate-200 px-6 py-2.5 rounded-full transition-all"
+                    >
                       Back to Chat
+                    </button>
+                    <button 
+                      onClick={() => {
+                        setDashboardView('conversation');
+                        setFullScreenResult(false);
+                      }} 
+                      className="text-xs font-black text-white hover:bg-emerald-600 uppercase tracking-widest bg-emerald-700 px-6 py-2.5 rounded-full transition-all shadow-md shadow-emerald-900/10"
+                    >
+                      Back to Chatbot
                     </button>
                   </div>
                 </div>
@@ -1709,7 +2131,7 @@ return (
       <>
         <header className="h-14 bg-white/90 backdrop-blur-md flex items-center justify-between px-6 border-b border-slate-200 flex-shrink-0 z-20">
           <div className="flex items-center space-x-3">
-            <div className="w-8 h-8 bg-[var(--app-accent)] rounded-xl flex items-center justify-center font-bold text-lg text-white">C</div>
+            <div className="w-8 h-8 bg-[var(--accent-color)] rounded-xl flex items-center justify-center font-bold text-lg text-white">C</div>
             <h1 className="text-sm font-bold tracking-[0.08em] text-slate-950">
               CaterFlow
               <span className="text-slate-400 font-normal text-[10px] ml-2 uppercase tracking-[0.18em]">
@@ -1756,6 +2178,44 @@ return (
                 </span>
               </div>
 
+              {/* Saved Chatbox / Convo Icon for Customer */}
+              <button
+                onClick={() => {
+                  if (dashboardView === 'marketplace-chat' || dashboardView === 'discovery') {
+                    // Close the chat/discovery: return to the correct active page
+                    if (steps.length > 0) {
+                      setDashboardView('summary');
+                      setFullScreenResult(true);
+                    } else {
+                      setDashboardView('conversation');
+                      setFullScreenResult(false);
+                    }
+                  } else {
+                    const activeShop = selectedShop || eventData?.eventData?.selectedShop || matchedShop;
+                    if (activeShop) {
+                      if (!selectedShop) setSelectedShop(activeShop);
+                      setDashboardView('marketplace-chat');
+                    } else {
+                      setDashboardView('discovery');
+                    }
+                  }
+                }}
+                className={`p-2 rounded-xl transition-all relative ${
+                  (dashboardView === 'marketplace-chat' || dashboardView === 'discovery')
+                    ? 'text-emerald-700 bg-emerald-100 border border-emerald-200'
+                    : 'text-slate-400 hover:text-emerald-700 hover:bg-emerald-50'
+                }`}
+                title={selectedShop || eventData?.eventData?.selectedShop || matchedShop ? "Active Shop Chat" : "Discover Shops & Chat"}
+              >
+                <MessageSquare className="w-5 h-5 text-emerald-600" />
+                {(selectedShop || eventData?.eventData?.selectedShop || matchedShop) && (
+                  <>
+                    <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-emerald-500 rounded-full animate-ping" />
+                    <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-emerald-500 rounded-full border border-white" />
+                  </>
+                )}
+              </button>
+
               <button
                 onClick={() => setShowHistory(true)}
                 className="p-2 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-xl transition-all"
@@ -1771,40 +2231,58 @@ return (
           </div>
         </header>
 
-        <main className={`flex-1 grid grid-cols-12 gap-5 p-5 overflow-hidden relative bg-[var(--app-bg)] ${fullScreenResult ? 'full-screen-results' : ''}`}>
-          {(!fullScreenResult || steps.length === 0) && (
-            <section className="col-span-12 lg:col-span-4 flex flex-col space-y-4 h-[calc(100vh-190px)] min-h-0">
-               {/* Chat UI ... */}
-            </section>
-          )}
-          <div className="col-span-12 flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-2 h-12">
-            <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
-              {workspaceRole === 'staff' ? 'Operational Tasks' : 'My Planning Journey'}
-            </p>
-            <div className="flex gap-2">
-              {(workspaceRole === 'staff'
-                ? [['staff-tasks', 'Duty Roster'], ['delivery', 'Logistics']]
-                : [['conversation', 'Brief'], ['summary', 'Plan'], ['inventory-planner', 'Inventory Plan'], ['menu-editor', 'Edit Menu'], ['checkout', 'Checkout']]
-              ).map(([key, label]) => (
-                <div
-                  key={key}
-                  className={`rounded-full px-3 py-1 text-[9px] font-black uppercase tracking-widest transition-all ${dashboardView === key
-                    ? 'bg-[var(--app-accent)] text-white shadow-md'
-                    : 'bg-slate-100 text-slate-400'
-                    }`}
-                >
-                  {label}
-                </div>
-              ))}
+        <main className={`flex-1 grid grid-cols-12 gap-5 p-5 overflow-hidden relative bg-[var(--bg-color)] ${fullScreenResult ? 'full-screen-results' : ''}`}>
+          {dashboardView !== 'marketplace-chat' && dashboardView !== 'discovery' && dashboardView !== 'qr' && (
+            <div className="col-span-12 flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-2 h-12">
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                {workspaceRole === 'staff' ? 'Operational Tasks' : 'My Planning Journey'}
+              </p>
+              <div className="flex gap-2">
+                {(workspaceRole === 'staff'
+                  ? [['staff-tasks', 'Duty Roster'], ['delivery', 'Logistics']]
+                  : [
+                      ['conversation', 'Brief'],
+                      ['summary', 'Check'],
+                      ['inventory-planner', 'Edit/Add'],
+                      ['checkout', 'Finance'],
+                      ['post-finalization', 'Finalization']
+                    ]
+                ).map(([key, label]) => {
+                  const isConversation = key === 'conversation';
+                  const isAvailable = steps.length > 0 || isConversation;
+                  return (
+                    <button
+                      key={key}
+                      disabled={!isAvailable}
+                      onClick={() => {
+                        setDashboardView(key as any);
+                        if (key !== 'conversation') {
+                          setFullScreenResult(true);
+                        } else {
+                          setFullScreenResult(false);
+                        }
+                      }}
+                      className={`rounded-full px-3.5 py-1.5 text-[9px] font-black uppercase tracking-widest transition-all ${dashboardView === key
+                        ? 'bg-emerald-700 text-white shadow-md shadow-emerald-900/10 font-bold'
+                        : isAvailable 
+                          ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' 
+                          : 'bg-slate-50 text-slate-300 cursor-not-allowed'
+                        }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          )}
           <AnimatePresence>
             {showHistory && (
               <motion.div
-                initial={{ opacity: 0, x: -100 }}
+                initial={{ opacity: 0, x: -50 }}
                 animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -100 }}
-                className="absolute inset-y-4 left-4 w-80 bg-white/98 backdrop-blur-2xl rounded-[2.5rem] z-30 border border-slate-200 overflow-hidden flex flex-col shadow-[0_20px_50px_rgba(0,0,0,0.15)]"
+                exit={{ opacity: 0, x: -50 }}
+                className="fixed left-6 top-24 w-[90vw] max-w-[320px] h-[calc(100vh-140px)] bg-white/98 backdrop-blur-2xl rounded-[2.5rem] z-[100] border border-slate-200 overflow-hidden flex flex-col shadow-[0_20px_50px_rgba(0,0,0,0.25)]"
               >
                 <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-emerald-50/50 to-transparent">
                   <div>
@@ -1913,7 +2391,7 @@ return (
           </AnimatePresence>
 
           { }
-          {showConversation && (!fullScreenResult || steps.length === 0) && (
+          {showConversation && dashboardView === 'conversation' && !fullScreenResult && (
             <section className="col-span-12 lg:col-span-4 flex flex-col space-y-4 overflow-hidden h-[calc(100vh-190px)]">
             <div className="high-density-card flex flex-col min-h-[520px]">
               <div className="high-density-header flex justify-between items-center">
@@ -2740,7 +3218,7 @@ return (
         )}
 
           { }
-          <section className={`col-span-12 ${fullScreenResult || Object.keys(monitoringStep).length > 0 ? 'lg:col-span-12' : 'lg:col-span-8'} flex flex-col space-y-4 h-[calc(100vh-190px)] min-h-0`}>
+           <section className={`col-span-12 ${fullScreenResult || dashboardView !== 'conversation' || Object.keys(monitoringStep).length > 0 ? 'lg:col-span-12' : 'lg:col-span-8'} flex flex-col space-y-4 h-[calc(100vh-190px)] min-h-0`}>
             <div className="flex-1 overflow-y-auto pr-2 space-y-4 scroll-smooth custom-scrollbar pb-20" ref={scrollRef}>
               {/* Start New Plan banner — always visible when results exist */}
               {steps.length > 0 && (
@@ -2756,7 +3234,7 @@ return (
                 </div>
               )}
               <AnimatePresence mode="popLayout">
-                {steps.length === 0 && !isProcessing && (
+                {steps.length === 0 && !isProcessing && dashboardView === 'conversation' && (
                   <motion.div
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
@@ -2781,7 +3259,7 @@ return (
                             ['Schedule', 'Prep and delivery'],
                             ['Quote', 'Pricing and margin'],
                           ].map(([title, copy]) => (
-                            <div key={title} className="rounded-2xl bg-[#fff7e8] border border-amber-100 p-4">
+                            <div key={title} className="rounded-2xl bg-emerald-50 border border-emerald-100 p-4">
                               <p className="text-sm font-black text-slate-900">{title}</p>
                               <p className="text-[11px] text-slate-500 mt-1">{copy}</p>
                             </div>
@@ -2801,142 +3279,253 @@ return (
                   </motion.div>
                 )}
 
-                {steps.length === 0 && isProcessing && (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="min-h-full bg-white border border-slate-200 rounded-[3rem] shadow-2xl shadow-emerald-900/5 flex flex-col items-center justify-center p-12 text-center"
-                  >
-                    <div className="relative mb-12">
-                      <div className="absolute inset-0 bg-emerald-400/20 blur-3xl rounded-full scale-150 animate-pulse" />
-                      <div className="relative w-32 h-32 rounded-[2.5rem] bg-emerald-900 flex items-center justify-center shadow-2xl border border-emerald-400/30">
-                        <Loader2 className="w-12 h-12 text-emerald-400 animate-spin" />
-                      </div>
-                    </div>
-                    
-                    <h2 className="text-3xl font-black text-slate-900 tracking-tight mb-4">Orchestrating AI Agents</h2>
-                    <p className="text-slate-500 max-w-sm mx-auto leading-relaxed mb-12 font-medium">
-                      Our multi-agent system is currently collaborating on your event blueprint. This usually takes 10-15 seconds...
-                    </p>
-                    
-                    <div className="w-full max-w-md bg-slate-50 rounded-3xl p-6 border border-slate-100">
-                       <div className="flex justify-between items-center mb-6">
-                         <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Collaborating Entities</span>
-                         <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600 animate-pulse">Syncing...</span>
-                       </div>
-                       <div className="grid grid-cols-2 gap-3">
-                         {['Concierge', 'Chef', 'Logistics', 'Finance'].map(agent => (
-                           <div key={agent} className="bg-white px-4 py-3 rounded-2xl border border-slate-100 flex items-center gap-2">
-                             <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                             <span className="text-[10px] font-bold text-slate-700">{agent} Agent</span>
-                           </div>
-                         ))}
-                       </div>
-                    </div>
-                  </motion.div>
-                )}
 
-                {steps.length > 0 && (
+                {steps.length > 0 && dashboardView === 'summary' && (
                   <motion.div
                     key="og-results-view"
                     initial={{ opacity: 0, y: 12 }}
                     animate={{ opacity: 1, y: 0 }}
                     className="space-y-6"
                   >
-                    {/* Dashboard Highlights (OG style - simple cards) */}
-                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                      <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm">
-                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Total Budget</p>
-                        <p className="text-2xl font-black text-slate-900">{customerStep.budget || eventData.budget || '--'}</p>
+                    {eventData?.eventData?.delivery_status && (
+                      <div className="bg-white border border-slate-200 rounded-[2.5rem] p-8 shadow-sm space-y-6">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center text-amber-600 animate-pulse">
+                              <Truck className="w-5 h-5 animate-bounce" />
+                            </div>
+                            <div>
+                              <h3 className="text-xl font-black text-slate-900 tracking-tight uppercase tracking-wider">Live Delivery & Convoy Status</h3>
+                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">Real-time GPS tracker connecting kitchen to venue</p>
+                            </div>
+                          </div>
+                          <span className="bg-emerald-50 border border-emerald-100 text-emerald-800 text-[10px] font-black px-4 py-1.5 rounded-full uppercase tracking-wider">
+                            {eventData.eventData.delivery_status === 'prep' && 'Feast Preparation'}
+                            {eventData.eventData.delivery_status === 'transit' && 'Feast In Transit'}
+                            {eventData.eventData.delivery_status === 'arrived' && 'Convoy Arrived'}
+                            {eventData.eventData.delivery_status === 'setup' && 'Buffet Setup Active'}
+                            {eventData.eventData.delivery_status === 'completed' && 'Event Active'}
+                          </span>
+                        </div>
+                        <div className="h-96 rounded-3xl overflow-hidden border border-slate-100 relative">
+                          <CustomerTrackingMap 
+                            status={eventData.eventData.delivery_status} 
+                            venueLocation={eventData.eventData.event_location || eventData.eventData.location || 'Quezon City, Manila'} 
+                            shopCoords={eventData?.eventData?.selectedShop?.coordinates || matchedShop?.coordinates}
+                          />
+                        </div>
                       </div>
-                      <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm">
-                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Guest Count</p>
-                        <p className="text-2xl font-black text-slate-900">{customerStep.guests || eventData.guest_count || '--'}</p>
-                      </div>
-                      <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm">
-                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Readiness</p>
-                        <p className="text-2xl font-black text-emerald-600">{monitoringStep.execution_readiness ? `${monitoringStep.execution_readiness}%` : '--'}</p>
-                      </div>
-                      <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm flex items-center justify-center">
-                         <button onClick={restartChat} className="flex items-center gap-2 bg-slate-900 text-white px-6 py-3 rounded-full text-[10px] font-black uppercase tracking-widest hover:bg-emerald-700 transition shadow-lg">
-                           <ArrowRight className="w-3.5 h-3.5 rotate-180" />
-                           New Plan
-                         </button>
-                      </div>
-                    </div>
+                    )}
+                    <div className="bg-white border border-slate-200/80 rounded-[2.5rem] p-8 lg:p-10 shadow-xl space-y-10 text-left relative overflow-hidden">
+                      {/* Breathtaking Glowing Background Blurs */}
+                      <div className="absolute -top-24 -left-24 w-96 h-96 bg-emerald-400/5 rounded-full blur-[120px] pointer-events-none" />
+                      <div className="absolute -bottom-24 -right-24 w-96 h-96 bg-indigo-400/5 rounded-full blur-[120px] pointer-events-none" />
 
-                    {/* Dashboard Segment Navigation (User Request: "PA DASHBOARD DAPAT") */}
-                    <div className="space-y-6">
-                      <div className="flex flex-wrap gap-2 mb-4">
-                        {steps.map((step, i) => (
-                          <button
-                            key={i}
-                            onClick={() => setResultPageIndex(i)}
-                            className={`px-4 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${i === resultPageIndex 
-                              ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/20' 
-                              : 'bg-white text-slate-400 hover:bg-slate-50 border border-slate-100'}`}
-                          >
-                            {step.agent.replace(' Agent', '').replace('Phase 1: ', '').replace('Phase 2: ', '').replace('Phase 3: ', '').replace('Phase 4: ', '').split(' (')[0]}
-                          </button>
-                        ))}
+                      {/* Header Specs Bar with Circular Progress */}
+                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-6 pb-6 border-b border-slate-100 relative z-10">
+                        <div className="flex items-center gap-4">
+                          <div className="relative w-14 h-14 flex items-center justify-center flex-shrink-0">
+                            {/* Bouncing Outer Circle */}
+                            <div className="absolute inset-0 rounded-full border-4 border-emerald-100 animate-pulse" />
+                            {/* Active Rotating Ring */}
+                            <svg className="absolute inset-0 w-full h-full transform -rotate-90" viewBox="0 0 36 36">
+                              <path
+                                className="text-emerald-500"
+                                strokeDasharray="100, 100"
+                                strokeWidth="4"
+                                strokeLinecap="round"
+                                stroke="currentColor"
+                                fill="none"
+                                d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                              />
+                            </svg>
+                            <ClipboardList className="w-5 h-5 text-emerald-600 relative z-10" />
+                          </div>
+                          <div>
+                            <h3 className="text-2xl font-black text-slate-950 tracking-tight uppercase tracking-wider">Event Specification Blueprint</h3>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">Click any specification card below to view expert planning recommendations</p>
+                          </div>
+                        </div>
+
+                        <div className="bg-emerald-50 border border-emerald-100 px-4 py-2 rounded-2xl flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
+                          <span className="text-[9px] font-black text-emerald-800 uppercase tracking-widest">Intake 100% Prepared</span>
+                        </div>
                       </div>
 
-                      <div className="flex items-center justify-between px-2">
-                         <div className="flex items-center gap-3">
-                           <div className="w-10 h-10 rounded-2xl bg-emerald-50 flex items-center justify-center text-emerald-600 border border-emerald-100">
-                             <ChefHat className="w-5 h-5" />
-                           </div>
-                           <div>
-                             <h3 className="text-xs font-black uppercase tracking-[0.2em] text-emerald-900">
-                               Phase {Math.floor(resultPageIndex / 3) + 1} Result
-                             </h3>
-                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">Segment {resultPageIndex + 1} of {steps.length}</p>
-                           </div>
-                         </div>
-                         <div className="flex gap-2">
-                           <button onClick={() => setFullScreenResult(!fullScreenResult)} className="text-[9px] font-black uppercase tracking-widest text-slate-400 hover:text-emerald-700 transition">
-                             {fullScreenResult ? 'Show Chat' : 'Go Full Screen'}
-                           </button>
-                           <button onClick={exportBlueprint} className="text-[9px] font-black uppercase tracking-widest text-slate-400 hover:text-emerald-700 transition">Export JSON</button>
-                         </div>
-                      </div>
-                      
-                      <div className="bg-white rounded-[3rem] border border-slate-200 p-8 shadow-2xl shadow-slate-200/50 min-h-[600px]">
-                        <AnimatePresence mode="wait">
+                      {/* Staggered Grid Content */}
+                      <motion.div 
+                        variants={{
+                          hidden: { opacity: 0 },
+                          show: {
+                            opacity: 1,
+                            transition: { staggerChildren: 0.05 }
+                          }
+                        }}
+                        initial="hidden"
+                        animate="show"
+                        className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 relative z-10"
+                      >
+                        {[
+                          { 
+                            label: "Event Type", 
+                            val: eventData.event_type || customerStep?.event_type || 'Catering Event', 
+                            icon: FileText, 
+                            color: 'text-amber-500', 
+                            bg: 'bg-amber-50', 
+                            border: 'border-amber-100/30',
+                            advice: "Your event theme sets the tone. We suggest matching standard floral centerpieces and table runner palettes to complement this style."
+                          },
+                          { 
+                            label: "Estimated Guests", 
+                            val: `${eventData.guest_count || customerStep?.guests || '100'} Guests`, 
+                            icon: Users, 
+                            color: 'text-sky-500', 
+                            bg: 'bg-sky-50', 
+                            border: 'border-sky-100/30',
+                            advice: "For this attendance volume, we recommend a minimum of 4 service personnel (1 supervisor, 2 waiters, 1 steward) to maintain premium hospitality flow."
+                          },
+                          { 
+                            label: "Venue Location", 
+                            val: eventData.event_location || customerStep?.location || 'TBD', 
+                            icon: MapPin, 
+                            color: 'text-rose-500', 
+                            bg: 'bg-rose-50', 
+                            border: 'border-rose-100/30',
+                            advice: "Logistics analysis: catering transport vehicles require parking clearances near the kitchen access door at least 2.5 hours prior to launch."
+                          },
+                          { 
+                            label: "Target Budget", 
+                            val: eventData.budget || customerStep?.budget || 'TBD', 
+                            icon: DollarSign, 
+                            color: 'text-emerald-500', 
+                            bg: 'bg-emerald-50', 
+                            border: 'border-emerald-100/30',
+                            advice: "Optimal cost distribution strategy: 70% allotted to premium ingredients & culinary selection, 30% to logistics, equipment, and service personnel costs."
+                          },
+                          { 
+                            label: "Cuisine Preference", 
+                            val: eventData.cuisine_preference || customerStep?.cuisine_preference || 'Chef Choice', 
+                            icon: Utensils, 
+                            color: 'text-indigo-500', 
+                            bg: 'bg-indigo-50', 
+                            border: 'border-indigo-100/30',
+                            advice: "To match this taste palette, we recommend pairing with refreshing, crisp fruit infusions or mocktail towers to highlight the main entrees."
+                          },
+                          { 
+                            label: "Service Style", 
+                            val: eventData.service_style || customerStep?.service_style || 'Buffet Style', 
+                            icon: ChefHat, 
+                            color: 'text-teal-500', 
+                            bg: 'bg-teal-50', 
+                            border: 'border-teal-100/30',
+                            advice: "For this layout, we will build a double-sided buffet lineup complete with glowing display warmers to eliminate queue times."
+                          },
+                          { 
+                            label: "Dietary Restrictions", 
+                            val: eventData.dietary_needs || customerStep?.dietary_needs || 'None reported', 
+                            icon: ClipboardList, 
+                            color: 'text-pink-500', 
+                            bg: 'bg-pink-50', 
+                            border: 'border-pink-100/30',
+                            advice: "Dietary safeguarding: separate service trays will be explicitly labeled and situated at the start of the buffet line for allergen-safe dining."
+                          },
+                          { 
+                            label: "Special Requests", 
+                            val: eventData.special_requests || customerStep?.special_requests || 'None', 
+                            icon: Sparkles, 
+                            color: 'text-purple-500', 
+                            bg: 'bg-purple-50', 
+                            border: 'border-purple-100/30',
+                            advice: "Custom instructions captured. Kitchen timelines, staff briefs, and specialized equipment checklists have been configured."
+                          }
+                        ].map((row, idx) => {
+                          const IconComp = row.icon;
+                          const isSelected = selectedSpecIndex === idx;
+                          return (
+                            <motion.div 
+                              key={idx}
+                              variants={{
+                                hidden: { opacity: 0, y: 15, scale: 0.95 },
+                                show: { opacity: 1, y: 0, scale: 1, transition: { type: "spring", stiffness: 120 } }
+                              }}
+                              whileHover={{ y: -6, scale: 1.02 }}
+                              whileTap={{ scale: 0.98 }}
+                              onClick={() => setSelectedSpecIndex(isSelected ? null : idx)}
+                              className={`p-6 rounded-[2rem] border transition-all duration-300 min-h-[145px] cursor-pointer flex flex-col justify-between relative overflow-hidden shadow-sm hover:shadow-xl ${isSelected ? 'bg-slate-900 border-slate-900 text-white' : 'bg-white border-slate-200/80'}`}
+                            >
+                              {/* Glowing bottom gradient line on select */}
+                              {isSelected && <div className="absolute bottom-0 left-0 right-0 h-1.5 bg-gradient-to-r from-emerald-400 via-teal-500 to-indigo-500" />}
+
+                              <div className="flex justify-between items-start gap-4">
+                                <span className={`text-[8px] font-black uppercase tracking-widest leading-none ${isSelected ? 'text-slate-400' : 'text-slate-400'}`}>{row.label}</span>
+                                <div className={`w-8 h-8 rounded-xl ${isSelected ? 'bg-slate-800 border-slate-700 text-emerald-400' : `${row.bg} ${row.border} ${row.color}`} border flex items-center justify-center flex-shrink-0 transition-colors`}>
+                                  <IconComp className="w-4 h-4" />
+                                </div>
+                              </div>
+                              <p className={`text-xs font-black leading-tight tracking-tight mt-4 line-clamp-2 ${isSelected ? 'text-white' : 'text-slate-900'}`}>
+                                {row.val}
+                              </p>
+                            </motion.div>
+                          );
+                        })}
+                      </motion.div>
+
+                      {/* Interactive AI Insights Card Container */}
+                      <AnimatePresence mode="wait">
+                        {selectedSpecIndex !== null ? (
                           <motion.div
-                            key={`step-dashboard-${resultPageIndex}`}
-                            initial={{ opacity: 0, y: 10 }}
+                            key="insights-panel"
+                            initial={{ opacity: 0, y: 15 }}
                             animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -10 }}
+                            exit={{ opacity: 0, y: -15 }}
+                            className="p-6 bg-slate-900 text-white border border-slate-800 rounded-3xl relative overflow-hidden text-left shadow-lg space-y-2.5"
                           >
-                            <AgentReport 
-                              step={steps[resultPageIndex]} 
-                              isExpanded={true} 
-                              onToggle={() => {}}
-                              handleChatSubmit={handleChatSubmit}
-                              variant="dashboard"
-                            />
+                            <div className="absolute top-0 right-0 p-4">
+                              <Sparkles className="w-8 h-8 text-emerald-400/10" />
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                              <h4 className="text-[10px] font-black text-emerald-400 uppercase tracking-widest">
+                                Expert Culinary Recommendation
+                              </h4>
+                            </div>
+                            <p className="text-xs text-slate-350 leading-relaxed font-bold">
+                              {[
+                                "Your event theme sets the tone. We suggest matching standard floral centerpieces and table runner palettes to complement this style.",
+                                "For this attendance volume, we recommend a minimum of 4 service personnel (1 supervisor, 2 waiters, 1 steward) to maintain premium hospitality flow.",
+                                "Logistics analysis: catering transport vehicles require parking clearances near the kitchen access door at least 2.5 hours prior to launch.",
+                                "Optimal cost distribution strategy: 70% allotted to premium ingredients & culinary selection, 30% to logistics, equipment, and service personnel costs.",
+                                "To match this taste palette, we recommend pairing with refreshing, crisp fruit infusions or mocktail towers to highlight the main entrees.",
+                                "For this layout, we will build a double-sided buffet lineup complete with glowing display warmers to eliminate queue times.",
+                                "Dietary safeguarding: separate service trays will be explicitly labeled and situated at the start of the buffet line for allergen-safe dining.",
+                                "Custom instructions captured. Kitchen timelines, staff briefs, and specialized equipment checklists have been configured."
+                              ][selectedSpecIndex]}
+                            </p>
                           </motion.div>
-                        </AnimatePresence>
-                      </div>
+                        ) : (
+                          <motion.div
+                            key="insights-idle"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            className="p-5 bg-slate-50 border border-slate-200/60 rounded-3xl text-center"
+                          >
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">💡 Tip: Select any specification card above to reveal custom planning recommendations</p>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
 
-                      <div className="flex items-center justify-between pt-6">
-                        <button 
-                          disabled={resultPageIndex === 0}
-                          onClick={() => setResultPageIndex(prev => prev - 1)}
-                          className="flex items-center gap-2 px-8 py-4 rounded-[2rem] bg-slate-100 text-slate-600 font-black uppercase tracking-widest text-[10px] disabled:opacity-30 hover:bg-slate-200 transition"
+                      {/* Navigation Panel */}
+                      <div className="flex justify-end pt-4 border-t border-slate-100 relative z-10">
+                        <button
+                          onClick={() => {
+                            setDashboardView('inventory-planner');
+                            setFullScreenResult(true);
+                          }}
+                          className="group flex items-center gap-2 px-10 py-5 rounded-[2rem] bg-slate-900 text-emerald-400 font-black uppercase tracking-widest text-[10px] hover:bg-emerald-800 hover:text-white transition-all shadow-xl shadow-slate-900/10 active:scale-95 duration-200"
                         >
-                          <ArrowRight className="w-3.5 h-3.5 rotate-180" />
-                          Back
-                        </button>
-
-                        <button 
-                          disabled={resultPageIndex === steps.length - 1}
-                          onClick={() => setResultPageIndex(prev => prev + 1)}
-                          className="flex items-center gap-2 px-10 py-4 rounded-[2rem] bg-emerald-700 text-white font-black uppercase tracking-widest text-[11px] disabled:opacity-30 hover:bg-emerald-800 transition shadow-xl shadow-emerald-900/20"
-                        >
-                          {resultPageIndex === steps.length - 1 ? 'Finish Review' : 'Next Segment'}
-                          <ArrowRight className="w-3.5 h-3.5" />
+                          Next: Customize Menu Choices
+                          <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-1" />
                         </button>
                       </div>
                     </div>
@@ -2952,19 +3541,56 @@ return (
                 {dashboardView === 'inventory-planner' && (
                   <CustomerPlanner
                     menu={localMenu}
-                    inventory={localInventory}
+                    steps={steps}
+                    monitoring={monitoringStep}
+                    pricing={pricingStep}
+                    eventData={eventData}
+                    onUpdate={(newMenu) => setLocalMenu(newMenu)}
                   />
                 )}
                 {dashboardView === 'admin-inbox' && (
                   <AdminInbox
-                    plans={[]}
+                    plans={adminPlans}
                     adminUid={user.uid}
                     adminName={user.displayName || 'Admin'}
                     onSendMessage={async (planId, text) => {
-                      console.log(`Sending to ${planId}: ${text}`);
+                      try {
+                        const token = await user.getIdToken();
+                        const plan = adminPlans.find(p => p._id === planId);
+                        const targetId = plan ? plan.eventId : planId;
+                        await fetch('/api/chat/send', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                          body: JSON.stringify({ eventId: targetId, message: text, senderRole: 'admin' })
+                        });
+                      } catch (err) { console.error('Chat send failed:', err); }
                     }}
-                    onUpdateStatus={(id, status) => {
-                      console.log(`Status of ${id} changed to ${status}`);
+                    onUpdateStatus={async (id, status, extraFields) => {
+                      try {
+                        const token = await user.getIdToken();
+                        const plan = adminPlans.find(p => p._id === id);
+                        if (!plan) return;
+
+                        await fetch(`/api/plans/${id}/status`, {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                          body: JSON.stringify({ status })
+                        });
+
+                        await fetch(`/api/events/${plan.eventId}/delivery-status`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                          body: JSON.stringify({
+                            status,
+                            deliveryLocation: extraFields?.deliveryLocation || plan.location
+                          })
+                        });
+
+                        if (status === 'delivery_approved') {
+                          setAgreementStatus('delivery_approved');
+                        }
+                        fetchAdminPlans();
+                      } catch (err) { console.error('Status update failed:', err); }
                     }}
                   />
                 )}
@@ -2975,14 +3601,74 @@ return (
                   />
                 )}
                 {dashboardView === 'staff-tasks' && (
+                  workspaceRole === 'staff' && staffShopLinked === false ? (
+                    <StaffShopJoin
+                      userName={user?.displayName || user?.email || 'Staff Member'}
+                      onJoined={() => {
+                        setStaffShopLinked(true);
+                        fetchStaffOrders();
+                      }}
+                    />
+                  ) : (
                   <StaffTaskBoard
                     tasks={staffTasks}
-                    onToggle={(index) => {
+                    onToggle={async (index) => {
                       const newTasks = [...staffTasks];
                       newTasks[index].completed = !newTasks[index].completed;
                       setStaffTasks(newTasks);
+                      
+                      const orderToUpdate = selectedStaffOrder;
+                      if (orderToUpdate && orderToUpdate._id) {
+                        try {
+                          const updatedSteps = (orderToUpdate.steps || []).map((step: any) => {
+                            if (step.agent.includes('Logistics')) {
+                              return {
+                                ...step,
+                                data: {
+                                  ...step.data,
+                                  timeline: newTasks
+                                }
+                              };
+                            }
+                            return step;
+                          });
+
+                          await mongoService.updateEvent(orderToUpdate._id, {
+                            ...orderToUpdate,
+                            steps: updatedSteps
+                          });
+
+                          setSelectedStaffOrder((prev: any) => {
+                            if (!prev) return prev;
+                            return {
+                              ...prev,
+                              steps: updatedSteps
+                            };
+                          });
+                        } catch (err) {
+                          console.error("Failed to save staff task progress to database:", err);
+                        }
+                      }
                     }}
+                    assignedOrders={staffOrders}
+                    onSelectOrder={(order) => {
+                      setSelectedStaffOrder(order);
+                      setEventData(order);
+                      setDashboardView('delivery');
+                    }}
+                    menu={
+                      selectedStaffOrder?.eventData?.final_menu ||
+                      selectedStaffOrder?.steps?.find((s: any) => s.agent.includes('Head Chef'))?.data?.menu ||
+                      []
+                    }
+                    guestCount={Number(selectedStaffOrder?.eventData?.guest_count || 100)}
+                    logisticsTimeline={
+                      selectedStaffOrder?.steps?.find((s: any) => s.agent.includes('Logistics'))?.data?.timeline ||
+                      []
+                    }
+                    eventData={selectedStaffOrder?.eventData || {}}
                   />
+                  )
                 )}
                 {dashboardView === 'shop-setup' && (
                   <AdminShopSetup
@@ -3003,6 +3689,10 @@ return (
                     localMenu={localMenu}
                     onAccept={() => setAgreementStatus('accepted')}
                     onFinalize={handleFinalizeAgreement}
+                    onChatWithShop={(shop: any) => {
+                      setSelectedShop(shop);
+                      setDashboardView('marketplace-chat');
+                    }}
                   />
                 )}
                 {dashboardView === 'post-finalization' && (
@@ -3019,8 +3709,8 @@ return (
                 )}
                 {dashboardView === 'delivery' && (
                   <DriverView
-                    event={eventData}
-                    logistics={logisticsStep}
+                    event={selectedStaffOrder || eventData}
+                    logistics={selectedStaffOrder?.steps?.find((s: any) => s.agent.includes('Logistics'))?.data || logisticsStep}
                   />
                 )}
               </AnimatePresence>
@@ -3038,9 +3728,9 @@ return (
                   {steps.length > 0 ? (
                     <>
                       <div className="grid grid-cols-2 gap-3">
-                        <InfoTile icon={<Users className="w-4 h-4" />} label="Guests" value={customerStep.guests || eventData.guest_count || '--'} />
-                        <InfoTile icon={<MapPin className="w-4 h-4" />} label="Location" value={customerStep.location || eventData.event_location || '--'} />
-                        <InfoTile icon={<Calendar className="w-4 h-4" />} label="Date" value={customerStep.date || eventData.event_date || '--'} />
+                        <InfoTile icon={<Users className="w-4 h-4" />} label="Guests" value={customerStep?.guests || eventData.guest_count || '--'} />
+                        <InfoTile icon={<MapPin className="w-4 h-4" />} label="Location" value={customerStep?.location || eventData.event_location || '--'} />
+                        <InfoTile icon={<Calendar className="w-4 h-4" />} label="Date" value={customerStep?.date || eventData.event_date || '--'} />
                         <InfoTile icon={<ChefHat className="w-4 h-4" />} label="Menu Items" value={(menuStep.menu || []).length || '--'} />
                       </div>
                       <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3">
@@ -3066,7 +3756,7 @@ return (
                 <>
                   <GeoOpsLeafletMap
                     role={workspaceRole}
-                    customer={customerStep}
+                    customer={customerStep || {}}
                     inventory={inventoryStep}
                     logistics={logisticsStep}
                   />
@@ -3267,6 +3957,89 @@ return (
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* ── Customer: Track Delivery floating CTA ── */}
+        <AnimatePresence>
+          {workspaceRole === 'customer' && agreementStatus === 'delivery_approved' && dashboardView !== 'delivery' && (
+            <motion.div
+              initial={{ y: 100, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 100, opacity: 0 }}
+              transition={{ type: 'spring', stiffness: 200, damping: 20 }}
+              className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-3 bg-gradient-to-r from-emerald-600 to-teal-600 text-white px-6 py-4 rounded-[2rem] shadow-2xl shadow-emerald-900/40 border border-emerald-500/30 backdrop-blur-md"
+            >
+              <div className="w-8 h-8 bg-white/20 rounded-xl flex items-center justify-center animate-bounce">
+                <Truck className="w-4 h-4" />
+              </div>
+              <div>
+                <p className="text-[8px] font-black uppercase tracking-widest opacity-70">Live GPS Update</p>
+                <p className="text-xs font-black">Your delivery is on its way!</p>
+              </div>
+              <button
+                onClick={() => setDashboardView('delivery')}
+                className="ml-2 bg-white text-emerald-700 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-50 transition-all shadow-md"
+              >
+                📍 Track Now
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* ── Staff: New Order Toast ── */}
+        <AnimatePresence>
+          {newOrderToast && (
+            <motion.div
+              initial={{ y: -80, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: -80, opacity: 0 }}
+              transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+              className="fixed top-6 right-6 z-[300] flex items-center gap-3 bg-emerald-600 text-white px-5 py-4 rounded-[1.5rem] shadow-2xl shadow-emerald-900/40 border border-emerald-500/30"
+            >
+              <div className="w-8 h-8 bg-white/20 rounded-xl flex items-center justify-center">
+                <Truck className="w-4 h-4" />
+              </div>
+              <div>
+                <p className="text-[8px] font-black uppercase tracking-widest opacity-70">New Assignment</p>
+                <p className="text-xs font-black">New delivery order received!</p>
+              </div>
+              <button
+                onClick={() => { setNewOrderToast(false); setDashboardView('staff-tasks'); }}
+                className="ml-2 bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
+              >
+                View
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {showShopDetails && (
+          <ShopDetailsModal
+            shopId={showShopDetails}
+            onClose={() => setShowShopDetails(null)}
+            onStartChat={async (shop) => {
+              setSelectedShop(shop);
+              setShowShopDetails(null);
+              setDashboardView('marketplace-chat');
+              if (activeConversationId) {
+                try {
+                  const updatedData = {
+                    ...eventData.eventData,
+                    selectedShop: shop
+                  };
+                  await mongoService.updateEvent(activeConversationId, {
+                    eventData: updatedData
+                  });
+                  setEventData((prev: any) => ({
+                    ...prev,
+                    eventData: updatedData
+                  }));
+                } catch (err) {
+                  console.error("Failed to save selected shop to event:", err);
+                }
+              }
+            }}
+          />
+        )}
       </>
     )}
   </div>
@@ -3755,7 +4528,7 @@ function FoodImageFrame({ item, compact = false }: { item: any, compact?: boolea
           className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" 
           onError={(e) => {
             (e.target as HTMLImageElement).style.display = 'none';
-            setDisplayUrl('');
+            setGeneratedUrl(null);
           }}
         />
         <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
@@ -3864,7 +4637,7 @@ function FoodDetailModal({ item, onClose }: { item: any, onClose: () => void }) 
   );
 }
 
-function AgentReport({ step, isExpanded, onToggle, handleChatSubmit, variant = 'accordion' }: { step: AgentStep, isExpanded: boolean, onToggle: () => void, handleChatSubmit: (e?: any, directInput?: string) => void, key?: any, variant?: 'accordion' | 'dashboard' }) {
+function AgentReport({ step, isExpanded, onToggle, handleChatSubmit, variant = 'accordion' }: { step: AgentStep, isExpanded: boolean, onToggle: () => void, handleChatSubmit?: (e?: any, directInput?: string) => void, key?: any, variant?: 'accordion' | 'dashboard' }) {
   const { agent, data } = step;
   const [selectedFood, setSelectedFood] = useState<any>(null);
 
@@ -3942,7 +4715,7 @@ function AgentReport({ step, isExpanded, onToggle, handleChatSubmit, variant = '
                         <button 
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleChatSubmit(undefined, `Replace '${item.dish}' with something else.`);
+                            handleChatSubmit?.(undefined, `Replace '${item.dish}' with something else.`);
                           }}
                           className="bg-white/90 backdrop-blur px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest text-slate-600 hover:text-emerald-600 hover:scale-105 transition shadow-md flex items-center gap-1.5"
                           title="Retry / Replace"
@@ -3972,7 +4745,7 @@ function AgentReport({ step, isExpanded, onToggle, handleChatSubmit, variant = '
                           className="w-full bg-slate-50 border border-slate-100 rounded-xl px-3 py-2.5 text-xs font-semibold text-slate-700 outline-none focus:border-emerald-300 focus:bg-white transition"
                           onBlur={(e) => {
                             if (e.target.value) {
-                               handleChatSubmit(undefined, `For ${item.dish}, please note: ${e.target.value}`);
+                               handleChatSubmit?.(undefined, `For ${item.dish}, please note: ${e.target.value}`);
                             }
                           }}
                         />
@@ -3998,7 +4771,7 @@ function AgentReport({ step, isExpanded, onToggle, handleChatSubmit, variant = '
               )}
 
               <button 
-                onClick={() => handleChatSubmit(undefined, "Add one more dish to the menu.")}
+                onClick={() => handleChatSubmit?.(undefined, "Add one more dish to the menu.")}
                 className="flex flex-col items-center justify-center gap-3 p-8 rounded-3xl border-2 border-dashed border-slate-200 text-slate-400 hover:border-emerald-300 hover:text-emerald-600 hover:bg-emerald-50/30 transition-all group min-h-[300px]"
               >
                 <div className="w-12 h-12 rounded-2xl bg-slate-50 flex items-center justify-center border border-slate-100 group-hover:bg-emerald-100 group-hover:border-emerald-200 transition-all">
@@ -4327,133 +5100,6 @@ function MenuEditor({ menu, onChange }: { menu: any[], onChange: (menu: any[]) =
 
 
 
-function CheckoutPortal({ shop, event, blueprint, status, onAccept, onFinalize }: { shop: any, event: any, blueprint: any[], status: string, onAccept: () => void, onFinalize: () => void }) {
-  const [msg, setMsg] = useState('');
-  const [localMsgs, setLocalMsgs] = useState<any[]>([
-    { role: 'admin', text: "Hello! We've received your catering blueprint. The menu looks great. Would you like to proceed with this quote?", time: 'Just now' }
-  ]);
 
-  const send = () => {
-    if (!msg.trim()) return;
-    setLocalMsgs([...localMsgs, { role: 'customer', text: msg, time: 'Just now' }]);
-    setMsg('');
-  };
-
-  return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid grid-cols-1 lg:grid-cols-2 h-[calc(100vh-140px)] gap-6 p-6 overflow-hidden">
-      <div className="flex flex-col gap-6 overflow-hidden">
-        <div className="bg-white border border-slate-200 rounded-[2rem] p-8 shadow-sm flex-shrink-0">
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 bg-emerald-100 rounded-2xl grid place-items-center text-emerald-700">
-                <ChefHat className="w-6 h-6" />
-              </div>
-              <div>
-                <h2 className="text-xl font-black text-slate-900">Casa Mesa Catering</h2>
-                <p className="text-xs text-slate-500">Official Partner Recommendation</p>
-              </div>
-            </div>
-            <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest ${status === 'finalized' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-              {status.toUpperCase()}
-            </span>
-          </div>
-
-          <div className="space-y-4">
-            <div className="flex justify-between items-center py-4 border-y border-slate-100">
-              <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Estimated Total</span>
-              <span className="text-2xl font-black text-slate-950">PHP 125,000</span>
-            </div>
-            {status === 'suggested' && (
-              <div className="flex gap-3">
-                <button onClick={onAccept} className="flex-1 py-4 bg-emerald-700 text-white rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-lg shadow-emerald-900/20">
-                  Accept Recommendation
-                </button>
-                <button className="flex-1 py-4 bg-slate-100 text-slate-600 rounded-2xl font-black uppercase tracking-widest hover:bg-slate-200 transition-all">
-                  Reject
-                </button>
-              </div>
-            )}
-            {status === 'accepted' && (
-              <button onClick={onFinalize} className="w-full py-4 bg-emerald-700 text-white rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-lg shadow-emerald-900/20">
-                Proceed to Final Agreement
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div className="bg-slate-50 border border-slate-200 rounded-[2rem] p-6 flex flex-col flex-1 overflow-hidden">
-          <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
-            {localMsgs.map((m, i) => (
-              <div key={i} className={`flex ${m.role === 'customer' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[80%] p-4 rounded-3xl text-sm font-medium ${m.role === 'customer' ? 'bg-emerald-700 text-white rounded-tr-none' : 'bg-white border border-slate-200 text-slate-800 rounded-tl-none'}`}>
-                  <p>{m.text}</p>
-                  <span className={`text-[8px] mt-1 block uppercase font-bold ${m.role === 'customer' ? 'text-emerald-200' : 'text-slate-400'}`}>{m.time}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="mt-4 flex gap-2">
-            <input
-              value={msg} onChange={e => setMsg(e.target.value)}
-              onKeyPress={e => e.key === 'Enter' && send()}
-              placeholder="Chat with catering owner..."
-              className="flex-1 bg-white border border-slate-200 rounded-2xl px-5 py-3 text-sm outline-none focus:border-emerald-500 shadow-sm"
-            />
-            <button onClick={send} className="w-12 h-12 bg-emerald-700 text-white rounded-2xl grid place-items-center hover:bg-emerald-800 transition-all shadow-lg shadow-emerald-900/20">
-              <Send className="w-5 h-5" />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-white border border-slate-200 rounded-[2rem] p-8 shadow-sm overflow-y-auto custom-scrollbar">
-        <h3 className="text-sm font-black uppercase tracking-[0.2em] text-slate-400 mb-8 flex items-center gap-2">
-          <ClipboardList className="w-4 h-4" />
-          Catering Receipt (Blueprint)
-        </h3>
-        <div className="space-y-8">
-          <section className="space-y-3">
-            <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Event Brief</p>
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
-                <p className="text-[8px] text-slate-400 uppercase font-black mb-1">Guests</p>
-                <p className="font-bold text-slate-800">{event.guest_count || '150'}</p>
-              </div>
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
-                <p className="text-[8px] text-slate-400 uppercase font-black mb-1">Cuisine</p>
-                <p className="font-bold text-slate-800">{event.cuisine_preference || 'Filipino'}</p>
-              </div>
-            </div>
-          </section>
-
-          <section className="space-y-3">
-            <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Menu Selection</p>
-            <div className="space-y-2">
-              {blueprint.find(s => s.agent.includes('Head Chef'))?.data.menu?.map((m: any, i: number) => (
-                <div key={i} className="flex justify-between items-center text-xs p-3 border-b border-slate-50">
-                  <span className="font-bold text-slate-800">{m.dish}</span>
-                  <span className="text-[10px] text-slate-400">{m.portion_per_guest}</span>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="space-y-3">
-            <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Operational Timeline</p>
-            <div className="space-y-2 border-l-2 border-emerald-100 pl-4 ml-2">
-              {blueprint.find(s => s.agent.includes('Logistics'))?.data.timeline?.slice(0, 5).map((t: any, i: number) => (
-                <div key={i} className="relative py-1">
-                  <div className="absolute -left-[21px] top-2.5 w-2 h-2 rounded-full bg-emerald-500 border-2 border-white shadow-sm" />
-                  <p className="text-[10px] font-black text-emerald-800 font-mono">{t.time}</p>
-                  <p className="text-[11px] font-medium text-slate-600">{t.activity}</p>
-                </div>
-              ))}
-            </div>
-          </section>
-        </div>
-      </div>
-    </motion.div>
-  );
-}
 
 

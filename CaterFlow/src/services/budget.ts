@@ -95,14 +95,14 @@ export function calculateOrderFinance(
         category: String(item?.category || item?.tags?.[0] || "Main"),
         quantity,
         unitCost,
-        // price is per-pax; total = unitCost × guests (quantity = servings count, not price multiplier)
-        lineTotal: unitCost * guests,
+        // price is per-pax; total = unitCost × guests × quantity
+        lineTotal: unitCost * guests * quantity,
       };
     })
     .filter((line) => line.unitCost > 0);
 
-  // totalPerGuest = sum of all per-pax prices across dishes
-  const totalPerGuest = lines.reduce((sum, line) => sum + line.unitCost, 0);
+  // totalPerGuest = sum of all per-pax prices (including quantity) across dishes
+  const totalPerGuest = lines.reduce((sum, line) => sum + (line.unitCost * line.quantity), 0);
   const menuTotal = lines.reduce((sum, line) => sum + line.lineTotal, 0);
   const estimatedTotal = menuTotal > 0 ? menuTotal : quoteFallback.value;
   const budgetTotal = parsedBudget.value;

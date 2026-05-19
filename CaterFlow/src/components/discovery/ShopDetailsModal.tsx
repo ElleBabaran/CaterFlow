@@ -14,6 +14,24 @@ import {
   DollarSign,
   Utensils
 } from 'lucide-react';
+import { MapContainer, Marker, Popup, TileLayer } from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
+import L from 'leaflet';
+
+// Fix Leaflet default icon URLs (broken by webpack asset bundling)
+delete (L.Icon.Default.prototype as any)._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+});
+
+const isValidCoordinate = (coords: any): coords is { lat: number; lng: number } => {
+  return typeof coords === 'object' && 
+         coords !== null && 
+         typeof coords.lat === 'number' && !isNaN(coords.lat) && 
+         typeof coords.lng === 'number' && !isNaN(coords.lng);
+};
 
 interface ShopDetailsModalProps {
   shopId: string;
@@ -150,15 +168,22 @@ export const ShopDetailsModal: React.FC<ShopDetailsModalProps> = ({ shopId, onCl
                 </div>
               </div>
 
-              {/* Mini Map Placeholder */}
-              <div className="bg-slate-100 rounded-[2.5rem] h-48 overflow-hidden relative border border-slate-200">
-                <div className="absolute inset-0 bg-slate-200 animate-pulse flex items-center justify-center">
-                  <MapPin className="w-10 h-10 text-slate-300" />
+              {/* Mini Map */}
+              {isValidCoordinate(shop.coordinates) ? (
+                <div className="rounded-[2.5rem] h-48 overflow-hidden border border-emerald-100 shadow-inner">
+                  <MapContainer center={[shop.coordinates.lat, shop.coordinates.lng]} zoom={15} style={{ height: '100%', width: '100%' }} zoomControl={false}>
+                    <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                    <Marker position={[shop.coordinates.lat, shop.coordinates.lng]}>
+                      <Popup><strong>{shop.name}</strong><br />{shop.location}</Popup>
+                    </Marker>
+                  </MapContainer>
                 </div>
-                <div className="absolute inset-0 bg-emerald-500/10 backdrop-blur-[2px] flex items-center justify-center">
-                  <span className="bg-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border border-slate-200 shadow-sm">Interactive Map</span>
+              ) : (
+                <div className="bg-emerald-50 border border-emerald-100 rounded-[2.5rem] h-48 flex flex-col items-center justify-center gap-2">
+                  <MapPin className="w-8 h-8 text-emerald-400" />
+                  <p className="text-[10px] font-black text-emerald-700 uppercase tracking-widest">Location: {shop.location || 'TBD'}</p>
                 </div>
-              </div>
+              )}
             </div>
           </div>
         </div>

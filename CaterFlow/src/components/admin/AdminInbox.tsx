@@ -82,18 +82,18 @@ export function AdminInbox({
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full flex overflow-hidden admin-card">
       {/* Sidebar — plan list */}
-      <div className="w-72 flex-shrink-0 border-r border-[var(--app-border)] flex flex-col bg-[var(--header-bg)]">
-        <div className="p-5 border-b border-[var(--app-border)] flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-[var(--app-accent)]/10 border border-[var(--app-accent)]/20 flex items-center justify-center">
-            <Inbox className="w-4.5 h-4.5 text-[var(--app-accent)]" />
+      <div className="w-72 flex-shrink-0 border-r border-[var(--border-color)] flex flex-col bg-[var(--header-bg)]">
+        <div className="p-5 border-b border-[var(--border-color)] flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-[var(--accent-color)]/10 border border-[var(--accent-color)]/20 flex items-center justify-center">
+            <Inbox className="w-4.5 h-4.5 text-[var(--accent-color)]" />
           </div>
           <div>
-            <h2 className="text-xs font-black uppercase tracking-widest text-[var(--app-text)]">Inbox</h2>
+            <h2 className="text-xs font-black uppercase tracking-widest text-[var(--text-color)]">Inbox</h2>
             <p className="text-[9px] text-slate-500">{plans.length} plan{plans.length !== 1 ? 's' : ''} received</p>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto divide-y divide-[var(--app-border)]">
+        <div className="flex-1 overflow-y-auto divide-y divide-[var(--border-color)]">
           {plans.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
               <Inbox className="w-8 h-8 text-slate-700 mb-2" />
@@ -105,10 +105,10 @@ export function AdminInbox({
               <button
                 key={plan._id}
                 onClick={() => handleSelect(plan)}
-                className={`w-full text-left p-4 hover:bg-white/5 transition-colors ${selectedPlan?._id === plan._id ? 'bg-[var(--app-accent)]/10' : ''}`}
+                className={`w-full text-left p-4 hover:bg-white/5 transition-colors ${selectedPlan?._id === plan._id ? 'bg-[var(--accent-color)]/10' : ''}`}
               >
                 <div className="flex items-start justify-between gap-2 mb-2">
-                  <p className="text-xs font-black text-[var(--app-text)] truncate">{plan.customerName}</p>
+                  <p className="text-xs font-black text-[var(--text-color)] truncate">{plan.customerName}</p>
                   <span className={`text-[7px] font-black uppercase px-2 py-0.5 rounded-full flex-shrink-0 ${statusColor(plan.status)}`}>
                     {plan.status}
                   </span>
@@ -122,7 +122,7 @@ export function AdminInbox({
       </div>
 
       {/* Main — plan detail + chat */}
-      <div className="flex-1 flex flex-col overflow-hidden bg-[var(--app-bg)]">
+      <div className="flex-1 flex flex-col overflow-hidden bg-[var(--bg-color)]">
         <AnimatePresence mode="wait">
           {!selectedPlan ? (
             <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex-1 flex flex-col items-center justify-center text-center p-8">
@@ -133,10 +133,10 @@ export function AdminInbox({
           ) : (
             <motion.div key={selectedPlan._id} initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} className="flex-1 flex flex-col overflow-hidden">
               {/* Plan detail header */}
-              <div className="p-6 border-b border-[var(--app-border)] bg-[var(--card-bg)] space-y-4">
+              <div className="p-6 border-b border-[var(--border-color)] bg-[var(--card-bg)] space-y-4">
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <p className="text-lg font-black text-[var(--app-text)]">{selectedPlan.customerName}</p>
+                    <p className="text-lg font-black text-[var(--text-color)]">{selectedPlan.customerName}</p>
                     <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">{selectedPlan.customerEmail}</p>
                   </div>
                   <div className="flex gap-2">
@@ -164,7 +164,7 @@ export function AdminInbox({
                           type="text" 
                           value={deliveryLocation} 
                           onChange={e => setDeliveryLocation(e.target.value)} 
-                          className="w-full bg-[var(--app-bg)] border border-[var(--app-border)] rounded-xl px-4 py-2 text-xs font-bold text-[var(--app-text)] outline-none focus:border-purple-500 transition-colors"
+                          className="w-full bg-[var(--bg-color)] border border-[var(--border-color)] rounded-xl px-4 py-2 text-xs font-bold text-[var(--text-color)] outline-none focus:border-purple-500 transition-colors"
                           placeholder="e.g. 14.5995, 120.9842 or 123 Main St"
                         />
                       </div>
@@ -196,10 +196,10 @@ export function AdminInbox({
                   ].map(([Icon, label, value]: any) => (
                     <div key={label} className="bg-white/5 border border-white/5 rounded-2xl p-4 space-y-1">
                       <div className="flex items-center gap-1.5">
-                        <Icon className="w-3 h-3 text-[var(--app-accent)]" />
+                        <Icon className="w-3 h-3 text-[var(--accent-color)]" />
                         <p className="text-[9px] font-black uppercase tracking-widest text-slate-500">{label}</p>
                       </div>
-                      <p className="text-xs font-black text-[var(--app-text)]">{value}</p>
+                      <p className="text-xs font-black text-[var(--text-color)]">{value}</p>
                     </div>
                   ))}
                 </div>
@@ -211,7 +211,7 @@ export function AdminInbox({
                     </p>
                     <div className="flex flex-wrap gap-2">
                       {selectedPlan.menuSummary.map(dish => (
-                        <span key={dish} className="rounded-full bg-white/5 border border-white/10 px-3 py-1 text-[9px] font-bold text-[var(--app-text)]">{dish}</span>
+                        <span key={dish} className="rounded-full bg-white/5 border border-white/10 px-3 py-1 text-[9px] font-bold text-[var(--text-color)]">{dish}</span>
                       ))}
                     </div>
                   </div>
@@ -219,14 +219,14 @@ export function AdminInbox({
               </div>
 
               {/* Chat */}
-              <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-[var(--app-bg)]">
+              <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-[var(--bg-color)]">
                 <div className="flex justify-center">
                   <span className="text-[9px] font-black uppercase tracking-[0.2em] text-slate-600 bg-white/5 px-4 py-1 rounded-full border border-white/5">Secured Conversation</span>
                 </div>
                 {(messages[selectedPlan._id] || []).map((msg, i) => (
                   <div key={i} className={`flex ${msg.isAdmin ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-[75%] rounded-2xl px-4 py-3 text-[13px] leading-relaxed shadow-lg ${
-                      msg.isAdmin ? 'bg-[var(--app-accent)] text-[#0c111d] font-bold rounded-br-md shadow-[var(--app-accent)]/5' : 'bg-[var(--card-bg)] text-[var(--app-text)] border border-[var(--app-border)] rounded-bl-md'
+                      msg.isAdmin ? 'bg-[var(--accent-color)] text-[#0c111d] font-bold rounded-br-md shadow-[var(--accent-color)]/5' : 'bg-[var(--card-bg)] text-[var(--text-color)] border border-[var(--border-color)] rounded-bl-md'
                     }`}>
                       <p>{msg.text}</p>
                       <p className={`text-[8px] mt-2 opacity-60 font-black uppercase tracking-widest ${msg.isAdmin ? 'text-[#0c111d]' : 'text-slate-400'}`}>
@@ -244,7 +244,7 @@ export function AdminInbox({
               </div>
 
               {/* Message input */}
-              <div className="p-4 bg-[var(--card-bg)] border-t border-[var(--app-border)]">
+              <div className="p-4 bg-[var(--card-bg)] border-t border-[var(--border-color)]">
                 <form onSubmit={e => { e.preventDefault(); handleSend(); }} className="flex gap-3">
                   <input
                     value={newMsg}

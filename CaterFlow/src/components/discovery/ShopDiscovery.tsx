@@ -10,7 +10,8 @@ import {
   Info,
   ExternalLink,
   MessageCircle,
-  Award
+  Award,
+  X
 } from 'lucide-react';
 
 interface Shop {
@@ -28,8 +29,9 @@ interface Shop {
 
 export const ShopDiscovery: React.FC<{ 
   eventData: any, 
-  onSelectShop: (shopId: string) => void 
-}> = ({ eventData, onSelectShop }) => {
+  onSelectShop: (shopId: string) => void,
+  onClose?: () => void
+}> = ({ eventData, onSelectShop, onClose }) => {
   const [shops, setShops] = useState<Shop[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState(eventData.event_location || '');
@@ -41,7 +43,7 @@ export const ShopDiscovery: React.FC<{
   const fetchShops = async () => {
     setLoading(true);
     try {
-      const response = await fetch(`/api/shops/discovery?location=${searchTerm}`);
+      const response = await fetch('/api/shops/discovery?location=' + encodeURIComponent(searchTerm) + '&budget=' + encodeURIComponent(eventData?.budget || '') + '&eventType=' + encodeURIComponent(eventData?.event_type || ''));
       const data = await response.json();
       setShops(data);
     } catch (err) {
@@ -52,7 +54,16 @@ export const ShopDiscovery: React.FC<{
   };
 
   return (
-    <div className="w-full space-y-10 py-10 px-4 max-w-7xl mx-auto custom-scrollbar overflow-y-auto max-h-[85vh]">
+    <div className="w-full space-y-10 py-10 px-4 max-w-7xl mx-auto custom-scrollbar overflow-y-auto max-h-[85vh] relative">
+      {onClose && (
+        <button 
+          onClick={onClose}
+          className="absolute right-4 top-0 p-3 bg-white border border-slate-200 text-slate-400 hover:text-rose-500 hover:border-rose-100 rounded-2xl transition-all shadow-sm z-10 flex items-center gap-2 text-[10px] font-black uppercase tracking-widest"
+        >
+          <X className="w-4 h-4" />
+          Close Discovery
+        </button>
+      )}
       {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
         <div className="space-y-2">
@@ -97,10 +108,41 @@ export const ShopDiscovery: React.FC<{
           ))}
         </div>
       ) : shops.length > 0 ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-          {shops.map((shop, idx) => (
-            <ShopCard key={shop._id} shop={shop} idx={idx} onSelect={() => onSelectShop(shop._id)} />
-          ))}
+        <div className="space-y-10">
+          {/* AI Suggested Section */}
+          {(() => {
+            const aiSuggested = shops.slice(0, 3);
+            const restShops = shops.slice(3);
+            return (
+              <>
+                {aiSuggested.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-4">
+                      <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                      <span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">AI-Suggested For Your Event</span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                      {aiSuggested.map((shop, idx) => (
+                        <ShopCard key={shop._id} shop={shop} idx={idx} onSelect={() => onSelectShop(shop._id)} isTopMatch={idx === 0} />
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {restShops.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-4">
+                      <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">All Providers</span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                      {restShops.map((shop, idx) => (
+                        <ShopCard key={shop._id} shop={shop} idx={idx + 3} onSelect={() => onSelectShop(shop._id)} />
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       ) : (
         <div className="text-center py-24 bg-white rounded-[3rem] border-2 border-dashed border-slate-200">
@@ -115,7 +157,7 @@ export const ShopDiscovery: React.FC<{
   );
 };
 
-const ShopCard: React.FC<{ shop: Shop, idx: number, onSelect: () => void }> = ({ shop, idx, onSelect }) => {
+const ShopCard: React.FC<{ shop: Shop, idx: number, onSelect: () => void, isTopMatch?: boolean }> = ({ shop, idx, onSelect, isTopMatch }) => {
   const bannerImg = shop.banner || `https://images.unsplash.com/photo-1555244162-803834f70033?q=80&w=800&auto=format&fit=crop`;
   const logoImg = shop.logo || `https://ui-avatars.com/api/?name=${encodeURIComponent(shop.name)}&background=10b981&color=fff&bold=true`;
 
@@ -133,6 +175,9 @@ const ShopCard: React.FC<{ shop: Shop, idx: number, onSelect: () => void }> = ({
           className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-1000"
         />
         <div className="absolute inset-0 bg-gradient-to-t from-slate-900/80 via-transparent to-transparent opacity-60"></div>
+        {isTopMatch && (
+          <div className="absolute top-4 right-4 bg-emerald-600 text-white px-3 py-1 rounded-xl text-[9px] font-black uppercase tracking-widest z-10 shadow-lg">⭐ Top Match</div>
+        )}
         <div className="absolute top-4 left-4">
           <div className="bg-white/90 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/20 flex items-center gap-2 shadow-lg">
             <Star className="w-3 h-3 text-amber-500 fill-amber-500" />

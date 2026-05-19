@@ -886,6 +886,53 @@ function validateAnswerDeterministically(questionKey: string, questionText: stri
   return { valid: true, confident: false };
 }
 
+export async function getFoodDetails(dishName: string, description: string) {
+  const prompt = `You are a Master Chef. Generate authentic recipe and cooking details for: "${dishName}" (${description}). 
+  You MUST return ONLY a raw JSON matching this schema:
+  {
+    "ingredients": [
+      { "item": "Main Ingredient (e.g. Beef)", "qty": "150g" },
+      { "item": "Second Ingredient", "qty": "50g" }
+    ],
+    "nutrition": {
+      "calories": 320,
+      "protein": "25g",
+      "carbs": "12g",
+      "fat": "6g"
+    },
+    "how_to_cook": [
+      "Step 1: Prep the ingredients...",
+      "Step 2: Sauté the aromatics...",
+      "Step 3: Simmer until tender..."
+    ]
+  }`;
+  
+  try {
+    const responseText = await callAI(prompt, true, "You are a professional Master Chef who provides exact cooking recipes, ingredients, and nutritional values.") || "{}";
+    return parseAIJSON(responseText);
+  } catch (err) {
+    console.error("Chef AI call failed, using heuristic recipe:", err);
+    return {
+      ingredients: [
+        { "item": "Primary Protein/Ingredient", "qty": "200g" },
+        { "item": "Chef Special Herbs & Seasonings", "qty": "to taste" }
+      ],
+      nutrition: {
+        "calories": 300,
+        "protein": "20g",
+        "carbs": "15g",
+        "fat": "8g"
+      },
+      how_to_cook: [
+        "Step 1: Prep and wash all ingredients carefully.",
+        "Step 2: Season the main items with signature Chef herbs.",
+        "Step 3: Cook at optimal temperature until fully flavored and tender.",
+        "Step 4: Garnish and serve fresh."
+      ]
+    };
+  }
+}
+
 function dietarySafetyControls(input: string) {
   return ["Standard safety controls"];
 }

@@ -11,14 +11,15 @@ import {
   AlertCircle,
   FileText,
   User,
-  ChefHat
+  ChefHat,
+  X
 } from 'lucide-react';
 
 interface Message {
   senderId: string;
   role: 'customer' | 'admin';
   text: string;
-  type: 'text' | 'receipt' | 'quote';
+  type: 'text' | 'receipt' | 'quote' | 'chat_history';
   attachment?: any;
   timestamp: Date;
 }
@@ -28,8 +29,10 @@ export const MarketplaceChat: React.FC<{
   shop: any, 
   currentUser: any,
   eventData: any,
-  menuItems: any[]
-}> = ({ eventId, shop, currentUser, eventData, menuItems }) => {
+  menuItems: any[],
+  chatbotHistory?: any[],
+  onClose?: () => void
+}> = ({ eventId, shop, currentUser, eventData, menuItems, chatbotHistory = [], onClose }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [isSending, setIsSending] = useState(false);
@@ -60,31 +63,74 @@ export const MarketplaceChat: React.FC<{
     }
   }, [messages]);
 
-  const handleSendMessage = async (type: 'text' | 'receipt' = 'text', customPayload?: any) => {
+  const handleSendMessage = async (type: 'text' | 'receipt' | 'chat_history' = 'text', customPayload?: any) => {
     if ((!inputText.trim() && type === 'text') || isSending) return;
 
     setIsSending(true);
     const payload = {
       eventId,
       shopId: shop._id,
-      text: type === 'receipt' ? "I've sent an order summary for review." : inputText,
+      text: type === 'receipt' 
+        ? "I've sent an order summary for review." 
+        : type === 'chat_history'
+        ? "I've shared my AI chatbot intake conversation."
+        : inputText,
       type,
       attachment: type === 'receipt' ? {
         menu: menuItems,
         event: eventData,
         customer: currentUser.displayName || currentUser.email
+      } : type === 'chat_history' ? {
+        chatHistory: chatbotHistory,
+        customer: currentUser.displayName || currentUser.email
       } : null
     };
 
     try {
+      const token = await currentUser.getIdToken();
       const response = await fetch('/api/chat/send', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify(payload)
       });
       const data = await response.json();
       setMessages(data.messages);
       setInputText('');
+
+      if (type === 'receipt') {
+        const cleanPrice = (val: any) => {
+          const text = String(val || "").trim();
+          const numeric = text.replace(/[, ]/g, "").match(/\d+(?:\.\d+)?/)?.[0];
+          const amount = numeric ? Number(numeric) : 0;
+          return Number.isFinite(amount) ? amount : 0;
+        };
+        const quoteVal = menuItems?.reduce((acc: number, cur: any) => acc + (cleanPrice(cur.price) * (cur.quantity || 1)), 0) || 0;
+        
+        const planPayload = {
+          shopId: shop._id,
+          eventId: eventId,
+          customerName: currentUser.displayName || currentUser.email || 'Client',
+          customerEmail: currentUser.email || 'client@caterflow.com',
+          eventType: eventData.event_type || eventData.eventType || 'Catering Event',
+          guests: Number(eventData.guest_count || eventData.guests || 0),
+          budget: String(eventData.budget || 'TBD'),
+          location: eventData.event_location || eventData.location || 'TBD',
+          date: eventData.event_date || eventData.date || 'TBD',
+          menuSummary: menuItems?.map((item: any) => item.dish) || [],
+          quote: `₱${quoteVal.toLocaleString()}`
+        };
+        await fetch('/api/plans/send', {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(planPayload)
+        });
+      }
     } catch (err) {
       console.error("Failed to send message:", err);
     } finally {
@@ -109,6 +155,15 @@ export const MarketplaceChat: React.FC<{
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {chatbotHistory && chatbotHistory.length > 0 && (
+            <button 
+              onClick={() => handleSendMessage('chat_history')}
+              className="hidden md:flex items-center gap-2 bg-amber-50 text-amber-700 px-4 py-2.5 rounded-xl border border-amber-100 text-[10px] font-black uppercase tracking-widest hover:bg-amber-100 transition-all"
+            >
+              <MessageCircle className="w-4 h-4" />
+              Send Chatbot History
+            </button>
+          )}
           <button 
             onClick={() => handleSendMessage('receipt')}
             className="hidden md:flex items-center gap-2 bg-emerald-50 text-emerald-700 px-4 py-2.5 rounded-xl border border-emerald-100 text-[10px] font-black uppercase tracking-widest hover:bg-emerald-100 transition-all"
@@ -119,6 +174,15 @@ export const MarketplaceChat: React.FC<{
           <button className="p-3 bg-slate-50 text-slate-400 rounded-xl hover:bg-slate-100">
             <MoreVertical className="w-5 h-5" />
           </button>
+          {onClose && (
+            <button 
+              onClick={onClose}
+              className="p-3 bg-slate-50 text-slate-400 rounded-xl hover:bg-rose-50 hover:text-rose-500 transition-all border border-slate-100"
+              title="Close Chat & Return to Chatbot"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -139,6 +203,8 @@ export const MarketplaceChat: React.FC<{
             <div className={`max-w-[75%] space-y-2`}>
               {msg.type === 'receipt' ? (
                 <OrderSummaryCard attachment={msg.attachment} isOwn={msg.senderId === currentUser.uid} />
+              ) : msg.type === 'chat_history' ? (
+                <ChatHistoryCard attachment={msg.attachment} isOwn={msg.senderId === currentUser.uid} />
               ) : (
                 <div className={`px-5 py-3.5 rounded-[1.8rem] shadow-sm text-sm leading-relaxed ${
                   msg.senderId === currentUser.uid 
@@ -231,6 +297,48 @@ const OrderSummaryCard: React.FC<{ attachment: any, isOwn: boolean }> = ({ attac
             <span className="text-lg font-black text-emerald-700">₱{menu?.reduce((acc: number, cur: any) => acc + (cleanPrice(cur.price) * (cur.quantity || 1)), 0).toLocaleString()}</span>
           </div>
         </div>
+      </div>
+    </div>
+  );
+};
+
+const ChatHistoryCard: React.FC<{ attachment: any, isOwn: boolean }> = ({ attachment, isOwn }) => {
+  if (!attachment) return null;
+  const { chatHistory, customer } = attachment;
+
+  return (
+    <div className={`bg-white rounded-[2.5rem] border border-slate-200 overflow-hidden shadow-xl max-w-md ${isOwn ? 'ml-auto' : ''}`}>
+      <div className="bg-slate-900 p-6 text-white animate-pulse-subtle">
+        <div className="flex items-center justify-between mb-2">
+          <MessageCircle className="w-5 h-5 text-amber-400 animate-bounce" />
+          <span className="text-[9px] font-black uppercase tracking-[0.2em] text-amber-400">Intake Conversation</span>
+        </div>
+        <h4 className="text-xl font-black uppercase tracking-tight">Chatbot Dialogue Log</h4>
+        <p className="text-[10px] text-slate-400 uppercase tracking-wider font-bold mt-1">Shared by client: {customer || 'Anonymous'}</p>
+      </div>
+      <div className="p-6 max-h-[300px] overflow-y-auto custom-scrollbar space-y-4 bg-slate-50">
+        {Array.isArray(chatHistory) && chatHistory.map((item: any, i: number) => {
+          const isUser = item.role === 'user';
+          return (
+            <div key={i} className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
+              <span className="text-[8px] font-black uppercase text-slate-400 tracking-widest mb-1">
+                {isUser ? 'Client Request' : 'CaterFlow Planner Agent'}
+              </span>
+              <div className={`px-4 py-2.5 rounded-2xl text-[11px] leading-relaxed max-w-[90%] font-medium ${
+                isUser 
+                  ? 'bg-slate-800 text-white rounded-tr-none' 
+                  : 'bg-white text-slate-800 border border-slate-200 rounded-tl-none'
+              }`}>
+                {item.content}
+              </div>
+            </div>
+          );
+        })}
+        {(!chatHistory || chatHistory.length === 0) && (
+          <div className="py-8 text-center text-slate-400 italic text-[11px]">
+            No raw dialogue available
+          </div>
+        )}
       </div>
     </div>
   );

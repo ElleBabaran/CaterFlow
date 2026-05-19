@@ -60,20 +60,20 @@ export function AdminInventory({ shopId, initialItems, onSave }: {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="p-6 space-y-8 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between border-b border-[var(--app-border)] pb-6">
+      <div className="flex items-center justify-between border-b border-[var(--border-color)] pb-6">
         <div className="flex items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-[var(--app-accent)]/10 border border-[var(--app-accent)]/20 flex items-center justify-center">
-            <Package className="w-6 h-6 text-[var(--app-accent)]" />
+          <div className="w-12 h-12 rounded-2xl bg-[var(--accent-color)]/10 border border-[var(--accent-color)]/20 flex items-center justify-center">
+            <Package className="w-6 h-6 text-[var(--accent-color)]" />
           </div>
           <div>
-            <h2 className="text-lg font-black text-[var(--app-text)] uppercase tracking-widest">Menu Inventory</h2>
+            <h2 className="text-lg font-black text-[var(--text-color)] uppercase tracking-widest">Menu Inventory</h2>
             <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Manage your dishes and pricing for customers</p>
           </div>
         </div>
         <div className="flex gap-3">
           <button
             onClick={addItem}
-            className="admin-button-secondary border-[var(--app-accent)]/30 text-[var(--app-accent)] flex items-center gap-2"
+            className="admin-button-secondary border-[var(--accent-color)]/30 text-[var(--accent-color)] flex items-center gap-2"
           >
             <Plus className="w-4 h-4" />
             Add Dish
@@ -111,7 +111,7 @@ export function AdminInventory({ shopId, initialItems, onSave }: {
                 exit={{ opacity: 0, x: 40 }}
                 className="admin-card p-8 bg-gradient-to-br from-[var(--card-bg)] to-[#1a2235] relative overflow-hidden group"
               >
-                <div className="absolute top-0 right-0 w-32 h-32 bg-[var(--app-accent)]/5 blur-3xl rounded-full -mr-16 -mt-16 group-hover:bg-[var(--app-accent)]/10 transition-colors" />
+                <div className="absolute top-0 right-0 w-32 h-32 bg-[var(--accent-color)]/5 blur-3xl rounded-full -mr-16 -mt-16 group-hover:bg-[var(--accent-color)]/10 transition-colors" />
                 
                 <div className="flex items-start justify-between gap-6 relative z-10">
                   <span className="min-w-[2.5rem] h-10 rounded-2xl bg-white/5 border border-white/10 text-[10px] font-black text-slate-500 flex items-center justify-center uppercase tracking-widest">
@@ -167,7 +167,7 @@ export function AdminInventory({ shopId, initialItems, onSave }: {
                           onClick={() => toggleTag(item.id, tag)}
                           className={`rounded-full px-4 py-1.5 text-[9px] font-black uppercase tracking-widest transition-all border ${
                             item.dietaryTags.includes(tag)
-                              ? 'bg-[var(--app-accent)] text-[#0c111d] border-[var(--app-accent)] shadow-lg shadow-[var(--app-accent)]/10'
+                              ? 'bg-[var(--accent-color)] text-[#0c111d] border-[var(--accent-color)] shadow-lg shadow-[var(--accent-color)]/10'
                               : 'bg-white/5 text-slate-500 border-white/5 hover:bg-white/10 hover:text-slate-300'
                           }`}
                         >
@@ -184,11 +184,11 @@ export function AdminInventory({ shopId, initialItems, onSave }: {
                     <button
                       type="button"
                       onClick={() => updateItem(item.id, 'available', !item.available)}
-                      className={`relative inline-flex h-6 w-11 rounded-full transition-colors ${item.available ? 'bg-[var(--app-accent)]' : 'bg-slate-800'}`}
+                      className={`relative inline-flex h-6 w-11 rounded-full transition-colors ${item.available ? 'bg-[var(--accent-color)]' : 'bg-slate-800'}`}
                     >
                       <span className={`inline-block h-5 w-5 rounded-full bg-white shadow-xl transition-transform mt-0.5 ${item.available ? 'translate-x-5.5' : 'translate-x-0.5'}`} />
                     </button>
-                    <span className={`text-[10px] font-black uppercase tracking-widest min-w-[70px] ${item.available ? 'text-[var(--app-accent)]' : 'text-slate-600'}`}>
+                    <span className={`text-[10px] font-black uppercase tracking-widest min-w-[70px] ${item.available ? 'text-[var(--accent-color)]' : 'text-slate-600'}`}>
                       {item.available ? 'Public' : 'Hidden'}
                     </span>
                   </div>

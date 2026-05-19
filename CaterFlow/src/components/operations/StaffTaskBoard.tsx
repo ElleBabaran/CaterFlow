@@ -33,6 +33,8 @@ interface StaffTaskBoardProps {
   guestCount?: number;
   logisticsTimeline?: any[];
   eventData?: any;
+  assignedOrders?: any[];
+  onSelectOrder?: (order: any) => void;
 }
 
 export function StaffTaskBoard({
@@ -42,8 +44,12 @@ export function StaffTaskBoard({
   guestCount = 0,
   logisticsTimeline = [],
   eventData = {},
+  assignedOrders = [],
+  onSelectOrder,
 }: StaffTaskBoardProps) {
   const [activeTab, setActiveTab] = useState<'roster' | 'cooking' | 'brief'>('roster');
+
+  const deliveryReadyOrders = (assignedOrders || []).filter(o => o.status === 'delivery_approved' || o.eventData?.delivery_status === 'transit' || o.eventData?.delivery_status === 'prep');
 
   const guests = Math.max(1, Number(guestCount) || Number(eventData?.guest_count) || 1);
   const cooking = estimateCookingMinutes(menu, guests);
@@ -113,6 +119,26 @@ export function StaffTaskBoard({
         </div>
       )}
 
+      {/* Delivery Ready Banner */}
+      {deliveryReadyOrders.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-gradient-to-r from-emerald-600 to-teal-600 rounded-[2rem] p-5 text-white shadow-xl shadow-emerald-900/20 flex items-center justify-between gap-4"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center flex-shrink-0">
+              <Truck className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest opacity-80">Delivery Ready</p>
+              <p className="text-sm font-black">{deliveryReadyOrders.length} order{deliveryReadyOrders.length > 1 ? 's' : ''} awaiting dispatch</p>
+            </div>
+          </div>
+          <div className="w-3 h-3 rounded-full bg-white animate-ping" />
+        </motion.div>
+      )}
+
       {/* Tab Switcher */}
       <div className="flex gap-2 bg-slate-50 border border-slate-100 p-1.5 rounded-2xl">
         {(
@@ -145,10 +171,63 @@ export function StaffTaskBoard({
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
-            className="grid grid-cols-1 md:grid-cols-2 gap-6"
+            className="grid grid-cols-1 lg:grid-cols-3 gap-6"
           >
-            {/* Active tasks */}
-            <div className="bg-white rounded-[2rem] border border-slate-200 p-6 shadow-sm">
+            {/* Column 1: Assigned Catering Orders */}
+            <div className="lg:col-span-1 bg-white rounded-[2rem] border border-slate-200 p-6 shadow-sm flex flex-col space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
+                  <Package className="w-4 h-4 text-emerald-500" />
+                  Assigned Orders
+                </h3>
+                <span className="text-[10px] font-black text-emerald-755 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-100 uppercase tracking-widest">
+                  {assignedOrders.length} Active
+                </span>
+              </div>
+              <div className="space-y-3 overflow-y-auto max-h-[50vh] pr-1">
+                {assignedOrders.map((order, i) => {
+                  const data = order.eventData || {};
+                  return (
+                    <div 
+                      key={order._id || i}
+                      className="p-4 rounded-2xl border border-slate-100 bg-slate-50 hover:bg-slate-100/50 transition flex flex-col space-y-3"
+                    >
+                      <div>
+                        <span className="text-[8px] font-black text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100 uppercase tracking-wider">
+                          Active Agreement
+                        </span>
+                        <h4 className="text-xs font-black text-slate-800 uppercase tracking-tight mt-1.5">
+                          {data.event_type || "Catering Event"} Order
+                        </h4>
+                        <p className="text-[10px] text-slate-500 font-medium mt-0.5">{data.event_location || "TBD Address"}</p>
+                      </div>
+                      
+                      <div className="flex items-center justify-between text-[9px] text-slate-400 font-bold uppercase tracking-wider border-t border-slate-200/60 pt-2">
+                        <span>{data.guest_count || 100} Guests</span>
+                        <span className="text-slate-500 font-black">{data.delivery_status || 'Prep'}</span>
+                      </div>
+
+                      {onSelectOrder && (
+                        <button
+                          onClick={() => onSelectOrder(order)}
+                          className="w-full py-2 bg-slate-900 text-white rounded-xl text-[9px] font-black uppercase tracking-widest hover:bg-slate-800 transition active:scale-95"
+                        >
+                          Manage Delivery Tracking
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+                {assignedOrders.length === 0 && (
+                  <div className="py-12 text-center text-slate-300 italic text-xs uppercase tracking-widest">
+                    No active shop orders assigned
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Active tasks (Column 2) */}
+            <div className="lg:col-span-1 bg-white rounded-[2rem] border border-slate-200 p-6 shadow-sm">
               <div className="flex items-center justify-between mb-5">
                 <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
                   <Clock className="w-4 h-4 text-amber-500" />

@@ -1,7 +1,10 @@
 // Pool of keys from the user-provided repository to ensure high availability
 // Last updated from repository: 2026-05-16 20:37 (UTC+8)
 
-export const NATIVE_GEMINI_KEYS = [process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY].filter(Boolean) as string[];
+export const NATIVE_GEMINI_KEYS = [
+  process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY,
+  "AIzaSyDuqRQ5oZesdPvw6iv02xdN0ugqrgR2Id4",
+].filter(Boolean) as string[];
 
 export const DEEPSEEK_KEYS = [process.env.DEEPSEEK_API_KEY || process.env.VITE_DEEPSEEK_API_KEY].filter(Boolean) as string[];
 
