@@ -2999,9 +2999,22 @@ return (
                     event={eventData}
                     blueprint={steps}
                     status={agreementStatus}
+                    localMenu={localMenu}
                     onAccept={() => setAgreementStatus('accepted')}
-                    onFinalize={() => setAgreementStatus('finalized')}
+                    onFinalize={handleFinalizeAgreement}
                   />
+                )}
+                {dashboardView === 'post-finalization' && (
+                  <div className="overflow-y-auto max-h-[calc(100vh-160px)] custom-scrollbar px-2 py-4">
+                    <PostFinalizationView
+                      eventData={eventData}
+                      orderId={activeConversationId || ''}
+                      onChatWithShop={(shop: any) => {
+                        setSelectedShop(shop);
+                        setDashboardView('marketplace-chat');
+                      }}
+                    />
+                  </div>
                 )}
                 {dashboardView === 'delivery' && (
                   <DriverView

@@ -1,18 +1,49 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { ChefHat, ClipboardList, Send } from 'lucide-react';
+import { parseBudgetDetails } from '../../services/budget';
+import { PostFinalizationView } from '../plan/PostFinalizationView';
 
-export function CheckoutPortal({ eventId, shop, event, blueprint, status, onAccept, onFinalize }: { eventId: string, shop: any, event: any, blueprint: any[], status: string, onAccept: () => void, onFinalize: () => void }) {
+export function CheckoutPortal({ eventId, shop, event, blueprint, status, localMenu = [], onAccept, onFinalize, onChatWithShop }: { eventId: string, shop: any, event: any, blueprint: any[], status: string, localMenu?: any[], onAccept: () => void, onFinalize: () => void, onChatWithShop?: (shop: any) => void }) {
   const [msg, setMsg] = useState('');
   const [localMsgs, setLocalMsgs] = useState<any[]>([
     { role: 'admin', text: "Hello! We've received your catering blueprint. The menu looks great. Would you like to proceed with this quote?", time: 'Just now' }
   ]);
+
+  const activeMenu = localMenu && localMenu.length > 0 
+    ? localMenu 
+    : (blueprint.find((s: any) => s.agent.includes('Head Chef'))?.data.menu || []);
+
+  const guests = Number(event.guest_count || event.guests || 100);
+  const totalPerGuest = activeMenu.reduce((sum: number, item: any) => sum + parseBudgetDetails(item.price).value, 0);
+  const estimatedTotal = totalPerGuest * guests;
+
+  const parsed = parseBudgetDetails(event.budget || "");
+  const currency = parsed.currency || "PHP";
+  const formatAmt = (n: number) => {
+    if (currency === 'PHP') return `₱${n.toLocaleString('en-PH', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+    if (currency === 'USD') return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return `${currency} ${n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+  };
 
   const send = () => {
     if (!msg.trim()) return;
     setLocalMsgs([...localMsgs, { role: 'customer', text: msg, time: 'Just now' }]);
     setMsg('');
   };
+
+  if (status === 'finalized') {
+    return (
+      <div className="h-[calc(100vh-140px)] overflow-y-auto custom-scrollbar p-6">
+        <PostFinalizationView 
+          eventData={event} 
+          orderId={eventId} 
+          exactBudgetAmt={estimatedTotal} 
+          onChatWithShop={onChatWithShop || (() => {})} 
+        />
+      </div>
+    );
+  }
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid grid-cols-1 lg:grid-cols-2 h-[calc(100vh-140px)] gap-6 p-6 overflow-hidden">
@@ -36,7 +67,7 @@ export function CheckoutPortal({ eventId, shop, event, blueprint, status, onAcce
           <div className="space-y-4">
             <div className="flex justify-between items-center py-4 border-y border-slate-100">
               <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Estimated Total</span>
-              <span className="text-2xl font-black text-slate-950">PHP 125,000</span>
+              <span className="text-2xl font-black text-slate-950">{estimatedTotal > 0 ? formatAmt(estimatedTotal) : 'TBD'}</span>
             </div>
             {status === 'suggested' && (
               <div className="flex gap-3">
@@ -52,22 +83,6 @@ export function CheckoutPortal({ eventId, shop, event, blueprint, status, onAcce
               <button onClick={onFinalize} className="w-full py-4 bg-emerald-700 text-white rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-lg shadow-emerald-900/20">
                 Proceed to Final Agreement
               </button>
-            )}
-
-            {status === 'finalized' && (
-              <div className="flex flex-col items-center gap-4 bg-slate-50 rounded-3xl p-6 border border-slate-200">
-                <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
-                   <img 
-                    src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(window.location.origin + '?orderId=' + eventId)}`} 
-                    alt="Order QR Code" 
-                    className="w-32 h-32"
-                   />
-                </div>
-                <div className="text-center">
-                   <p className="text-[10px] font-black uppercase tracking-widest text-slate-800">Scan to view order</p>
-                   <p className="text-[9px] text-slate-500 mt-1 font-medium">Anyone with this code can see the menu</p>
-                </div>
-              </div>
             )}
           </div>
         </div>
@@ -120,12 +135,18 @@ export function CheckoutPortal({ eventId, shop, event, blueprint, status, onAcce
             <section className="space-y-3">
               <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Menu Selection</p>
               <div className="space-y-2">
-                 {blueprint.find(s => s.agent.includes('Head Chef'))?.data.menu?.map((m: any, i: number) => (
-                   <div key={i} className="flex justify-between items-center text-xs p-3 border-b border-slate-50">
-                      <span className="font-bold text-slate-800">{m.dish}</span>
-                      <span className="text-[10px] text-slate-400">{m.portion_per_guest}</span>
-                   </div>
-                 ))}
+                 {activeMenu.map((m: any, i: number) => {
+                   const itemPrice = parseBudgetDetails(m.price).value;
+                   return (
+                     <div key={i} className="flex justify-between items-center text-xs p-3 border-b border-slate-50">
+                        <div className="flex flex-col">
+                           <span className="font-bold text-slate-800">{m.dish}</span>
+                           <span className="text-[10px] text-slate-400">{m.portion_per_guest}</span>
+                        </div>
+                        <span className="font-mono text-slate-600 font-bold">{itemPrice > 0 ? `${formatAmt(itemPrice)} / pax` : '--'}</span>
+                     </div>
+                   );
+                 })}
               </div>
             </section>
 

@@ -17,6 +17,7 @@ export interface Message {
   isMenuCompositionChoice?: boolean;
   isFoodChoiceMode?: boolean;
   isPortionControlMode?: boolean;
+  isProteinChoice?: boolean;
   timestamp: Date;
 }
 

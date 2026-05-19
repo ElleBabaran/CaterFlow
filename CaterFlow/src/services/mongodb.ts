@@ -138,5 +138,31 @@ export const mongoService = {
     });
     if (!res.ok) throw new Error("Failed to send message");
     return res.json();
+  },
+
+  async linkShop(pin: string, name: string, staffInfo: string) {
+    const extraHeaders = await authHeaders();
+    const res = await fetch(`/api/users/link-shop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...extraHeaders },
+      body: JSON.stringify({ pin, name, staffInfo }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: "Failed to link shop" }));
+      throw new Error(err.error || "Failed to link shop");
+    }
+    return res.json();
+  },
+
+  async getShopByPin(pin: string) {
+    const res = await fetch(`/api/shops/by-pin/${encodeURIComponent(pin)}`);
+    if (!res.ok) throw new Error("Invalid PIN");
+    return res.json();
+  },
+
+  async fetchShopById(shopId: string) {
+    const res = await fetch(`/api/shops/${shopId}`);
+    if (!res.ok) throw new Error("Failed to fetch shop");
+    return res.json();
   }
 };

@@ -16,7 +16,7 @@ interface ReceivedPlan {
   menuSummary: string[];
   quote: string;
   sentAt: string;
-  status: 'new' | 'viewed' | 'accepted' | 'declined';
+  status: 'new' | 'viewed' | 'accepted' | 'declined' | 'delivery_approved';
 }
 
 interface ChatMessage {
@@ -38,15 +38,17 @@ export function AdminInbox({
   adminUid: string;
   adminName: string;
   onSendMessage: (planId: string, text: string) => Promise<void>;
-  onUpdateStatus: (planId: string, status: ReceivedPlan['status']) => void;
+  onUpdateStatus: (planId: string, status: ReceivedPlan['status'], extraFields?: any) => void;
 }) {
   const [selectedPlan, setSelectedPlan] = useState<ReceivedPlan | null>(null);
   const [messages, setMessages] = useState<Record<string, ChatMessage[]>>({});
   const [newMsg, setNewMsg] = useState('');
   const [sending, setSending] = useState(false);
+  const [deliveryLocation, setDeliveryLocation] = useState('');
 
   const handleSelect = (plan: ReceivedPlan) => {
     setSelectedPlan(plan);
+    setDeliveryLocation(plan.location || '');
     if (plan.status === 'new') onUpdateStatus(plan._id, 'viewed');
   };
 
@@ -74,6 +76,7 @@ export function AdminInbox({
     viewed: 'bg-blue-500/20 text-blue-400 border border-blue-500/30',
     accepted: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30',
     declined: 'bg-rose-500/20 text-rose-400 border border-rose-500/30',
+    delivery_approved: 'bg-purple-500/20 text-purple-400 border border-purple-500/30',
   }[s]);
 
   return (
@@ -147,6 +150,42 @@ export function AdminInbox({
                     >Decline</button>
                   </div>
                 </div>
+
+                {selectedPlan.status === 'accepted' && (
+                  <div className="bg-purple-900/10 border border-purple-500/20 rounded-2xl p-4 space-y-4">
+                    <div>
+                      <h3 className="text-xs font-black uppercase tracking-widest text-purple-400">Logistics & Delivery Approval</h3>
+                      <p className="text-[10px] text-slate-400 mt-1">Verify order completion and provide the final delivery location to dispatch the driver.</p>
+                    </div>
+                    <div className="flex gap-3 items-end">
+                      <div className="flex-1 space-y-1">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-slate-500">Delivery Address/Coordinates</label>
+                        <input 
+                          type="text" 
+                          value={deliveryLocation} 
+                          onChange={e => setDeliveryLocation(e.target.value)} 
+                          className="w-full bg-[var(--bg-color)] border border-[var(--border-color)] rounded-xl px-4 py-2 text-xs font-bold text-[var(--text-color)] outline-none focus:border-purple-500 transition-colors"
+                          placeholder="e.g. 14.5995, 120.9842 or 123 Main St"
+                        />
+                      </div>
+                      <button 
+                        onClick={() => onUpdateStatus(selectedPlan._id, 'delivery_approved', { deliveryLocation })}
+                        className="bg-purple-600 hover:bg-purple-500 text-white rounded-xl px-5 py-2.5 text-xs font-black uppercase tracking-widest transition-colors shadow-lg shadow-purple-900/20"
+                      >
+                        Approve Delivery
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {selectedPlan.status === 'delivery_approved' && (
+                  <div className="bg-emerald-900/10 border border-emerald-500/20 rounded-2xl p-4 flex items-center justify-between">
+                    <div>
+                      <h3 className="text-xs font-black uppercase tracking-widest text-emerald-400">Delivery Dispatched</h3>
+                      <p className="text-[10px] text-slate-400 mt-1">Staff has been authorized to deliver this order.</p>
+                    </div>
+                    <MapPin className="w-6 h-6 text-emerald-500" />
+                  </div>
+                )}
 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   {[

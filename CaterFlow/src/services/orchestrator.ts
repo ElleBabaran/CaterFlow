@@ -160,7 +160,10 @@ export async function predictWeather(location: string, date: string, language: s
       };
     }
 
-    const targetDayStr = targetDateObj.toISOString().split('T')[0];
+    const year = targetDateObj.getFullYear();
+    const month = String(targetDateObj.getMonth() + 1).padStart(2, '0');
+    const day = String(targetDateObj.getDate()).padStart(2, '0');
+    const targetDayStr = `${year}-${month}-${day}`;
     const now = new Date();
     const diffDays = Math.ceil((targetDateObj.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 
@@ -541,22 +544,24 @@ async function runHeadChefAgent(input: string, customer: any, dietary: any, rag:
 
   const composition = (() => {
     const norm = (customer.menu_composition || "").toLowerCase();
-    const autoDecide = /system|auto|bahala|decide|ikaw na|kayo na/i.test(norm);
+    const autoDecide = /system|auto|bahala|decide|ikaw na|kayo na|marami|madami|generous/i.test(norm);
     const ulamMatch = norm.match(/(\d+)\s*(?:ulam|main|dish(?:es)?|viand|entree)/);
+    const appetizerMatch = norm.match(/(\d+)\s*(?:appetizer|starter|pampagana|hors d'oeuvre)/);
     const dessertMatch = norm.match(/(\d+)\s*(?:dessert|pastry|cake|sweet|panghimagas)/);
     const drinkMatch = norm.match(/(\d+)\s*(?:drink|beverage|juice|softdrink|soda|inumin)/);
     return {
-      mainCount: ulamMatch ? Number(ulamMatch[1]) : (autoDecide ? 4 : 4),
-      dessertCount: dessertMatch ? Number(dessertMatch[1]) : (autoDecide ? 1 : 1),
-      drinkCount: drinkMatch ? Number(drinkMatch[1]) : (autoDecide ? 1 : 1),
+      mainCount: ulamMatch ? Number(ulamMatch[1]) : (autoDecide ? 6 : 6),
+      appetizerCount: appetizerMatch ? Number(appetizerMatch[1]) : (autoDecide ? 3 : 3),
+      dessertCount: dessertMatch ? Number(dessertMatch[1]) : (autoDecide ? 3 : 3),
+      drinkCount: drinkMatch ? Number(drinkMatch[1]) : (autoDecide ? 3 : 3),
       autoDecide,
     };
   })();
 
-  const totalItemsTarget = composition.mainCount + composition.dessertCount + composition.drinkCount;
+  const totalItemsTarget = composition.mainCount + composition.appetizerCount + composition.dessertCount + composition.drinkCount;
   const compositionInstruction = composition.autoDecide
-    ? "Menu composition: AUTO-DECIDE. Build " + totalItemsTarget + " items (" + composition.mainCount + " main, " + composition.dessertCount + " dessert, " + composition.drinkCount + " drink). Optimize for budget PHP " + budgetPerGuest + "/guest."
-    : "Menu composition: USER-SPECIFIED. You MUST build exactly: " + composition.mainCount + " main dishes, " + composition.dessertCount + " desserts, " + composition.drinkCount + " drinks. Total: " + totalItemsTarget + " items.";
+    ? "Menu composition: AUTO-DECIDE. Build an expansive, premium menu with " + totalItemsTarget + " items (" + composition.mainCount + " mains, " + composition.appetizerCount + " appetizers, " + composition.dessertCount + " desserts, " + composition.drinkCount + " drinks). Optimize for budget PHP " + budgetPerGuest + "/guest."
+    : "Menu composition: USER-SPECIFIED. You MUST build exactly: " + composition.mainCount + " main dishes, " + composition.appetizerCount + " appetizers, " + composition.dessertCount + " desserts, " + composition.drinkCount + " drinks. Total: " + totalItemsTarget + " items.";
 
   const stylePref = customer.food_style_preference || "Chef's Choice";
   const cuisinePref = customer.cuisine_preference || "Any Cuisine";
@@ -823,6 +828,58 @@ function validateAnswerDeterministically(questionKey: string, questionText: stri
     const isNegotiable = /negotiable|open|depend|tbd|cheap|expensive|quality|best/.test(trimmed);
     if (!hasNumbers && !isNegotiable) {
       return { valid: false, message: lang === 'tagalog' ? "Magkano po ang budget ninyo para sa event? Pakilagay po ang halaga o sabihing 'negotiable'." : "What is your budget for the event? Please provide an amount or say 'negotiable'.", confident: true };
+    }
+  }
+
+  // 5. Option Buttons Checks
+  if (questionKey === 'food_choice_mode') {
+    if (/suggest|chef|kayo|specific|ako|meron|mayroon|mag-suggest/i.test(trimmed)) {
+      return { valid: true, confident: true };
+    }
+  }
+  if (questionKey === 'portion_control_mode') {
+    if (/system|auto|bahala|decide|specify|ako|manual/i.test(trimmed)) {
+      return { valid: true, confident: true };
+    }
+  }
+  if (questionKey === 'menu_composition') {
+    if (/system|auto|bahala|decide|\d/i.test(trimmed)) {
+      return { valid: true, confident: true };
+    }
+  }
+  if (questionKey === 'event_time') {
+    if (/lunch|dinner|breakfast|noon|morning|afternoon|evening|am|pm|\d/i.test(trimmed)) {
+      return { valid: true, confident: true };
+    }
+  }
+  if (questionKey === 'service_style') {
+    if (/buffet|plated|family|cocktail|station|dine|serve/i.test(trimmed)) {
+      return { valid: true, confident: true };
+    }
+  }
+  if (questionKey === 'venue_type') {
+    if (/indoor|outdoor|garden|hall|home|backyard|office|hotel|house/i.test(trimmed)) {
+      return { valid: true, confident: true };
+    }
+  }
+  if (questionKey === 'beverage_plan') {
+    if (/juice|soda|wine|beer|water|coffee|tea|alcohol|mocktail|cocktail|drink|none/i.test(trimmed)) {
+      return { valid: true, confident: true };
+    }
+  }
+  if (questionKey === 'staffing_needs') {
+    if (/yes|no|oo|hindi|need|chef|waiter|server|staff/i.test(trimmed)) {
+      return { valid: true, confident: true };
+    }
+  }
+  if (questionKey === 'nearby_suggestions') {
+    if (/yes|no|oo|hindi/i.test(trimmed)) {
+      return { valid: true, confident: true };
+    }
+  }
+  if (questionKey === 'preferred_language') {
+    if (/english|tagalog|filipino|spanish|japanese|chinese|mandarin|others/i.test(trimmed)) {
+      return { valid: true, confident: true };
     }
   }
 

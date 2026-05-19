@@ -14,6 +14,10 @@ interface AuthShellProps {
   setName: (val: string) => void;
   signupRole: WorkspaceRole;
   setSignupRole: (role: WorkspaceRole) => void;
+  staffPin: string;
+  setStaffPin: (val: string) => void;
+  staffInfo: string;
+  setStaffInfo: (val: string) => void;
   authError: string | null;
   onEmailAuth: (e: React.FormEvent) => void;
   onGoogleAuth: () => void;
@@ -31,6 +35,10 @@ export function AuthShell({
   setName,
   signupRole,
   setSignupRole,
+  staffPin,
+  setStaffPin,
+  staffInfo,
+  setStaffInfo,
   authError,
   onEmailAuth,
   onGoogleAuth,
@@ -112,6 +120,7 @@ export function AuthShell({
                     {[
                       ['customer', 'Customer', 'Submit briefs, review menus'],
                       ['admin', 'Admin', 'Dashboard, pricing, suppliers'],
+                      ['staff', 'Staff', 'Prep board, dispatch, execution tasks'],
                     ].map(([role, title, copy]) => (
                       <button
                         key={role}
@@ -125,6 +134,31 @@ export function AuthShell({
                     ))}
                   </div>
                 </div>
+                {signupRole === 'staff' && (
+                  <>
+                    <div className="space-y-1">
+                      <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Staff PIN (Required for Staff)</label>
+                      <input
+                        type="text"
+                        placeholder="6-Digit Shop PIN"
+                        value={staffPin}
+                        onChange={(e) => setStaffPin(e.target.value)}
+                        className="w-full bg-white border border-emerald-200 rounded-2xl px-4 py-3.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none shadow-sm"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] uppercase tracking-widest font-bold text-slate-500 ml-1">Your Role / Details (Optional)</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Delivery Driver, Sous Chef"
+                        value={staffInfo}
+                        onChange={(e) => setStaffInfo(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                      />
+                    </div>
+                  </>
+                )}
               </>
             )}
             <div className="space-y-1">

@@ -12,9 +12,9 @@ import {
   Calendar,
   DollarSign,
   ShieldCheck,
-  ChevronRight,
   Send, 
-  Users 
+  Users,
+  Lock
 } from 'lucide-react';
 import { MapContainer, Marker, Popup, TileLayer } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -40,6 +40,20 @@ export function DriverView({ event, logistics }: { event: any, logistics: any })
     { id: 'setup', label: 'Setting Up', icon: Utensils },
     { id: 'completed', label: 'Event Live', icon: CheckCircle2 },
   ];
+
+  if (event?.status !== 'delivery_approved') {
+    return (
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col items-center justify-center min-h-[60vh] text-center p-6">
+        <div className="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center text-slate-400 mb-6 shadow-inner border border-slate-200">
+          <Lock className="w-8 h-8" />
+        </div>
+        <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Delivery Locked</h2>
+        <p className="text-sm font-medium text-slate-500 mt-2 max-w-md">
+          Awaiting admin verification. The admin must verify the order completion and provide the destination location before you can dispatch.
+        </p>
+      </motion.div>
+    );
+  }
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="p-6 space-y-8 max-w-6xl mx-auto">

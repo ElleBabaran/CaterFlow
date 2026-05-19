@@ -68,6 +68,8 @@ async function startServer() {
     name: String,
     photoURL: String,
     role: { type: String, default: 'customer' },
+    shopId: String,
+    staffInfo: String,
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now }
   });
@@ -81,6 +83,15 @@ async function startServer() {
     coordinates: { lat: Number, lng: Number },
     specialties: String,
     baseQuote: Number,
+    socials: String,
+    shopImage: String,
+    description: String,
+    rating: { type: Number, default: 4.5 },
+    reviewCount: { type: Number, default: 0 },
+    logo: String,
+    banner: String,
+    isActive: { type: Boolean, default: true },
+    pin: { type: String, unique: true, sparse: true },
     createdAt: { type: Date, default: Date.now }
   });
   const Shop = mongoose.model("Shop", ShopSchema);
@@ -176,14 +187,42 @@ async function startServer() {
   app.post("/api/users", requireAuth, async (req, res) => {
     try {
       const auth = (req as any).auth;
-      const { email, name, role, photoURL } = req.body;
+      const { email, name, role, photoURL, staffInfo, shopId } = req.body;
       const uid = auth.uid;
       const update: any = { email, name, photoURL, updatedAt: new Date() };
       if (role) update.role = role;
+      if (staffInfo !== undefined) update.staffInfo = staffInfo;
+      if (shopId !== undefined) update.shopId = shopId;
       const user = await UserProfile.findOneAndUpdate({ uid }, { $set: update }, { upsert: true, returnDocument: 'after' });
       res.json(user);
     } catch (err) { res.status(500).json({ error: "Failed to save user profile" }); }
   });
+
+  // Link staff to shop via PIN
+  app.post("/api/users/link-shop", requireAuth, async (req, res) => {
+    try {
+      const auth = (req as any).auth;
+      const { pin, staffInfo, name } = req.body;
+      if (!pin) return res.status(400).json({ error: "PIN is required" });
+      const shop = await Shop.findOne({ pin: String(pin).trim() });
+      if (!shop) return res.status(404).json({ error: "Invalid PIN. No shop found with this code." });
+      const update: any = { shopId: String((shop as any)._id), updatedAt: new Date() };
+      if (staffInfo) update.staffInfo = staffInfo;
+      if (name) update.name = name;
+      const user = await UserProfile.findOneAndUpdate({ uid: auth.uid }, { $set: update }, { upsert: true, returnDocument: 'after' });
+      res.json({ success: true, shop: { _id: (shop as any)._id, name: (shop as any).name, location: (shop as any).location }, user });
+    } catch (err) { res.status(500).json({ error: "Failed to link staff to shop" }); }
+  });
+
+  // Get shop by PIN (for staff to verify before linking)
+  app.get("/api/shops/by-pin/:pin", async (req, res) => {
+    try {
+      const shop = await Shop.findOne({ pin: String(req.params.pin).trim() }).select('name location specialties baseQuote shopImage');
+      if (!shop) return res.status(404).json({ error: "No shop found with this PIN" });
+      res.json(shop);
+    } catch (err) { res.status(500).json({ error: "Failed to find shop by PIN" }); }
+  });
+
 
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", mongodb: mongoose.connection.readyState === 1 ? "connected" : "disconnected" });
@@ -529,9 +568,24 @@ async function startServer() {
   app.post("/api/events", requireAuth, async (req, res) => {
     try {
       const auth = (req as any).auth;
-      const { userId, type, rawInput, messages, eventData, steps } = req.body;
+      const { userId, type, title, rawInput, messages, eventData, steps, qIndex } = req.body;
       if (userId !== auth.uid) return res.status(403).json({ error: "Forbidden" });
-      const newEvent = new Event({ userId, type, rawInput: String(rawInput || "").substring(0, 5000), messages: messages || [], eventData: eventData || {}, steps: steps || [], createdAt: new Date(), updatedAt: new Date() });
+
+      const firstUserMessage = messages?.find((msg: any) => msg.role === 'user')?.content;
+      const fallbackTitle = title || (eventData?.event_type ? `${eventData.event_type} Plan` : firstUserMessage || "Untitled Catering Plan");
+
+      const newEvent = new Event({ 
+        userId, 
+        type, 
+        title: fallbackTitle,
+        rawInput: String(rawInput || "").substring(0, 5000), 
+        messages: messages || [], 
+        eventData: eventData || {}, 
+        steps: steps || [], 
+        qIndex: typeof qIndex === "number" ? qIndex : 0,
+        createdAt: new Date(), 
+        updatedAt: new Date() 
+      });
       await newEvent.save();
       res.json(newEvent);
     } catch (err) { res.status(500).json({ error: "Failed to save event" }); }
@@ -592,6 +646,42 @@ async function startServer() {
       if (!shop) return res.status(404).json({ error: "Shop not found" });
       res.json(shop);
     } catch (err) { res.status(500).json({ error: "Failed to fetch shop" }); }
+  });
+
+  app.get("/api/public/orders/:eventId", rateLimit(60_000, 60), async (req, res) => {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(req.params.eventId)) {
+        return res.status(404).json({ error: "Order not found" });
+      }
+
+      const event = await Event.findById(req.params.eventId).lean();
+      if (!event) return res.status(404).json({ error: "Order not found" });
+
+      const steps = Array.isArray((event as any).steps) ? (event as any).steps : [];
+      const menuStep = steps.find((step: any) => String(step.agent || "").includes("Head Chef"));
+      const logisticsStep = steps.find((step: any) => String(step.agent || "").includes("Logistics"));
+      const pricingStep = steps.find((step: any) => String(step.agent || "").includes("Accountant") || String(step.agent || "").includes("Cost Optimization"));
+      const monitoringStep = steps.find((step: any) => String(step.agent || "").includes("Monitoring"));
+
+      const publicEventData = (event as any).eventData || {};
+
+      res.json({
+        orderId: String((event as any)._id),
+        title: (event as any).title,
+        status: publicEventData.agreement_status || ((event as any).type === "finalized_order" ? "finalized" : "planned"),
+        finalizedAt: publicEventData.finalized_at,
+        event: publicEventData,
+        menu: Array.isArray(publicEventData.final_menu) && publicEventData.final_menu.length > 0 ? publicEventData.final_menu : (menuStep?.data?.menu || []),
+        logistics: {
+          timeline: logisticsStep?.data?.timeline || [],
+          staffing_needs: logisticsStep?.data?.staffing_needs || (event as any).eventData?.staffing_needs || "",
+        },
+        pricing: pricingStep?.data || {},
+        monitoring: monitoringStep?.data || {},
+      });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch public order" });
+    }
   });
 
   app.get("/api/chat/:eventId", requireAuth, async (req, res) => {
@@ -661,17 +751,17 @@ async function startServer() {
 
   app.get("/api/plans/inbox", requireAuth, async (req, res) => {
     try {
-      const plans = await SentPlan.find({ adminId: (req as any).auth.uid }).sort({ sentAt: -1 });
+      const plans = await (SentPlan as any).find({ adminId: (req as any).auth.uid }).sort({ sentAt: -1 });
       res.json(plans);
     } catch (err) { res.status(500).json({ error: "Failed to fetch inbox" }); }
   });
 
   app.patch("/api/plans/:planId/status", requireAuth, async (req, res) => {
     try {
-      const plan = await SentPlan.findById(req.params.planId);
+      const plan = await (SentPlan as any).findById(req.params.planId);
       if (!plan) return res.status(404).json({ error: "Plan not found" });
       if ((plan as any).adminId !== (req as any).auth.uid) return res.status(403).json({ error: "Forbidden" });
-      const updated = await SentPlan.findByIdAndUpdate(req.params.planId, { status: req.body.status }, { returnDocument: 'after' });
+      const updated = await (SentPlan as any).findByIdAndUpdate(req.params.planId, { status: req.body.status }, { returnDocument: 'after' });
       res.json(updated);
     } catch (err) { res.status(500).json({ error: "Failed to update status" }); }
   });

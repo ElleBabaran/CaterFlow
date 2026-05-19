@@ -9,8 +9,31 @@ import {
   ChefHat, 
   Info,
   Clock,
-  Utensils
+  Utensils,
+  Truck
 } from 'lucide-react';
+import { calculateOrderFinance, estimateCookingMinutes, formatCurrencyAmount } from '../../services/budget';
+import { MapContainer, Marker, Popup, TileLayer } from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
+import L from 'leaflet';
+
+const destinationIcon = new L.Icon({
+  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41],
+});
+
+const driverIcon = new L.Icon({
+  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-orange.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41],
+});
 
 export const PublicOrderView: React.FC<{ orderId: string }> = ({ orderId }) => {
   const [order, setOrder] = useState<any>(null);
@@ -19,14 +42,12 @@ export const PublicOrderView: React.FC<{ orderId: string }> = ({ orderId }) => {
   useEffect(() => {
     const fetchOrder = async () => {
       try {
-        const response = await fetch(`/api/chat/messages/receipt/${orderId}`); // Or equivalent endpoint
-        // For now, we'll try to fetch the event/chat that contains the receipt
-        const chatRes = await fetch(`/api/chat/${orderId}`);
-        const data = await chatRes.json();
-        const receiptMsg = data.messages?.find((m: any) => m.type === 'receipt');
-        setOrder(receiptMsg?.attachment || null);
+        const response = await fetch(`/api/public/orders/${orderId}`);
+        if (!response.ok) throw new Error("Order not found");
+        setOrder(await response.json());
       } catch (err) {
         console.error("Failed to fetch public order:", err);
+        setOrder(null);
       } finally {
         setLoading(false);
       }
@@ -52,7 +73,17 @@ export const PublicOrderView: React.FC<{ orderId: string }> = ({ orderId }) => {
     </div>
   );
 
-  const { menu, event } = order;
+  const { menu = [], event = {}, pricing = {}, logistics = {} } = order;
+  const guests = Number(event?.guest_count || event?.guests || 1);
+  const finance = calculateOrderFinance(menu, guests, event?.budget || "", pricing);
+  const cooking = estimateCookingMinutes(menu, guests);
+  const formatAmt = (value: number) => formatCurrencyAmount(value, finance.currency);
+  const staffTasks = [
+    ...(logistics?.timeline || []).slice(0, 4).map((item: any) => `${item.time || 'Prep'} - ${item.activity || item.text || 'Kitchen task'}`),
+    ...(event?.staffing_needs ? [`Staffing: ${event.staffing_needs}`] : []),
+  ].slice(0, 5);
+
+  const deliveryApproved = order.status === 'delivery_approved';
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 sm:p-8 flex flex-col items-center">
@@ -77,10 +108,56 @@ export const PublicOrderView: React.FC<{ orderId: string }> = ({ orderId }) => {
         {/* Event Stats */}
         <div className="grid grid-cols-2 gap-4">
           <StatTile icon={Calendar} label="Event Date" value={event?.event_date || 'TBD'} color="bg-blue-50 text-blue-600" />
-          <StatTile icon={Users} label="Guest Count" value={event?.guest_count || '0'} color="bg-amber-50 text-amber-600" />
+          <StatTile icon={Users} label="Guest Count" value={String(guests || 0)} color="bg-amber-50 text-amber-600" />
           <StatTile icon={MapPin} label="Location" value={event?.event_location || 'Venue'} color="bg-rose-50 text-rose-600" />
-          <StatTile icon={ShoppingBag} label="Total Value" value={`₱${menu?.reduce((acc: number, cur: any) => acc + (cur.price * (cur.quantity || 1)), 0)}`} color="bg-emerald-50 text-emerald-600" />
+          <StatTile icon={ShoppingBag} label="Total Value" value={finance.estimatedTotal > 0 ? formatAmt(finance.estimatedTotal) : 'TBD'} color="bg-emerald-50 text-emerald-600" />
         </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <StatTile icon={ShoppingBag} label="Per Guest" value={finance.totalPerGuest > 0 ? formatAmt(finance.totalPerGuest) : 'TBD'} color="bg-slate-50 text-slate-600" />
+          <StatTile icon={Clock} label="Cooking Time" value={cooking.totalMinutes > 0 ? `${cooking.totalMinutes} min` : 'TBD'} color="bg-amber-50 text-amber-600" />
+          <StatTile icon={CheckCircle2} label="Status" value={String(order.status || 'planned').toUpperCase()} color="bg-emerald-50 text-emerald-600" />
+        </div>
+
+        {/* Delivery Tracking Map (if approved) */}
+        {deliveryApproved && (
+          <div className="bg-white rounded-[3rem] border border-slate-200 overflow-hidden shadow-sm">
+            <div className="px-10 py-8 bg-purple-50 border-b border-purple-100 flex justify-between items-center">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-purple-600 mb-1">Live Tracking</p>
+                <h3 className="text-xl font-black uppercase tracking-tight text-slate-900">Delivery in Progress</h3>
+              </div>
+              <Truck className="w-6 h-6 text-purple-600" />
+            </div>
+            <div className="h-64 sm:h-96 w-full relative">
+              <MapContainer center={[14.5547, 121.0509]} zoom={13} style={{ height: '100%', width: '100%' }}>
+                <TileLayer
+                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                />
+                <Marker position={[14.5547, 121.0509]} icon={destinationIcon}>
+                  <Popup>
+                    <strong>Your Event Location</strong><br />
+                    {event?.event_location || order.deliveryLocation || 'Venue'}
+                  </Popup>
+                </Marker>
+                {/* Mock Driver Location slightly offset */}
+                <Marker position={[14.5500, 121.0450]} icon={driverIcon}>
+                  <Popup>
+                    <strong>CaterFlow Delivery Driver</strong><br />
+                    On the way!
+                  </Popup>
+                </Marker>
+              </MapContainer>
+            </div>
+            <div className="px-10 py-6 bg-slate-50 border-t border-slate-100">
+               <p className="text-xs font-bold text-slate-600 flex items-center gap-2">
+                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                 Driver dispatched and currently en route to {event?.event_location || order.deliveryLocation || 'your location'}.
+               </p>
+            </div>
+          </div>
+        )}
 
         {/* Food List */}
         <div className="bg-white rounded-[3rem] border border-slate-200 overflow-hidden shadow-sm">
@@ -101,10 +178,15 @@ export const PublicOrderView: React.FC<{ orderId: string }> = ({ orderId }) => {
                   <div>
                     <h4 className="text-lg font-black text-slate-800 leading-none">{item.dish}</h4>
                     <p className="text-xs text-slate-400 mt-2 font-bold uppercase tracking-widest">Qty: {item.quantity || 1} x {item.portion_per_guest || 'Standard'}</p>
+                    <p className="text-[10px] text-amber-600 mt-1 font-black uppercase tracking-widest">
+                      Cook: {cooking.items.find((estimate) => estimate.dish === item.dish)?.minutes || '--'} min
+                    </p>
                   </div>
                 </div>
                 <div className="text-right">
-                  <p className="text-xs font-black text-emerald-600">₱{item.price * (item.quantity || 1)}</p>
+                  <p className="text-xs font-black text-emerald-600">
+                    {formatAmt((finance.lines.find((line) => line.dish === item.dish)?.lineTotal || 0))}
+                  </p>
                 </div>
               </div>
             ))}
@@ -115,6 +197,26 @@ export const PublicOrderView: React.FC<{ orderId: string }> = ({ orderId }) => {
                This is a digital record generated by CaterFlow. <br />
                Please present this screen to the catering staff for verification.
              </p>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-[3rem] border border-slate-200 overflow-hidden shadow-sm">
+          <div className="px-10 py-8 bg-amber-50 border-b border-amber-100 flex justify-between items-center">
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-600 mb-1">Staff Segment</p>
+              <h3 className="text-xl font-black uppercase tracking-tight text-slate-900">Kitchen & Service Tasks</h3>
+            </div>
+            <Clock className="w-6 h-6 text-amber-600" />
+          </div>
+          <div className="p-8 space-y-3">
+            {staffTasks.length > 0 ? staffTasks.map((task, i) => (
+              <div key={i} className="flex items-start gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 flex-shrink-0" />
+                <p className="text-xs font-bold text-slate-700 leading-relaxed">{task}</p>
+              </div>
+            )) : (
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-widest text-center py-6">No staff tasks listed yet.</p>
+            )}
           </div>
         </div>
       </div>

@@ -192,6 +192,13 @@ const OrderSummaryCard: React.FC<{ attachment: any, isOwn: boolean }> = ({ attac
   if (!attachment) return null;
   const { menu, event } = attachment;
 
+  const cleanPrice = (val: any) => {
+    const text = String(val || "").trim();
+    const numeric = text.replace(/[, ]/g, "").match(/\d+(?:\.\d+)?/)?.[0];
+    const amount = numeric ? Number(numeric) : 0;
+    return Number.isFinite(amount) ? amount : 0;
+  };
+
   return (
     <div className={`bg-white rounded-[2.5rem] border border-slate-200 overflow-hidden shadow-xl max-w-sm ${isOwn ? 'ml-auto' : ''}`}>
       <div className="bg-slate-900 p-6 text-white">
@@ -206,7 +213,7 @@ const OrderSummaryCard: React.FC<{ attachment: any, isOwn: boolean }> = ({ attac
           {menu?.map((item: any, i: number) => (
             <div key={i} className="flex justify-between items-center text-xs">
               <span className="font-bold text-slate-700">{item.dish} x{item.quantity || 1}</span>
-              <span className="font-mono text-slate-500">₱{item.price * (item.quantity || 1)}</span>
+              <span className="font-mono text-slate-500">₱{(cleanPrice(item.price) * (item.quantity || 1)).toLocaleString()}</span>
             </div>
           ))}
         </div>
@@ -221,7 +228,7 @@ const OrderSummaryCard: React.FC<{ attachment: any, isOwn: boolean }> = ({ attac
           </div>
           <div className="bg-emerald-50 p-3 rounded-xl flex justify-between items-center border border-emerald-100">
             <span className="text-[10px] font-black uppercase text-emerald-700">Estimated Total</span>
-            <span className="text-lg font-black text-emerald-700">₱{menu?.reduce((acc: number, cur: any) => acc + (cur.price * (cur.quantity || 1)), 0)}</span>
+            <span className="text-lg font-black text-emerald-700">₱{menu?.reduce((acc: number, cur: any) => acc + (cleanPrice(cur.price) * (cur.quantity || 1)), 0).toLocaleString()}</span>
           </div>
         </div>
       </div>
