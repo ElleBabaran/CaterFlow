@@ -325,7 +325,7 @@ async function startServer() {
       { 
         role: "system", 
         content: "You are CaterFlow's production food recommendation engine. Generate original, contextual catering recommendations from the user's brief only. \n" +
-                 "CRITICAL: Satisfy all user preferences (cuisine, dietary, theme, guests). \n" +
+                 "CRITICAL: Satisfy all user preferences (cuisine, dietary, theme, guests). Make sure to include ALL specifically requested items (including drinks/beverages, and ensure their category is set to 'beverage'). \n" +
                  "Respond in the same language as the user's prompt (e.g., if the user asks in Tagalog, reasoning must be in Tagalog).\n" +
                  "RETURN JSON ONLY matching this schema:\n" +
                  "{\n" +
@@ -560,18 +560,74 @@ async function startServer() {
   app.post("/api/ai/regenerate-item", rateLimit(60_000, 20), async (req, res) => {
     try {
       const { currentItem, context } = req.body || {};
+      const prompt = `System: You are an expert catering chef. Context: The user is planning a ${context?.theme || 'General'} event for ${context?.guests || 10} guests. Current Item to replace: ${JSON.stringify(currentItem)}. Return ONE JSON object matching the menu card schema with keys: dish, description, category, price, portion_per_guest, reasoning.`;
+      
       const endpoint = (process.env.AZURE_OPENAI_ENDPOINT || "").trim().replace(/^"|"$/g, '');
       const deployment = (process.env.AZURE_OPENAI_DEPLOYMENT_NAME || "").trim().replace(/^"|"$/g, '');
       const apiKey = (process.env.AZURE_OPENAI_API_KEY || "").trim().replace(/^"|"$/g, '');
-      if (!endpoint || !deployment || !apiKey) return res.status(503).json({ error: "AI service not configured" });
-      const url = `${endpoint.replace(/\/$/, "")}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions?api-version=2024-10-21`;
-      const prompt = `System: You are an expert catering chef. Context: The user is planning a ${context?.theme || 'General'} event for ${context?.guests || 10} guests. Current Item to replace: ${JSON.stringify(currentItem)}. Return ONE JSON object matching the menu card schema.`;
-      const aiResponse = await fetch(url, {
-        method: "POST", headers: { "Content-Type": "application/json", "api-key": apiKey },
-        body: JSON.stringify({ messages: [{ role: "user", content: prompt }], temperature: 0.8, response_format: { type: "json_object" } })
-      });
-      const result = await aiResponse.json();
-      res.json({ success: true, newItem: parseAiJson(result?.choices?.[0]?.message?.content) });
+      
+      let aiResponseText = "";
+      
+      const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+      
+      if (endpoint && deployment && apiKey) {
+        const url = `${endpoint.replace(/\/$/, "")}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions?api-version=2024-10-21`;
+        const aiResponse = await fetch(url, {
+          method: "POST", headers: { "Content-Type": "application/json", "api-key": apiKey },
+          body: JSON.stringify({ messages: [{ role: "user", content: prompt }], temperature: 0.8, response_format: { type: "json_object" } })
+        });
+        const result = await aiResponse.json();
+        aiResponseText = result?.choices?.[0]?.message?.content;
+      } else if (geminiKey) {
+        const googleUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`;
+        const response = await fetch(googleUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { responseMimeType: "application/json" }
+          })
+        });
+        const data = await response.json();
+        aiResponseText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      } else {
+        return res.status(503).json({ error: "AI service not configured" });
+      }
+      
+      if (!aiResponseText) {
+        return res.status(500).json({ error: "Empty AI response" });
+      }
+
+      let parsed: any = {};
+      try {
+        parsed = parseAiJson(aiResponseText);
+      } catch (e) {
+        return res.status(500).json({ error: "AI returned invalid JSON" });
+      }
+
+      // Unwrap if AI wrapped in a nested key (e.g. { dish_suggestion: {...} } or { item: {...} })
+      const unwrap = (obj: any): any => {
+        if (obj && typeof obj === 'object' && !obj.dish) {
+          const keys = Object.keys(obj);
+          if (keys.length === 1) return unwrap(obj[keys[0]]);
+        }
+        return obj;
+      };
+      const rawItem = unwrap(parsed);
+
+      const newItem = {
+        dish: String(rawItem.dish || rawItem.name || rawItem.title || currentItem?.dish || "New Dish").trim(),
+        description: String(rawItem.description || rawItem.details || "").trim(),
+        category: String(rawItem.category || currentItem?.category || "meal").trim(),
+        price: rawItem.price || rawItem.estimated_price || currentItem?.price || 150,
+        portion_per_guest: String(rawItem.portion_per_guest || rawItem.portion || "1 serving").trim(),
+        reasoning: String(rawItem.reasoning || rawItem.reason || "").trim(),
+        ingredients: Array.isArray(rawItem.ingredients) ? rawItem.ingredients : [],
+        tags: Array.isArray(rawItem.tags) ? rawItem.tags : [],
+        allergens: Array.isArray(rawItem.allergens) ? rawItem.allergens : [],
+      };
+
+      res.json({ success: true, newItem });
     } catch (err) { res.status(500).json({ error: "Failed to regenerate item" }); }
   });
 
@@ -584,6 +640,30 @@ async function startServer() {
       const total = await Event.countDocuments({ userId });
       res.json({ events, total, limit, skip });
     } catch (err) { res.status(500).json({ error: "Failed to fetch events" }); }
+  });
+
+  app.patch("/api/events/user/:userId/chat/:id/title", requireAuth, requireOwnerOrAdmin((req) => req.params.userId), async (req, res) => {
+    try {
+      const { title } = req.body;
+      const eventId = req.params.id;
+      if (!title) return res.status(400).json({ error: "Title is required" });
+      
+      const updated = await Event.findOneAndUpdate(
+        { _id: eventId, userId: req.params.userId },
+        { 
+          $set: { 
+            title: title,
+            conversationTitle: title,
+            "eventData.title": title,
+            "eventData.conversationTitle": title 
+          } 
+        },
+        { new: true }
+      );
+      
+      if (!updated) return res.status(404).json({ error: "Event not found" });
+      res.json({ success: true, event: updated });
+    } catch (err) { res.status(500).json({ error: "Failed to update title" }); }
   });
 
   app.post("/api/events", requireAuth, async (req, res) => {
@@ -672,11 +752,30 @@ async function startServer() {
     } catch (err) { res.status(500).json({ error: "Failed to fetch shops" }); }
   });
 
+  app.get("/api/shops/my", requireAuth, async (req, res) => {
+    try {
+      const shop = await Shop.findOne({ adminId: (req as any).auth.uid });
+      res.json(shop || null);
+    } catch (err) { res.status(500).json({ error: "Failed to fetch my shop" }); }
+  });
+
   app.post("/api/shops", requireAuth, async (req, res) => {
     try {
-      const shop = await Shop.findOneAndUpdate({ adminId: (req as any).auth.uid }, { ...req.body, adminId: (req as any).auth.uid }, { upsert: true, returnDocument: 'after' });
+      const updateData = { ...req.body, adminId: (req as any).auth.uid };
+      // Prevent duplicate key errors on sparse unique index for empty strings
+      if (!updateData.pin) {
+        delete updateData.pin;
+      }
+      const shop = await Shop.findOneAndUpdate(
+        { adminId: (req as any).auth.uid },
+        { $set: updateData },
+        { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
+      );
       res.json(shop);
-    } catch (err) { res.status(500).json({ error: "Failed to save shop" }); }
+    } catch (err) { 
+      console.error("Save shop error:", err);
+      res.status(500).json({ error: "Failed to save shop", details: (err as Error).message }); 
+    }
   });
 
   app.get("/api/shops/discovery", async (req, res) => {
@@ -736,30 +835,63 @@ async function startServer() {
   app.get("/api/chat/:eventId", requireAuth, async (req, res) => {
     try {
       const auth = (req as any).auth;
-      const chat = await Chat.findOne({ eventId: req.params.eventId, participants: auth.uid });
-      res.json(chat || { messages: [] });
+      const chat = await Chat.findOne({ eventId: req.params.eventId });
+      if (!chat) return res.json({ messages: [] });
+
+      const participants = chat.participants || [];
+      const isParticipant = participants.includes(auth.uid);
+      if (!isParticipant && auth.role === "admin") {
+        if (!participants.includes(auth.uid)) {
+          chat.participants = [...participants, auth.uid];
+          await chat.save();
+        }
+      } else if (!isParticipant) {
+        const event = await Event.findById(req.params.eventId);
+        if (!event || event.userId !== auth.uid) {
+          return res.json({ messages: [] });
+        }
+        if (!participants.includes(auth.uid)) {
+          chat.participants = [...participants, auth.uid];
+          await chat.save();
+        }
+      }
+      res.json(chat);
     } catch (err) { res.status(500).json({ error: "Failed to fetch chat" }); }
   });
 
   app.post("/api/chat/send", requireAuth, async (req, res) => {
     try {
       const auth = (req as any).auth;
-      const { eventId, text, shopId, type = 'text', attachment } = req.body;
+      const { eventId, shopId, type = 'text', attachment } = req.body;
+      const text = String(req.body.text ?? req.body.message ?? "").trim();
+      if (!eventId || !text) {
+        return res.status(400).json({ error: "eventId and text are required" });
+      }
+
       let chat = await Chat.findOne({ eventId });
       if (!chat) {
         const participants = [auth.uid];
         if (shopId) {
           const shop = await Shop.findById(shopId);
-          if (shop) participants.push(shop.adminId);
+          if (shop?.adminId) participants.push(shop.adminId);
         }
         chat = new Chat({ eventId, participants, messages: [] });
+      } else if (!chat.participants.includes(auth.uid)) {
+        chat.participants.push(auth.uid);
+        if (shopId) {
+          const shop = await Shop.findById(shopId);
+          if (shop?.adminId && !chat.participants.includes(shop.adminId)) {
+            chat.participants.push(shop.adminId);
+          }
+        }
       }
-      chat.messages.push({ 
-        senderId: auth.uid, 
-        text, 
+
+      chat.messages.push({
+        senderId: auth.uid,
+        text,
         type,
         attachment,
-        timestamp: new Date() 
+        timestamp: new Date()
       });
       await chat.save();
       res.json(chat);
@@ -785,7 +917,11 @@ async function startServer() {
 
   app.post("/api/shops/my/inventory", requireAuth, async (req, res) => {
     try {
-      const shop = await Shop.findOneAndUpdate({ adminId: (req as any).auth.uid }, { inventory: req.body.items, adminId: (req as any).auth.uid }, { upsert: true, returnDocument: 'after' });
+      const shop = await Shop.findOneAndUpdate(
+        { adminId: (req as any).auth.uid },
+        { $set: { inventory: req.body.items } },
+        { upsert: true, returnDocument: 'after' }
+      );
       res.json({ inventory: (shop as any).inventory || [] });
     } catch (err) { res.status(500).json({ error: "Failed to save inventory" }); }
   });

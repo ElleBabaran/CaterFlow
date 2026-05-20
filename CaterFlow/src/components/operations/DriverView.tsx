@@ -20,6 +20,7 @@ import { MapContainer, Marker, Popup, TileLayer } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { inferVenueCoordinates } from '../../services/knowledgeBase';
+import { CustomerTrackingMap } from './CustomerTrackingMap';
 
 // Custom tomato pin for the driver
 const tomatoIcon = new L.Icon({
@@ -63,13 +64,18 @@ export function DriverView({ event, logistics }: { event: any, logistics: any })
   const handleUpdateStatus = async (newStatus: 'prep' | 'transit' | 'arrived' | 'setup' | 'completed') => {
     setStatus(newStatus);
     try {
-      await fetch(`/api/events/${event._id}/delivery-status`, {
+      const res = await fetch(`/api/events/${event._id}/delivery-status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` },
         body: JSON.stringify({ status: newStatus })
       });
-    } catch (err) {
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || errBody.details || "Failed to update status on server");
+      }
+    } catch (err: any) {
       console.error("Failed to update delivery status:", err);
+      alert("Failed to update delivery status: " + (err.message || err));
     }
   };
 
@@ -108,37 +114,11 @@ export function DriverView({ event, logistics }: { event: any, logistics: any })
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-6">
           {/* Map Preview */}
-          <div className="staff-card h-[450px] overflow-hidden relative group">
-            {!geoLoading && venueCoords ? (
-              <MapContainer center={[venueCoords.lat, venueCoords.lng]} zoom={13} style={{ height: '100%', width: '100%' }}>
-                <TileLayer
-                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                />
-                <Marker position={[venueCoords.lat, venueCoords.lng]} icon={tomatoIcon}>
-                  <Popup>
-                    <strong>Delivery Destination</strong><br />
-                    {deliveryLoc}
-                  </Popup>
-                </Marker>
-              </MapContainer>
-            ) : (
-              <div className="w-full h-full flex flex-col items-center justify-center bg-slate-50 text-slate-400 gap-2">
-                <div className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin" />
-                <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Syncing Destination Coords...</span>
-              </div>
-            )}
-            <div className="absolute bottom-6 left-6 right-6 z-[1000]">
-              <div className="bg-white/90 backdrop-blur p-5 rounded-2xl shadow-xl border border-slate-100 flex items-center justify-between">
-                <div>
-                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Destination</p>
-                  <p className="text-xs font-black text-slate-800 uppercase">{deliveryLoc}</p>
-                </div>
-                <button className="bg-slate-900 text-white rounded-xl px-5 py-2.5 text-[10px] font-black uppercase tracking-widest hover:bg-slate-800 transition-all flex items-center gap-2">
-                  <MapPin className="w-3.5 h-3.5" /> Launch Navigation
-                </button>
-              </div>
-            </div>
+          <div className="staff-card h-[450px] overflow-hidden relative group rounded-[2rem] border border-slate-200 shadow-sm">
+            <CustomerTrackingMap 
+              status={status} 
+              venueLocation={deliveryLoc} 
+            />
           </div>
 
           {/* Timeline Controls */}

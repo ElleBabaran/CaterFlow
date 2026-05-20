@@ -26,10 +26,10 @@ export const mongoService = {
       const extraHeaders = await authHeaders();
       const res = await fetch(`${API_BASE}/user/${userId}`, {
         headers: extraHeaders,
-        signal: AbortSignal.timeout(10000), // 10s timeout
+        signal: AbortSignal.timeout(30000), // 30s timeout
       });
       return handleResponse(res, "Failed to fetch event history");
-    });
+    }, 3); // max 3 retries
   },
 
   async saveEvent(data: any) {
@@ -109,6 +109,15 @@ export const mongoService = {
     return res.json();
   },
 
+  async fetchMyShop() {
+    const extraHeaders = await authHeaders();
+    const res = await fetch(`/api/shops/my`, {
+      headers: extraHeaders
+    });
+    if (!res.ok) throw new Error("Failed to fetch my shop");
+    return res.json();
+  },
+
   async saveShop(data: any) {
     const extraHeaders = await authHeaders();
     const res = await fetch(`/api/shops`, {
@@ -116,7 +125,10 @@ export const mongoService = {
       headers: { "Content-Type": "application/json", ...extraHeaders },
       body: JSON.stringify(data),
     });
-    if (!res.ok) throw new Error("Failed to save shop");
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.details || errBody.error || "Failed to save shop");
+    }
     return res.json();
   },
 

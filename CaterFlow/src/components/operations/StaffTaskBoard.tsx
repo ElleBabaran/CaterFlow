@@ -210,9 +210,10 @@ export function StaffTaskBoard({
                       {onSelectOrder && (
                         <button
                           onClick={() => onSelectOrder(order)}
-                          className="w-full py-2 bg-slate-900 text-white rounded-xl text-[9px] font-black uppercase tracking-widest hover:bg-slate-800 transition active:scale-95"
+                          className="w-full py-2 bg-slate-900 text-white rounded-xl text-[9px] font-black uppercase tracking-widest hover:bg-slate-800 transition active:scale-95 flex items-center justify-center gap-2"
                         >
-                          Manage Delivery Tracking
+                          <Truck className="w-3.5 h-3.5" />
+                          Take Delivery
                         </button>
                       )}
                     </div>

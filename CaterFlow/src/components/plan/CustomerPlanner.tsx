@@ -45,31 +45,36 @@ interface DishVariation {
 
 type ModalSegment = 'description' | 'nutrition' | 'cooking';
 
-// ── Robust category detection ──
+// ── Robust category detection (desserts checked before drinks to avoid misclassification) ──
 function detectCategory(m: any): 'meal' | 'beverage' | 'dessert' {
   const cat = String(m.category || m.type || '').toLowerCase();
   const dish = String(m.dish || m.name || '').toLowerCase();
-  const combined = `${cat} ${dish}`;
+  const tags = (Array.isArray(m.tags) ? m.tags : []).join(' ').toLowerCase();
+  const combined = `${cat} ${dish} ${tags}`;
 
-  const beverageWords = [
-    'beverage','drink','juice','soda','water','tea','coffee','shake','smoothie',
-    'lemonade','coke','sprite','cola','milk','beer','wine','cocktail','mocktail',
-    'punch','buko','gulaman','inumin','softdrink','iced','float','frappe',
-    'hot choco','hot chocolate','calamansi','mango juice','pineapple juice',
-    'four seasons','iced tea','lemon','juice blend',
-  ];
-  if (beverageWords.some(w => combined.includes(w))) return 'beverage';
+  if (/\bdessert\b|panghimagas|pastry|sweet\b|kakanin/.test(cat)) return 'dessert';
+  if (/\bbeverage\b|\bdrink\b|inumin/.test(cat)) return 'beverage';
+  if (/\bmeal\b|\bmain\b|appetizer|ulam|entree|viand/.test(cat)) return 'meal';
 
   const dessertWords = [
-    'dessert','sweet','cake','pastry','pudding','leche flan','flan','halo-halo',
-    'haluhalo','ice cream','icecream','gelato','sorbet','brownie','cookie','muffin',
-    'cupcake','pie','tart','cheesecake','tiramisu','creme brulee','panna cotta',
-    'macaroon','macarons','biko','bibingka','sapin-sapin','puto','kutsinta',
-    'kalamay','palitaw','suman','champorado','ginataan','mais','turon','banana cue',
-    'kakanin','maja blanca','yema','pastillas','polvoron','ube','chocolate',
-    'caramel custard','caramel',
+    'dessert', 'sweet', 'cake', 'pastry', 'pudding', 'leche flan', 'flan', 'halo-halo',
+    'haluhalo', 'ice cream', 'icecream', 'gelato', 'sorbet', 'brownie', 'cookie', 'muffin',
+    'cupcake', 'pie', 'tart', 'cheesecake', 'tiramisu', 'creme brulee', 'panna cotta',
+    'macaroon', 'macarons', 'biko', 'bibingka', 'sapin-sapin', 'puto', 'kutsinta',
+    'kalamay', 'palitaw', 'suman', 'champorado', 'ginataan', 'turon', 'banana cue',
+    'kakanin', 'maja blanca', 'yema', 'pastillas', 'polvoron', 'ube halaya', 'ube cake',
+    'chocolate cake', 'chocolate mousse', 'caramel custard', 'lava cake', 'sans rival',
   ];
-  if (dessertWords.some(w => combined.includes(w))) return 'dessert';
+  if (dessertWords.some((w) => combined.includes(w))) return 'dessert';
+
+  const beverageWords = [
+    'beverage', 'drink', 'juice', 'soda', 'softdrink', 'water', 'coffee', 'shake', 'smoothie',
+    'lemonade', 'coke', 'sprite', 'cola', 'beer', 'wine', 'cocktail', 'mocktail',
+    'punch', 'buko juice', 'gulaman', 'inumin', 'frappe', 'hot choco', 'hot chocolate',
+    'calamansi juice', 'mango juice', 'pineapple juice', 'four seasons', 'iced tea', 'juice blend',
+    'milk tea', 'tea station', 'refreshment',
+  ];
+  if (beverageWords.some((w) => combined.includes(w))) return 'beverage';
 
   return 'meal';
 }
@@ -274,28 +279,36 @@ export function CustomerPlanner({
         body: JSON.stringify({
           currentItem: item,
           context: {
-            theme: eventData.event_type,
-            guests: eventData.guest_count,
-            location: eventData.event_location,
-            budget: eventData.budget,
+            theme: eventData?.event_type,
+            guests: eventData?.guest_count,
+            location: eventData?.event_location,
+            budget: eventData?.budget,
           },
         }),
       });
+
+      if (!res.ok) {
+        console.error('Regenerate failed, status:', res.status);
+        return;
+      }
+
       const data = await res.json();
-      if (data.success && data.newItem) {
-        const updatedItem = {
+
+      if (data.success && data.newItem && data.newItem.dish) {
+        const updatedItem: DishVariation = {
+          ...item,
           ...data.newItem,
           id: item.id,
           category: detectCategory(data.newItem) || item.category,
           quantity: item.quantity,
-          portion_value: parseInt(data.newItem.portion_per_guest) || 200,
-          price:
-            parseInt(data.newItem.price) ||
-            (item.category === 'meal' ? 150 : item.category === 'dessert' ? 80 : 50),
+          portion_value: parseInt(String(data.newItem.portion_per_guest)) || item.portion_value || 200,
+          price: parseInt(String(data.newItem.price)) || item.price || (item.category === 'meal' ? 150 : item.category === 'dessert' ? 80 : 50),
         };
         const updated = menuItems.map((m) => (m.id === item.id ? updatedItem : m));
         setMenuItems(updated);
         onUpdate?.(updated);
+      } else {
+        console.error('Regenerate response missing newItem.dish:', data);
       }
     } catch (err) {
       console.error('Failed to regenerate:', err);
@@ -385,7 +398,7 @@ export function CustomerPlanner({
 
   return (
     <div
-      className="flex flex-col h-full rounded-[2.5rem] overflow-hidden border border-slate-200/60 shadow-xl"
+      className="flex flex-col h-full w-full min-w-0 rounded-[2.5rem] overflow-hidden border border-slate-200/60 shadow-xl"
       style={{ background: 'var(--cream)' }}
     >
       {/* ── Header ── */}
@@ -482,8 +495,16 @@ export function CustomerPlanner({
                   </button>
                 </motion.div>
               ) : (
-                /* Cards grid */
-                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                /* Cards grid — full width when a section has few items */
+                <div
+                  className={`grid gap-4 w-full ${
+                    items.length === 1
+                      ? 'grid-cols-1'
+                      : items.length === 2
+                        ? 'grid-cols-1 sm:grid-cols-2'
+                        : 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-3'
+                  }`}
+                >
                   {items.map((item, idx) => {
                     const hasNotes = item.descriptionNotes || item.nutritionNotes || item.cookingNotes;
                     return (
@@ -495,7 +516,9 @@ export function CustomerPlanner({
                         whileHover={{ y: -5, scale: 1.02 }}
                         whileTap={{ scale: 0.98 }}
                         onClick={() => handleItemClick(item)}
-                        className="rounded-[2rem] overflow-hidden shadow-sm hover:shadow-xl transition-all duration-300 group cursor-pointer flex flex-col relative"
+                        className={`w-full rounded-[2rem] overflow-hidden shadow-sm hover:shadow-xl transition-all duration-300 group cursor-pointer flex flex-col relative ${
+                          items.length === 1 ? 'col-span-full' : ''
+                        }`}
                         style={{
                           background: 'var(--card-bg)',
                           border: '1px solid var(--border-color)',

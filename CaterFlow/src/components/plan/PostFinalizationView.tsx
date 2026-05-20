@@ -14,10 +14,14 @@ import {
   BadgeCheck,
   Phone,
   ArrowRight,
+  ArrowLeft,
   Navigation,
   Zap,
 } from 'lucide-react';
+import { QRCodeCanvas } from 'qrcode.react';
 import { parseBudgetDetails } from '../../services/budget';
+import { buildOrderPublicUrl } from '../../utils/publicUrl';
+import { QrPublicUrlField } from './QrPublicUrlField';
 
 interface PostFinalizationViewProps {
   eventData: any;
@@ -26,12 +30,16 @@ interface PostFinalizationViewProps {
   onChatWithShop: (shop: any) => void;
 }
 
+// Step flow: 1 = Recommended Shops, 2 = Available Shops to Chat, 3 = QR Code
+const TOTAL_STEPS = 3;
+
 export function PostFinalizationView({ eventData, orderId, exactBudgetAmt, onChatWithShop }: PostFinalizationViewProps) {
   const [nearbyShops, setNearbyShops] = useState<any[]>([]);
   const [availableShops, setAvailableShops] = useState<any[]>([]);
   const [loadingShops, setLoadingShops] = useState(true);
-  const [qrVisible, setQrVisible] = useState(false);
-  const [shopsVisible, setShopsVisible] = useState(false);
+  const [currentStep, setCurrentStep] = useState(1);
+  const [direction, setDirection] = useState(1);
+  const [skipSuggestions, setSkipSuggestions] = useState(false);
 
   // Parse exact budget
   const parsed = parseBudgetDetails(eventData?.budget || '');
@@ -45,7 +53,11 @@ export function PostFinalizationView({ eventData, orderId, exactBudgetAmt, onCha
   const exactBudget = budgetValue > 0 ? formatBudget(budgetValue) : (eventData?.budget || 'N/A');
 
   const location = eventData?.event_location || '';
-  const qrUrl = `${window.location.origin}?orderId=${orderId}`;
+  const [qrUrl, setQrUrl] = useState(() => buildOrderPublicUrl(orderId));
+
+  useEffect(() => {
+    setQrUrl(buildOrderPublicUrl(orderId));
+  }, [orderId]);
 
   const guestsCount = Number(eventData?.guest_count || eventData?.guests || 100);
 
@@ -94,12 +106,22 @@ export function PostFinalizationView({ eventData, orderId, exactBudgetAmt, onCha
   ];
 
   useEffect(() => {
-    // QR shows after 800ms
-    const qrTimer = setTimeout(() => setQrVisible(true), 800);
-    // Auto-start fetching shops
     fetchShops();
-    return () => clearTimeout(qrTimer);
   }, []);
+
+  const goNext = () => {
+    if (currentStep < TOTAL_STEPS) {
+      setDirection(1);
+      setCurrentStep(prev => prev + 1);
+    }
+  };
+
+  const goPrev = () => {
+    if (currentStep > 1) {
+      setDirection(-1);
+      setCurrentStep(prev => prev - 1);
+    }
+  };
 
   const fetchShops = async () => {
     setLoadingShops(true);
@@ -123,7 +145,6 @@ export function PostFinalizationView({ eventData, orderId, exactBudgetAmt, onCha
       setAvailableShops(fallbackNearbyShops);
     } finally {
       setLoadingShops(false);
-      setTimeout(() => setShopsVisible(true), 300);
     }
   };
 
@@ -262,9 +283,9 @@ export function PostFinalizationView({ eventData, orderId, exactBudgetAmt, onCha
         </div>
       </motion.div>
 
-      {/* ── QR Code ── */}
+      {/* ── QR Code (Step 1) ── */}
       <AnimatePresence>
-        {qrVisible && orderId && (
+        {!skipSuggestions && currentStep === 1 && orderId && (
           <motion.div
             initial={{ opacity: 0, scale: 0.88, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -280,13 +301,10 @@ export function PostFinalizationView({ eventData, orderId, exactBudgetAmt, onCha
                 Share with your caterer to confirm the order
               </p>
             </div>
+            <QrPublicUrlField orderId={orderId} onUrlChange={setQrUrl} />
             <div className="relative">
               <div className="bg-white p-4 rounded-2xl shadow-lg border border-slate-100">
-                <img
-                  src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(qrUrl)}`}
-                  alt="Order QR Code"
-                  className="w-[220px] h-[220px]"
-                />
+                <QRCodeCanvas value={qrUrl} size={220} level="H" includeMargin />
               </div>
               {/* Corner decorations */}
               <div className="absolute top-0 left-0 w-5 h-5 border-t-2 border-l-2 border-emerald-500 rounded-tl-lg" />
@@ -306,12 +324,13 @@ export function PostFinalizationView({ eventData, orderId, exactBudgetAmt, onCha
         )}
       </AnimatePresence>
 
-      {/* ── Suggested Catering Services Near Your Place (Auto-loads) ── */}
+      {/* ── Step 3: Suggested Catering Services Near Your Place ── */}
       <AnimatePresence>
-        {shopsVisible && (
+        {!skipSuggestions && currentStep === 3 && (
           <motion.div
             initial={{ opacity: 0, y: 24 }}
             animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -24, scale: 0.95 }}
             transition={{ type: 'spring', stiffness: 70 }}
             className="space-y-10"
           >
@@ -437,101 +456,214 @@ export function PostFinalizationView({ eventData, orderId, exactBudgetAmt, onCha
               )}
             </section>
 
-            {/* Available Catering Services to Chat */}
-            {availableShops.length > 0 && (
-              <section className="space-y-6">
-                <div className="relative overflow-hidden rounded-[2.5rem] bg-gradient-to-br from-slate-900 via-slate-800 to-emerald-950 p-8 text-white shadow-2xl">
-                  <div className="absolute -right-12 -top-12 w-48 h-48 bg-emerald-500/10 rounded-full" />
-                  <div className="absolute -left-6 -bottom-6 w-32 h-32 bg-teal-500/10 rounded-full" />
-                  <div className="relative z-10">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Zap className="w-4 h-4 text-emerald-400" />
-                      <p className="text-[10px] font-black uppercase tracking-[0.3em] text-emerald-400">Direct Connect</p>
-                    </div>
-                    <h2 className="text-2xl font-black tracking-tight mb-1">
-                      Available Catering Services to Chat
-                    </h2>
-                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
-                      Directly message these verified catering shops
-                    </p>
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  {availableShops.map((shop: any, idx: number) => (
-                    <motion.div
-                      key={shop._id || idx}
-                      initial={{ opacity: 0, x: -16 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: idx * 0.07, type: 'spring', stiffness: 100 }}
-                      whileHover={{ x: 4 }}
-                      className="flex items-center gap-4 bg-white border border-slate-200 rounded-2xl p-4 hover:shadow-lg hover:border-emerald-200 transition-all duration-300 group"
-                    >
-                      {/* Avatar */}
-                      <div className="w-14 h-14 rounded-2xl bg-emerald-50 border border-emerald-100 flex items-center justify-center flex-shrink-0 overflow-hidden shadow-sm">
-                        {shop.shopImage || shop.logo ? (
-                          <img src={shop.shopImage || shop.logo} alt={shop.name} className="w-full h-full object-cover rounded-2xl" />
-                        ) : (
-                          <Store className="w-7 h-7 text-emerald-600" />
-                        )}
-                      </div>
-
-                      {/* Info */}
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-black text-slate-900 truncate group-hover:text-emerald-700 transition-colors">
-                          {shop.name || 'Catering Shop'}
-                        </p>
-                        {/* Exact address */}
-                        <div className="flex items-start gap-1 mt-0.5">
-                          <MapPin className="w-3 h-3 text-emerald-500 flex-shrink-0 mt-0.5" />
-                          <p className="text-[10px] font-bold text-slate-500 leading-snug line-clamp-2">
-                            {shop.location || 'Address unavailable'}
-                          </p>
-                        </div>
-                        {shop.specialties && (
-                          <p className="text-[9px] text-slate-400 mt-0.5 truncate">
-                            {typeof shop.specialties === 'string' ? shop.specialties.split(',').slice(0, 2).join(', ') : ''}
-                          </p>
-                        )}
-                      </div>
-
-                      {/* Online indicator */}
-                      <div className="flex items-center gap-1.5 flex-shrink-0">
-                        <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse shadow-sm shadow-emerald-400" />
-                        <span className="text-[9px] font-black text-emerald-600 uppercase tracking-widest hidden sm:block">Online</span>
-                      </div>
-
-                      {/* Chat button */}
-                      <motion.button
-                        whileHover={{ scale: 1.05 }}
-                        whileTap={{ scale: 0.95 }}
-                        onClick={() => onChatWithShop(shop)}
-                        className="flex items-center gap-2 bg-emerald-700 text-white px-5 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-md shadow-emerald-900/15 flex-shrink-0"
-                      >
-                        <MessageCircle className="w-3.5 h-3.5" />
-                        Chat
-                      </motion.button>
-                    </motion.div>
-                  ))}
-                </div>
-              </section>
+            {/* Loading indicator for step 1 */}
+            {!loadingShops && nearbyShops.length === 0 && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="flex flex-col items-center gap-3 py-12 text-center"
+              >
+                <Loader2 className="w-8 h-8 animate-spin text-emerald-500" />
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                  Finding catering services near you...
+                </p>
+              </motion.div>
             )}
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Loading shops placeholder while QR shows */}
-      {!shopsVisible && !loadingShops && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="flex flex-col items-center gap-3 py-12 text-center"
-        >
-          <Loader2 className="w-8 h-8 animate-spin text-emerald-500" />
-          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-            Finding catering services near you...
-          </p>
-        </motion.div>
+      {/* ── Step 2: Available Catering Services to Chat ── */}
+      <AnimatePresence>
+        {!skipSuggestions && currentStep === 2 && (
+          <motion.div
+            initial={{ opacity: 0, y: 24 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -24, scale: 0.95 }}
+            transition={{ type: 'spring', stiffness: 70 }}
+            className="space-y-6"
+          >
+            <div className="relative overflow-hidden rounded-[2.5rem] bg-gradient-to-br from-slate-900 via-slate-800 to-emerald-950 p-8 text-white shadow-2xl">
+              <div className="absolute -right-12 -top-12 w-48 h-48 bg-emerald-500/10 rounded-full" />
+              <div className="absolute -left-6 -bottom-6 w-32 h-32 bg-teal-500/10 rounded-full" />
+              <div className="relative z-10">
+                <div className="flex items-center gap-2 mb-2">
+                  <Zap className="w-4 h-4 text-emerald-400" />
+                  <p className="text-[10px] font-black uppercase tracking-[0.3em] text-emerald-400">Direct Connect</p>
+                </div>
+                <h2 className="text-2xl font-black tracking-tight mb-1">
+                  Available Catering Services to Chat
+                </h2>
+                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                  Directly message these verified catering shops
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {availableShops.map((shop: any, idx: number) => (
+                <motion.div
+                  key={shop._id || idx}
+                  initial={{ opacity: 0, x: -16 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: idx * 0.07, type: 'spring', stiffness: 100 }}
+                  whileHover={{ x: 4 }}
+                  className="flex items-center gap-4 bg-white border border-slate-200 rounded-2xl p-4 hover:shadow-lg hover:border-emerald-200 transition-all duration-300 group"
+                >
+                  {/* Avatar */}
+                  <div className="w-14 h-14 rounded-2xl bg-emerald-50 border border-emerald-100 flex items-center justify-center flex-shrink-0 overflow-hidden shadow-sm">
+                    {shop.shopImage || shop.logo ? (
+                      <img src={shop.shopImage || shop.logo} alt={shop.name} className="w-full h-full object-cover rounded-2xl" />
+                    ) : (
+                      <Store className="w-7 h-7 text-emerald-600" />
+                    )}
+                  </div>
+
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-black text-slate-900 truncate group-hover:text-emerald-700 transition-colors">
+                      {shop.name || 'Catering Shop'}
+                    </p>
+                    {/* Exact address */}
+                    <div className="flex items-start gap-1 mt-0.5">
+                      <MapPin className="w-3 h-3 text-emerald-500 flex-shrink-0 mt-0.5" />
+                      <p className="text-[10px] font-bold text-slate-500 leading-snug line-clamp-2">
+                        {shop.location || 'Address unavailable'}
+                      </p>
+                    </div>
+                    {shop.specialties && (
+                      <p className="text-[9px] text-slate-400 mt-0.5 truncate">
+                        {typeof shop.specialties === 'string' ? shop.specialties.split(',').slice(0, 2).join(', ') : ''}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Online indicator */}
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse shadow-sm shadow-emerald-400" />
+                    <span className="text-[9px] font-black text-emerald-600 uppercase tracking-widest hidden sm:block">Online</span>
+                  </div>
+
+                  {/* Chat button */}
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => onChatWithShop(shop)}
+                    className="flex items-center gap-2 bg-emerald-700 text-white px-5 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all shadow-md shadow-emerald-900/15 flex-shrink-0"
+                  >
+                    <MessageCircle className="w-3.5 h-3.5" />
+                    Chat
+                  </motion.button>
+                </motion.div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Skipped Suggestions View ── */}
+      <AnimatePresence>
+        {skipSuggestions && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="flex flex-col items-center justify-center text-center py-20 max-w-md mx-auto"
+          >
+            <div className="w-24 h-24 bg-emerald-100 rounded-full flex items-center justify-center mb-6">
+              <CheckCircle2 className="w-12 h-12 text-emerald-500" />
+            </div>
+            <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">You're All Set!</h2>
+            <p className="text-sm font-medium text-slate-500 mt-2 leading-relaxed">
+              Your catering plan and QR code are saved. You can navigate through the sidebar to view your financials, menu, and logistics at any time.
+            </p>
+            <button 
+              onClick={() => { setSkipSuggestions(false); setCurrentStep(1); }}
+              className="mt-8 px-6 py-2.5 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-xl text-xs font-black uppercase tracking-widest transition-all"
+            >
+              Back to QR Code
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Step Navigation Controls */}
+      {!skipSuggestions && (
+        <div className="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-lg border-t border-slate-200 px-6 py-4 z-50">
+        <div className="max-w-2xl mx-auto flex items-center justify-between">
+          {/* Back button */}
+          <button
+            onClick={goPrev}
+            disabled={currentStep === 1}
+            className={`flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-sm transition-all ${
+              currentStep === 1
+                ? 'opacity-30 cursor-not-allowed'
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+            }`}
+          >
+            <ArrowLeft className="w-4 h-4" />
+            Back
+          </button>
+
+          {/* Step Indicators */}
+          <div className="flex items-center gap-3">
+            {[
+              { step: 1, label: 'QR Code' },
+              { step: 2, label: 'Connect' },
+              { step: 3, label: 'Suggestions' },
+            ].map(({ step, label }) => (
+              <button
+                key={step}
+                onClick={() => {
+                  setDirection(step > currentStep ? 1 : -1);
+                  setCurrentStep(step);
+                }}
+                className={`flex flex-col items-center gap-1 transition-all`}
+              >
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black transition-all ${
+                  step === currentStep
+                    ? 'bg-emerald-600 text-white'
+                    : step < currentStep
+                    ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                    : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
+                }`}>
+                  {step < currentStep ? <CheckCircle2 className="w-4 h-4" /> : step}
+                </div>
+                <span className={`text-[8px] font-black uppercase tracking-widest hidden sm:block ${
+                  step === currentStep ? 'text-emerald-700' : 'text-slate-400'
+                }`}>{label}</span>
+              </button>
+            ))}
+          </div>
+
+          {/* Next / Done button */}
+          <div className="flex items-center gap-2">
+            {currentStep < TOTAL_STEPS && (
+              <button
+                onClick={() => setSkipSuggestions(true)}
+                className="px-4 py-3 text-xs font-bold text-slate-500 hover:text-slate-700 transition-all hidden sm:block uppercase tracking-widest"
+              >
+                Skip Suggestions
+              </button>
+            )}
+            <button
+              onClick={currentStep < TOTAL_STEPS ? goNext : () => setSkipSuggestions(true)}
+              className="flex items-center gap-2 px-6 py-3 rounded-xl font-bold text-sm transition-all bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-default shadow-md shadow-emerald-900/20"
+            >
+              {currentStep === TOTAL_STEPS ? (
+                <>
+                  <CheckCircle2 className="w-4 h-4" />
+                  Done
+                </>
+              ) : (
+                <>
+                  Next
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
       )}
     </motion.div>
   );

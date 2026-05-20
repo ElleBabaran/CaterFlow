@@ -13,27 +13,9 @@ import {
   Truck
 } from 'lucide-react';
 import { calculateOrderFinance, estimateCookingMinutes, formatCurrencyAmount } from '../../services/budget';
-import { MapContainer, Marker, Popup, TileLayer } from 'react-leaflet';
-import 'leaflet/dist/leaflet.css';
-import L from 'leaflet';
+import { CustomerTrackingMap } from '../operations/CustomerTrackingMap';
 
-const destinationIcon = new L.Icon({
-  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
-  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34],
-  shadowSize: [41, 41],
-});
 
-const driverIcon = new L.Icon({
-  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-orange.png',
-  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34],
-  shadowSize: [41, 41],
-});
 
 export const PublicOrderView: React.FC<{ orderId: string }> = ({ orderId }) => {
   const [order, setOrder] = useState<any>(null);
@@ -129,26 +111,11 @@ export const PublicOrderView: React.FC<{ orderId: string }> = ({ orderId }) => {
               </div>
               <Truck className="w-6 h-6 text-purple-600" />
             </div>
-            <div className="h-64 sm:h-96 w-full relative">
-              <MapContainer center={[14.5547, 121.0509]} zoom={13} style={{ height: '100%', width: '100%' }}>
-                <TileLayer
-                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                />
-                <Marker position={[14.5547, 121.0509]} icon={destinationIcon}>
-                  <Popup>
-                    <strong>Your Event Location</strong><br />
-                    {event?.event_location || order.deliveryLocation || 'Venue'}
-                  </Popup>
-                </Marker>
-                {/* Mock Driver Location slightly offset */}
-                <Marker position={[14.5500, 121.0450]} icon={driverIcon}>
-                  <Popup>
-                    <strong>CaterFlow Delivery Driver</strong><br />
-                    On the way!
-                  </Popup>
-                </Marker>
-              </MapContainer>
+            <div className="h-64 sm:h-[450px] w-full relative">
+              <CustomerTrackingMap 
+                status={order.status}
+                venueLocation={event?.event_location || order.deliveryLocation || 'Manila'}
+              />
             </div>
             <div className="px-10 py-6 bg-slate-50 border-t border-slate-100">
                <p className="text-xs font-bold text-slate-600 flex items-center gap-2">

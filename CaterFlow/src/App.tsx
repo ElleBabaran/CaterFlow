@@ -38,6 +38,7 @@ import {
   QrCode,
   Zap,
   PlusCircle,
+  Plus,
   FileText,
   Sparkles
 } from 'lucide-react';
@@ -64,9 +65,11 @@ import { GeoOpsLeafletMap } from './components/GeoOpsLeafletMap';
 import { CustomerPlanner } from './components/plan/CustomerPlanner';
 import { AdminInbox } from './components/admin/AdminInbox';
 import { AdminShopSetup } from './components/admin/AdminShopSetup';
+import { AdminStaffManagement } from './components/admin/AdminStaffManagement';
 import { AdminDashboard } from './components/dashboard/AdminDashboard';
 import { StaffTaskBoard } from './components/operations/StaffTaskBoard';
 import { DriverView } from './components/operations/DriverView';
+import { StaffChatView } from './components/operations/StaffChatView';
 import { BlueprintSummary } from './components/plan/BlueprintSummary';
 import { ShopDiscovery } from './components/discovery/ShopDiscovery';
 import { ShopDetailsModal } from './components/discovery/ShopDetailsModal';
@@ -273,20 +276,24 @@ export default function App() {
   const [prevOrderCount, setPrevOrderCount] = useState(0);
   const [signupRole, setSignupRole] = useState<WorkspaceRole>('customer');
   const [reportView, setReportView] = useState<'all' | 'menu' | 'logistics' | 'finance'>('menu');
-  const [dashboardView, setDashboardView] = useState<'conversation' | 'blueprint' | 'discovery' | 'marketplace-chat' | 'qr' | 'summary' | 'operations' | 'finance' | 'admin-dashboard' | 'admin-inbox' | 'shop-setup' | 'inventory-planner' | 'menu-editor' | 'checkout' | 'staff-tasks' | 'delivery'>('conversation');
+  const [dashboardView, setDashboardView] = useState<'conversation' | 'blueprint' | 'discovery' | 'marketplace-chat' | 'qr' | 'summary' | 'operations' | 'finance' | 'admin-dashboard' | 'admin-inbox' | 'shop-setup' | 'inventory-planner' | 'menu-editor' | 'checkout' | 'post-finalization' | 'staff-tasks' | 'delivery' | 'staff-management' | 'staff-chat'>('conversation');
   const [activePhaseIndex, setActivePhaseIndex] = useState<number>(0);
   const [expandedStepIndex, setExpandedStepIndex] = useState<number | null>(0);
   const [showDetailedAgentView, setShowDetailedAgentView] = useState<boolean>(false);
   const [resultPageIndex, setResultPageIndex] = useState(0);
   const [fullScreenResult, setFullScreenResult] = useState(false);
+  const roleDashboardInitialized = useRef(false);
+  const isSigningUpRef = useRef(false);
 
   useEffect(() => {
     if (dashboardView === 'conversation') {
-      setFullScreenResult(false);
+      if (steps.length === 0 && !isProcessing) {
+        setFullScreenResult(false);
+      }
     } else {
       setFullScreenResult(true);
     }
-  }, [dashboardView]);
+  }, [dashboardView, isProcessing, steps.length]);
   const [useFoundry, setUseFoundry] = useState(false);
   const [stackStatus, setStackStatus] = useState<any>(null);
   const [skipRoleLoad, setSkipRoleLoad] = useState(false);
@@ -417,13 +424,25 @@ export default function App() {
         if (profile.role === 'admin') {
           setDashboardView('admin-inbox');
           fetchAdminPlans(activeUser);
+          mongoService.fetchMyShop()
+            .then(shop => {
+              if (shop) setShopProfile(shop);
+            })
+            .catch(console.error);
         } else if (profile.role === 'staff') {
           // Check if staff has a shop linked
           const hasShop = !!(profile.shopId || profile.linkedShopId);
           setStaffShopLinked(hasShop);
           setDashboardView('staff-tasks');
-        } else {
-          setDashboardView('conversation');
+        } else if (!roleDashboardInitialized.current) {
+          setDashboardView((prev) => {
+            const activePlanViews = new Set([
+              'summary', 'post-finalization', 'checkout', 'inventory-planner',
+              'menu-editor', 'marketplace-chat', 'discovery', 'qr', 'delivery',
+            ]);
+            return activePlanViews.has(prev) ? prev : 'conversation';
+          });
+          roleDashboardInitialized.current = true;
         }
         return;
       }
@@ -433,7 +452,16 @@ export default function App() {
     } catch (err) {
       console.error("Error loading user role from MongoDB:", err);
       setWorkspaceRole('customer');
-      setDashboardView('conversation');
+      if (!roleDashboardInitialized.current) {
+        setDashboardView((prev) => {
+          const activePlanViews = new Set([
+            'summary', 'post-finalization', 'checkout', 'inventory-planner',
+            'menu-editor', 'marketplace-chat', 'discovery', 'qr', 'delivery',
+          ]);
+          return activePlanViews.has(prev) ? prev : 'conversation';
+        });
+        roleDashboardInitialized.current = true;
+      }
     }
   };
 
@@ -542,6 +570,8 @@ export default function App() {
           setDashboardView('summary');
           setFullScreenResult(true);
           setResultPageIndex(0);
+          setIsChatting(false);
+          setCurrentStepIndex(4);
 
           setMessages([
             {
@@ -557,7 +587,7 @@ export default function App() {
       }
     };
     loadPublicOrder();
-  }, [publicOrderId]);
+  }, [publicOrderId, user]);
 
   const fetchHistory = async (uid: string) => {
     try {
@@ -586,13 +616,81 @@ export default function App() {
           }
           return data.length;
         });
-        setStaffOrders(data);
-        if (data.length > 0 && !selectedStaffOrder) {
-          setSelectedStaffOrder(data[0]);
+        
+        if (data.length > 0) {
+          setStaffOrders(data);
+          if (!selectedStaffOrder) {
+            setSelectedStaffOrder(data[0]);
+          }
+        } else {
+          // Placeholder for when staff have no orders yet
+          const placeholderOrder = {
+            _id: 'placeholder-order',
+            status: 'delivery_approved',
+            eventData: {
+              event_type: 'VIP Corporate Gala (Demo)',
+              event_location: 'Grand Ballroom, BGC Taguig',
+              event_date: new Date().toISOString(),
+              guest_count: 150,
+              delivery_status: 'prep',
+              service_style: 'Plated Dinner',
+              dietary_needs: '3 Vegan, 1 Peanut Allergy',
+            },
+            steps: [
+              {
+                agent: 'Logistics',
+                data: {
+                  timeline: [
+                    { time: '14:00', activity: 'Load equipment to truck' },
+                    { time: '15:30', activity: 'Arrive at Grand Ballroom, BGC' },
+                    { time: '16:00', activity: 'Commence venue setup' }
+                  ]
+                }
+              },
+              {
+                agent: 'Head Chef',
+                data: {
+                  menu: [
+                    { dish: 'Truffle Mushroom Soup', category: 'Starter', portion_per_guest: '1 bowl' },
+                    { dish: 'Filet Mignon with Asparagus', category: 'Main', portion_per_guest: '1 plate' },
+                    { dish: 'Matcha Tiramisu', category: 'Dessert', portion_per_guest: '1 slice' }
+                  ]
+                }
+              }
+            ]
+          };
+          setStaffOrders([placeholderOrder]);
+          if (!selectedStaffOrder) {
+            setSelectedStaffOrder(placeholderOrder);
+          }
         }
       }
     } catch (err) {
       console.error("Failed to fetch staff orders:", err);
+      // Fallback placeholder on error
+      const placeholderOrder = {
+        _id: 'placeholder-error',
+        status: 'delivery_approved',
+        eventData: {
+          event_type: 'VIP Corporate Gala (Demo)',
+          event_location: 'Grand Ballroom, BGC Taguig',
+          event_date: new Date().toISOString(),
+          guest_count: 150,
+          delivery_status: 'prep',
+          service_style: 'Plated Dinner',
+          dietary_needs: '3 Vegan, 1 Peanut Allergy',
+        },
+        steps: [
+          {
+            agent: 'Logistics',
+            data: { timeline: [{ time: '14:00', activity: 'Load equipment to truck' }, { time: '15:30', activity: 'Arrive at venue' }] }
+          }
+        ]
+      };
+      setStaffOrders([placeholderOrder]);
+      if (!selectedStaffOrder) {
+        setSelectedStaffOrder(placeholderOrder);
+      }
     }
   };
 
@@ -688,23 +786,28 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
       if (u) {
-        if (!showRolePicker && !loading && !skipRoleLoad) {
+        // If we're mid-signup (email/password), skip loadUserRole — the signup
+        // handler will set pendingGoogleUser + showRolePicker directly.
+        if (isSigningUpRef.current) {
+          fetchHistory(u.uid);
+        } else if (!showRolePicker && !skipRoleLoad) {
           loadUserRole(u);
           fetchHistory(u.uid);
         }
-        if (messages.length === 0) {
-          setMessages([{ id: 'bot-start', role: 'bot', content: getQuestionText(0), timestamp: new Date() }]);
-        }
+      } else {
+        roleDashboardInitialized.current = false;
       }
       setLoading(false);
     });
 
-    if (publicOrderId) {
-      return <PublicOrderView orderId={publicOrderId} />;
-    }
-
     return () => unsubscribe();
-  }, [messages.length]);
+  }, [showRolePicker, skipRoleLoad]);
+
+  useEffect(() => {
+    if (user && messages.length === 0 && steps.length === 0) {
+      setMessages([{ id: 'bot-start', role: 'bot', content: getQuestionText(0), timestamp: new Date() }]);
+    }
+  }, [user, messages.length, steps.length]);
 
   // DEBOUNCED AUTO-SAVE
   useEffect(() => {
@@ -1133,6 +1236,7 @@ const handleConfirmOrder = async () => {
   setSteps([]);
   setCurrentStepIndex(-1);
   setResultPageIndex(0);
+  setDashboardView('summary');
   setFullScreenResult(true);
 
   const fullPrompt = Object.entries(eventData)
@@ -1151,24 +1255,25 @@ const handleConfirmOrder = async () => {
       setSteps(prev => [...prev, step]);
       setCurrentStepIndex(prev => prev + 1);
 
+      const stepData = step.data || {};
       if (step.agent.includes('Head Chef') || step.agent.includes('Phase 2')) {
-        const menuArray = Array.isArray(step.data.menu) ? step.data.menu :
-                          Array.isArray(step.data.dishes) ? step.data.dishes :
-                          Array.isArray(step.data.recommendations) ? step.data.recommendations : [];
+        const menuArray = Array.isArray(stepData.menu) ? stepData.menu :
+                          Array.isArray(stepData.dishes) ? stepData.dishes :
+                          Array.isArray(stepData.recommendations) ? stepData.recommendations : [];
         if (menuArray.length > 0) {
           setLocalMenu(menuArray);
         }
       }
-      if (step.agent.includes('Inventory') && Array.isArray(step.data.procurement_list)) {
-        setLocalInventory(step.data.procurement_list);
+      if (step.agent.includes('Inventory') && Array.isArray(stepData.procurement_list)) {
+        setLocalInventory(stepData.procurement_list);
       }
-      if ((step.agent.includes('Logistics') || step.agent.includes('Phase 4')) && Array.isArray(step.data.timeline)) {
-        setLocalTimeline(step.data.timeline);
-        setStaffTasks(step.data.timeline.map((t: any) => ({ ...t, completed: false })));
+      if ((step.agent.includes('Logistics') || step.agent.includes('Phase 4')) && Array.isArray(stepData.timeline)) {
+        setLocalTimeline(stepData.timeline);
+        setStaffTasks(stepData.timeline.map((t: any) => ({ ...t, completed: false })));
       }
     }, useFoundry);
 
-    if (result.success) {
+    if (result?.success && result?.data) {
       if (user) {
         const eventRecord = sanitizeForFirestore({
           userId: user.uid,
@@ -1200,21 +1305,55 @@ const handleConfirmOrder = async () => {
             const saved = await mongoService.saveEvent(eventRecord);
             setActiveConversationId(saved._id || saved.id);
           }
-          fetchHistory(user.uid);
         } catch (err) {
           console.error("Error auto-saving to MongoDB:", err);
+        }
+        // Always refresh history regardless of save success/failure
+        try {
+          await fetchHistory(user.uid);
+        } catch (histErr) {
+          console.error("Error refreshing history:", histErr);
         }
       }
 
       // Format AI response message
       const menuText = (Array.isArray(result.data.menu?.menu) ? result.data.menu.menu : []).map((m: any) => `- **${m.dish}**: ${m.description} *(Portion: ${m.portion_per_guest || '--'})*`).join('\n');
-      const costText = `- **Total Quote**: ${result.data.pricing?.optimized_quote || 'TBD'}\n- **Cost per Guest**: ${result.data.pricing?.unit_cost || 'TBD'}`;
+
+      // Detailed financial breakdown
+      const pricing = result.data.pricing || {};
+      const cb = pricing.cost_breakdown || {};
+      const ingredientsList = (pricing.ingredients || []).map((i: any) => `- ${i.item}: ${i.estimated_price}`).join('\n') || "See procurement list";
+      const staffBreakdown = pricing.staff_breakdown || {};
+      const deliveryInfo = pricing.delivery || {};
+
+      const costText = [
+        `- **Total Quote**: ${pricing.optimized_quote || 'TBD'}`,
+        `- **Cost per Guest**: ${pricing.unit_cost || 'TBD'}`,
+        ``,
+        `📦 **Ingredients Cost**:`,
+        `${cb.ingredients_total || 'TBD'}`,
+        ``,
+        `👥 **Staff Required**: ${staffBreakdown.total_staff_needed || 'TBD'} total`,
+        `   - Chefs: ${staffBreakdown.chefs || 0}`,
+        `   - Servers: ${staffBreakdown.servers || 0}`,
+        `   - Helpers: ${staffBreakdown.helpers || 0}`,
+        ``,
+        `🚚 **Delivery Fee**: ${deliveryInfo.estimated_delivery_fee || 'TBD'}`,
+        ``,
+        `📋 **Cost Details**:`,
+        `- Labor: ${cb.labor_total || 'TBD'}`,
+        `- Equipment: ${cb.equipment_fee || 'TBD'}`,
+        `- Serviceware: ${cb.serviceware_fee || 'TBD'}`,
+        `- Overhead (15%): ${cb.overhead_15 || 'TBD'}`,
+        `- **Grand Total**: ${cb.grand_total || pricing.optimized_quote || 'TBD'}`
+      ].join('\n');
+
       const logisticsText = (Array.isArray(result.data.logistics?.timeline) ? result.data.logistics.timeline : []).slice(0, 5).map((t: any) => `- **${t.time}**: ${t.activity}`).join('\n');
       const supplierText = (Array.isArray(result.data.suppliers?.catering_shop_recommendations) ? result.data.suppliers.catering_shop_recommendations : []).slice(0, 3).map((s: any) => `- **${s.name}** (${s.area}) - Match Score: ${s.match_score || '--'}`).join('\n');
-      
+
       const finalMessage = `🎉 **I've completed your catering blueprint!**\n\n` +
       `🍽️ **Menu Recommendations**\n${menuText}\n\n` +
-      `💰 **Estimated Budget**\n${costText}\n\n` +
+      `💰 **Financial Breakdown**\n${costText}\n\n` +
       `⏱️ **Key Logistics**\n${logisticsText}\n\n` +
       `🏪 **Recommended Shops**\n${supplierText}\n\n` +
       `Would you like to adjust any part of this plan? I can refine the menu, change the budget, or update any details!`;
@@ -1248,6 +1387,8 @@ const handleConfirmOrder = async () => {
       content: `⚠️ ALERT: ${errorMsg}`,
       timestamp: new Date()
     }]);
+    setDashboardView('conversation');
+    setFullScreenResult(false);
   } finally {
     setIsProcessing(false);
   }
@@ -1275,6 +1416,14 @@ const loadFromHistory = (item: any) => {
   const menuFromSteps = item.steps?.find((s: any) => s.agent.includes('Head Chef'))?.data?.menu || [];
   setLocalMenu(menuFromSteps);
   setAgreementStatus(item.eventData?.agreement_status || item.agreement_status || 'none');
+  if (item.steps?.length > 0) {
+    setDashboardView('summary');
+    setFullScreenResult(true);
+    setIsChatting(false);
+  } else {
+    setDashboardView('conversation');
+    setFullScreenResult(false);
+  }
 };
 
 
@@ -1288,6 +1437,11 @@ const restartChat = () => {
   setIsChatting(true);
   setSteps([]);
   setCurrentStepIndex(-1);
+  setDashboardView('conversation');
+  setFullScreenResult(false);
+  setShowSummary(false);
+  setIsConfirming(false);
+  setAgreementStatus('none');
 };
 
 const handleFinalizeAgreement = async (finalMenu?: any[]) => {
@@ -1549,14 +1703,17 @@ const handleEmailAuth = async (e: React.FormEvent) => {
       await loginWithEmail(email, password);
     } else {
       if (!name.trim()) throw new Error("Name is required");
-      
-      const userCredential = await signupWithEmail(email, password, name, 'customer');
 
-      await mongoService.saveUser({
-        uid: userCredential.user.uid,
-        email: userCredential.user.email,
-        name
-      });
+      // Set the flag BEFORE Firebase creates the user so onAuthStateChanged
+      // knows not to call loadUserRole (which would skip the role picker).
+      isSigningUpRef.current = true;
+      const userCredential = await signupWithEmail(email, password, name, 'customer');
+      isSigningUpRef.current = false;
+
+      // Show role picker — handleGoogleRoleConfirm will save to MongoDB with
+      // the chosen role once the user confirms.
+      setPendingGoogleUser(userCredential.user);
+      setShowRolePicker(true);
     }
   } catch (err: any) {
     setAuthError(err.message || "Authentication failed");
@@ -1846,11 +2003,10 @@ return (
         <div className="flex-1 flex overflow-hidden">
           <aside className="w-64 bg-[var(--header-bg)] border-r border-[var(--border-color)] flex flex-col p-4 space-y-2">
             {[
-              ['admin-inbox', 'Inbox / Chats', Inbox],
+              ['admin-inbox', 'Orders Dashboard', Inbox],
               ['shop-setup', 'My Catering Shop', Store],
-              ['summary', 'Planning Hub', ClipboardList],
+              ['staff-management', 'Staff Management', Users],
               ['admin-dashboard', 'Business Analytics', BarChart3],
-              ['finance', 'Financials', DollarSign],
             ].map(([key, label, Icon]: any) => (
               <button
                 key={key}
@@ -1893,10 +2049,11 @@ return (
                       await fetch('/api/chat/send', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                        body: JSON.stringify({ eventId: targetId, message: text, senderRole: 'admin' })
+                        body: JSON.stringify({ eventId: targetId, text, shopId: shopProfile?._id })
                       });
                     } catch (err) { console.error('Chat send failed:', err); }
                   }}
+                  getAuthToken={() => user.getIdToken()}
                   onUpdateStatus={async (id, status, extraFields) => {
                     try {
                       const token = await user.getIdToken();
@@ -1933,6 +2090,21 @@ return (
                     const saved = await mongoService.saveShop(data);
                     setShopProfile(saved);
                   }}
+                />
+              )}
+              {dashboardView === 'staff-management' && (
+                <AdminStaffManagement
+                  shopPin={shopProfile?.pin || ''}
+                  onRegeneratePin={async () => {
+                    try {
+                      const newPin = Math.floor(100000 + Math.random() * 900000).toString();
+                      const saved = await mongoService.saveShop({ ...shopProfile, pin: newPin });
+                      setShopProfile(saved);
+                    } catch (err: any) {
+                      alert(`Failed to regenerate PIN: ${err.message || err}`);
+                    }
+                  }}
+                  getAuthToken={() => user.getIdToken()}
                 />
               )}
               {dashboardView === 'admin-dashboard' && (
@@ -1974,7 +2146,7 @@ return (
                     </div>
                     <div className="flex-grow overflow-y-auto p-4 space-y-3 custom-scrollbar min-h-0">
                       {(() => {
-                        const convos = history.filter(h => h.eventData?.selectedShop || h.selectedShop || h.matchedShop || h.event_type);
+                        const convos = history.filter((h) => h._id);
                         if (convos.length === 0) {
                           return (
                             <div className="text-center py-10 text-slate-400">
@@ -1984,18 +2156,21 @@ return (
                           );
                         }
                         return convos.map((convo) => {
-                          const shop = convo.eventData?.selectedShop || convo.selectedShop || convo.matchedShop;
-                          if (!shop) return null;
-                          const isActive = selectedShop?._id === shop._id && activeConversationId === convo._id;
+                          const shop = convo.eventData?.selectedShop || convo.selectedShop || convo.matchedShop || matchedShop;
+                          const isActive = activeConversationId === convo._id;
+                          const title = convo.title || shop?.name || convo.conversationTitle || convo.eventData?.event_type || convo.event_type || 'Catering Plan';
+                          const timeStr = convo.updatedAt || convo.createdAt ? new Date(convo.updatedAt || convo.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
                           return (
                             <button
                               key={convo._id}
                               onClick={() => {
-                                setSelectedShop(shop);
                                 setActiveConversationId(convo._id);
                                 setEventData(convo);
+                                if (shop) setSelectedShop(shop);
                                 if (convo.eventData?.menu) {
                                   setLocalMenu(convo.eventData.menu);
+                                } else if (convo.menu) {
+                                  setLocalMenu(convo.menu);
                                 }
                               }}
                               className={`w-full flex items-center gap-3 p-4 rounded-3xl transition-all border text-left ${
@@ -2005,15 +2180,17 @@ return (
                               }`}
                             >
                               <div className="w-10 h-10 rounded-2xl bg-slate-900 text-emerald-400 flex items-center justify-center font-black text-sm flex-shrink-0">
-                                {shop.name?.charAt(0) || 'C'}
+                                {(title || 'C').charAt(0)}
                               </div>
                               <div className="flex-1 min-w-0">
-                                <p className="text-[11px] font-black text-slate-800 uppercase truncate">{shop.name}</p>
-                                <p className="text-[9px] text-slate-400 font-bold uppercase truncate mt-0.5">{convo.event_type || 'Event Planning'}</p>
+                                <p className="text-[11px] font-black text-slate-800 uppercase truncate">{title}</p>
+                                <p className="text-[9px] text-slate-400 font-bold uppercase truncate mt-0.5">
+                                  {convo.eventData?.event_type || convo.event_type || 'Event Planning'} • {timeStr}
+                                </p>
                               </div>
                               <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
                                 <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">
-                                  {convo.event_date || 'TBD'}
+                                  {convo.eventData?.event_date || convo.event_date || 'TBD'}
                                 </span>
                                 {isActive && (
                                   <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
@@ -2028,11 +2205,11 @@ return (
 
                   {/* Right Column: Active Conversation Chatbox */}
                   <div className="col-span-8 flex flex-col h-full min-h-0">
-                    {selectedShop && activeConversationId ? (
+                    {(selectedShop || matchedShop) && activeConversationId ? (
                       <div className="flex-grow flex flex-col h-full min-h-0">
                         <MarketplaceChat
                           eventId={activeConversationId || ''}
-                          shop={selectedShop}
+                          shop={selectedShop || matchedShop}
                           currentUser={user}
                           eventData={eventData}
                           menuItems={localMenu}
@@ -2047,15 +2224,6 @@ return (
                             }
                           }}
                         />
-                        <div className="flex justify-center mt-4">
-                          <button
-                            onClick={() => setDashboardView('qr')}
-                            className="px-8 py-3 bg-white border border-slate-200 rounded-2xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-emerald-600 hover:border-emerald-200 transition-all shadow-sm flex items-center gap-2"
-                          >
-                            <QrCode className="w-4 h-4" />
-                            Generate Order QR Code
-                          </button>
-                        </div>
                       </div>
                     ) : (
                       <div className="flex-grow bg-white/60 border border-slate-200 rounded-[2.5rem] flex flex-col items-center justify-center text-center p-8 h-full shadow-sm">
@@ -2181,9 +2349,11 @@ return (
               {/* Saved Chatbox / Convo Icon for Customer */}
               <button
                 onClick={() => {
-                  if (dashboardView === 'marketplace-chat' || dashboardView === 'discovery') {
-                    // Close the chat/discovery: return to the correct active page
-                    if (steps.length > 0) {
+                  if (dashboardView === 'marketplace-chat') {
+                    if (agreementStatus === 'finalized') {
+                      setDashboardView('post-finalization');
+                      setFullScreenResult(true);
+                    } else if (steps.length > 0) {
                       setDashboardView('summary');
                       setFullScreenResult(true);
                     } else {
@@ -2192,23 +2362,20 @@ return (
                     }
                   } else {
                     const activeShop = selectedShop || eventData?.eventData?.selectedShop || matchedShop;
-                    if (activeShop) {
-                      if (!selectedShop) setSelectedShop(activeShop);
-                      setDashboardView('marketplace-chat');
-                    } else {
-                      setDashboardView('discovery');
-                    }
+                    if (activeShop && !selectedShop) setSelectedShop(activeShop);
+                    setFullScreenResult(true);
+                    setDashboardView('marketplace-chat');
                   }
                 }}
                 className={`p-2 rounded-xl transition-all relative ${
-                  (dashboardView === 'marketplace-chat' || dashboardView === 'discovery')
+                  dashboardView === 'marketplace-chat'
                     ? 'text-emerald-700 bg-emerald-100 border border-emerald-200'
                     : 'text-slate-400 hover:text-emerald-700 hover:bg-emerald-50'
                 }`}
-                title={selectedShop || eventData?.eventData?.selectedShop || matchedShop ? "Active Shop Chat" : "Discover Shops & Chat"}
+                title="My shop conversations"
               >
                 <MessageSquare className="w-5 h-5 text-emerald-600" />
-                {(selectedShop || eventData?.eventData?.selectedShop || matchedShop) && (
+                {(history.some((h) => h._id) || selectedShop || eventData?.eventData?.selectedShop || matchedShop) && (
                   <>
                     <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-emerald-500 rounded-full animate-ping" />
                     <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-emerald-500 rounded-full border border-white" />
@@ -2239,7 +2406,7 @@ return (
               </p>
               <div className="flex gap-2">
                 {(workspaceRole === 'staff'
-                  ? [['staff-tasks', 'Duty Roster'], ['delivery', 'Logistics']]
+                  ? [['staff-tasks', 'Duty Roster'], ['delivery', 'Logistics'], ['staff-chat', 'Messages']]
                   : [
                       ['conversation', 'Brief'],
                       ['summary', 'Check'],
@@ -2305,6 +2472,16 @@ return (
                   </div>
                 </div>
                 <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+                  <button 
+                    onClick={() => {
+                      restartChat();
+                      setShowHistory(false);
+                    }} 
+                    className="w-full flex items-center justify-center gap-2 p-4 rounded-[1.5rem] border-2 border-dashed border-emerald-200 bg-emerald-50/30 hover:bg-emerald-50 hover:border-emerald-400 text-emerald-700 transition-all shadow-sm hover:shadow-md"
+                  >
+                    <Plus className="w-4 h-4" /> 
+                    <span className="font-black text-[10px] uppercase tracking-[0.2em]">Start New Plan</span>
+                  </button>
                   {filteredHistory.map((item) => (
                     <div key={item.id || item._id} className="group relative rounded-[1.5rem] border border-slate-100 bg-white p-4 transition-all hover:border-emerald-200 hover:shadow-lg hover:shadow-emerald-900/5 hover:-translate-y-0.5">
                       <div onClick={() => loadFromHistory(item)} className="w-full text-left cursor-pointer">
@@ -3561,23 +3738,25 @@ return (
                         await fetch('/api/chat/send', {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                          body: JSON.stringify({ eventId: targetId, message: text, senderRole: 'admin' })
+                          body: JSON.stringify({ eventId: targetId, text, shopId: shopProfile?._id })
                         });
                       } catch (err) { console.error('Chat send failed:', err); }
                     }}
+                    getAuthToken={() => user.getIdToken()}
                     onUpdateStatus={async (id, status, extraFields) => {
                       try {
                         const token = await user.getIdToken();
                         const plan = adminPlans.find(p => p._id === id);
                         if (!plan) return;
 
-                        await fetch(`/api/plans/${id}/status`, {
+                        const res1 = await fetch(`/api/plans/${id}/status`, {
                           method: 'PATCH',
                           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                           body: JSON.stringify({ status })
                         });
+                        if (!res1.ok) throw new Error("Failed to update status");
 
-                        await fetch(`/api/events/${plan.eventId}/delivery-status`, {
+                        const res2 = await fetch(`/api/events/${plan.eventId}/delivery-status`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                           body: JSON.stringify({
@@ -3585,12 +3764,16 @@ return (
                             deliveryLocation: extraFields?.deliveryLocation || plan.location
                           })
                         });
+                        if (!res2.ok) throw new Error("Failed to update delivery status");
 
                         if (status === 'delivery_approved') {
                           setAgreementStatus('delivery_approved');
                         }
                         fetchAdminPlans();
-                      } catch (err) { console.error('Status update failed:', err); }
+                      } catch (err: any) { 
+                        console.error('Status update failed:', err); 
+                        alert('Status update failed: ' + (err.message || err));
+                      }
                     }}
                   />
                 )}
@@ -3645,8 +3828,11 @@ return (
                               steps: updatedSteps
                             };
                           });
-                        } catch (err) {
+                        } catch (err: any) {
                           console.error("Failed to save staff task progress to database:", err);
+                          alert("Failed to save task progress: " + (err.message || err));
+                          // Revert local state on failure
+                          setStaffTasks(staffTasks);
                         }
                       }
                     }}
@@ -3670,6 +3856,12 @@ return (
                   />
                   )
                 )}
+                {dashboardView === 'staff-chat' && workspaceRole === 'staff' && (
+                  <StaffChatView
+                    assignedOrder={selectedStaffOrder}
+                    currentUser={user}
+                  />
+                )}
                 {dashboardView === 'shop-setup' && (
                   <AdminShopSetup
                     profile={shopProfile}
@@ -3678,6 +3870,130 @@ return (
                       setShopProfile(saved);
                     }}
                   />
+                )}
+                {dashboardView === 'discovery' && (
+                  <ShopDiscovery
+                    eventData={eventData}
+                    onSelectShop={(id) => setShowShopDetails(id)}
+                    onClose={() => {
+                      setDashboardView(steps.length > 0 ? 'summary' : 'conversation');
+                      setFullScreenResult(steps.length > 0);
+                    }}
+                  />
+                )}
+                {dashboardView === 'marketplace-chat' && (
+                  <div className="col-span-12 grid grid-cols-12 gap-6 h-[calc(100vh-200px)]">
+                    <div className="col-span-4 bg-white/80 backdrop-blur-md rounded-[2.5rem] border border-slate-200 overflow-hidden flex flex-col shadow-xl">
+                      <div className="p-6 border-b border-slate-100 bg-gradient-to-r from-emerald-50/50 to-transparent flex items-center justify-between flex-shrink-0">
+                        <div>
+                          <h3 className="text-sm font-black uppercase tracking-wider text-slate-800">My Conversations</h3>
+                          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">Chat with catering shops</p>
+                        </div>
+                        <button
+                          onClick={() => {
+                            if (agreementStatus === 'finalized') {
+                              setDashboardView('post-finalization');
+                            } else if (steps.length > 0) {
+                              setDashboardView('summary');
+                            } else {
+                              setDashboardView('conversation');
+                              setFullScreenResult(false);
+                            }
+                          }}
+                          className="p-2 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-xl transition-all"
+                          title="Close chat"
+                        >
+                          <X className="w-5 h-5" />
+                        </button>
+                      </div>
+                      <div className="flex-grow overflow-y-auto p-4 space-y-3 custom-scrollbar min-h-0">
+                        {(() => {
+                          const shopsMap = new Map();
+                          history.forEach((convo: any) => {
+                            const shop = convo.eventData?.selectedShop || convo.selectedShop || convo.matchedShop;
+                            if (shop && !shopsMap.has(shop._id)) {
+                              shopsMap.set(shop._id, shop);
+                            }
+                          });
+                          if ((selectedShop || matchedShop) && !shopsMap.has((selectedShop || matchedShop)?._id)) {
+                            shopsMap.set((selectedShop || matchedShop)._id, selectedShop || matchedShop);
+                          }
+                          const shopsList = Array.from(shopsMap.values());
+
+                          if (shopsList.length === 0) {
+                            return (
+                              <div className="text-center py-10 text-slate-400">
+                                <p className="text-[10px] font-black uppercase tracking-widest">No conversations yet</p>
+                                <p className="text-[9px] mt-1 font-medium leading-relaxed">Select a shop in the Discovery phase to start chatting.</p>
+                              </div>
+                            );
+                          }
+
+                          return shopsList.map((shop: any) => {
+                            const isActive = (selectedShop || matchedShop)?._id === shop._id;
+                            const title = shop.name || 'Catering Shop';
+                            return (
+                              <button
+                                key={shop._id}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedShop(shop);
+                                  // Unified thread ID for shop-customer chat
+                                  setActiveConversationId(`${user?.uid}_${shop._id}`);
+                                }}
+                                className={`w-full flex items-center gap-3 p-4 rounded-3xl transition-all border text-left ${
+                                  isActive
+                                    ? 'bg-emerald-50 border-emerald-200 shadow-md'
+                                    : 'bg-white border-slate-100 hover:border-slate-200'
+                                }`}
+                              >
+                                <div className="w-10 h-10 rounded-2xl bg-slate-900 text-emerald-400 flex items-center justify-center font-black text-sm flex-shrink-0">
+                                  {(title || 'S').charAt(0)}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-[11px] font-black text-slate-800 uppercase truncate">{title}</p>
+                                  <p className="text-[9px] text-slate-400 font-bold uppercase truncate mt-0.5">
+                                    {shop.location || 'Local Caterer'}
+                                  </p>
+                                </div>
+                              </button>
+                            );
+                          });
+                        })()}
+                      </div>
+                    </div>
+                    <div className="col-span-8 flex flex-col h-full min-h-0">
+                      {(selectedShop || matchedShop) ? (
+                        <MarketplaceChat
+                          eventId={activeConversationId || `${user?.uid}_${(selectedShop || matchedShop)._id}`}
+                          shop={selectedShop || matchedShop}
+                          currentUser={user}
+                          eventData={eventData}
+                          menuItems={localMenu}
+                          chatbotHistory={messages}
+                          allPlans={history}
+                          onClose={() => {
+                            if (agreementStatus === 'finalized') {
+                              setDashboardView('post-finalization');
+                            } else if (steps.length > 0) {
+                              setDashboardView('summary');
+                            } else {
+                              setDashboardView('conversation');
+                              setFullScreenResult(false);
+                            }
+                          }}
+                        />
+                      ) : (
+                        <div className="flex-grow bg-white/60 border border-slate-200 rounded-[2.5rem] flex flex-col items-center justify-center text-center p-8">
+                          <MessageSquare className="w-10 h-10 text-slate-300 mb-4" />
+                          <h4 className="text-sm font-black text-slate-800 uppercase tracking-wider">Select a conversation</h4>
+                          <p className="text-[10px] text-slate-400 uppercase tracking-widest mt-2 max-w-xs font-bold">
+                            Pick a plan from the list to view your messages with the shop.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 )}
                 {dashboardView === 'checkout' && (
                   <CheckoutPortal
@@ -3691,6 +4007,7 @@ return (
                     onFinalize={handleFinalizeAgreement}
                     onChatWithShop={(shop: any) => {
                       setSelectedShop(shop);
+                      setFullScreenResult(true);
                       setDashboardView('marketplace-chat');
                     }}
                   />
@@ -3702,6 +4019,7 @@ return (
                       orderId={activeConversationId || ''}
                       onChatWithShop={(shop: any) => {
                         setSelectedShop(shop);
+                        setFullScreenResult(true);
                         setDashboardView('marketplace-chat');
                       }}
                     />
@@ -3709,7 +4027,10 @@ return (
                 )}
                 {dashboardView === 'delivery' && (
                   <DriverView
-                    event={selectedStaffOrder || eventData}
+                    event={workspaceRole === 'staff'
+                      ? { ...(selectedStaffOrder || eventData), status: 'delivery_approved' }
+                      : (selectedStaffOrder || eventData)
+                    }
                     logistics={selectedStaffOrder?.steps?.find((s: any) => s.agent.includes('Logistics'))?.data || logisticsStep}
                   />
                 )}
@@ -4726,10 +5047,14 @@ function AgentReport({ step, isExpanded, onToggle, handleChatSubmit, variant = '
                       </div>
                       <div className="absolute bottom-3 left-4 right-4">
                         <div className="flex items-center gap-2 mb-1">
-                          <span className="text-[8px] font-black uppercase tracking-widest bg-emerald-500 text-white px-2 py-0.5 rounded-md shadow-sm">AI Recommended</span>
-                          <p className="text-[9px] font-black uppercase tracking-widest text-emerald-300">
-                            {item.category || item.tags?.[0] || 'Selection'}
-                          </p>
+                          <span className={`text-[8px] font-black uppercase tracking-widest px-2 py-0.5 rounded-md shadow-sm text-white
+                            ${item.category === 'Main Dish' ? 'bg-rose-500' : 
+                              item.category === 'Appetizer' ? 'bg-amber-500' : 
+                              item.category === 'Dessert' ? 'bg-fuchsia-500' : 
+                              item.category === 'Drink' ? 'bg-cyan-500' : 'bg-emerald-500'}`}
+                          >
+                            {item.category || 'Selection'}
+                          </span>
                         </div>
                         <span className="text-base font-black text-white tracking-tight line-clamp-1">{item.dish}</span>
                       </div>
@@ -4985,27 +5310,76 @@ function AgentReport({ step, isExpanded, onToggle, handleChatSubmit, variant = '
 
 function PricingInsight({ data }: { data: any }) {
   if (!data) return null;
+  
+  const { ingredients = [], staff_breakdown = {}, delivery = {} } = data;
+
   return (
     <div className="space-y-6">
-      <div className="space-y-3 font-mono">
-        <div className="flex justify-between text-[10px]">
-          <span className="text-emerald-500/60 uppercase tracking-widest">Yield_Analysis</span>
-          <span className="font-bold text-emerald-400 font-mono italic">{data.profit_margin}</span>
-        </div>
-        <div className="flex justify-between text-[10px]">
-          <span className="text-emerald-500/60 uppercase tracking-widest">Per_Unit</span>
-          <span className="font-bold text-emerald-100 font-mono">{data.unit_cost}</span>
-        </div>
-        <div className="pt-2 border-t border-emerald-500/20 flex justify-between font-bold text-emerald-400 text-[10px]">
-          <span className="uppercase tracking-[0.2em]">Strategy</span>
-          <span className="text-[9px] text-fuchsia-400 italic font-mono truncate max-w-[120px]">{data.pricing_strategy}</span>
+      {/* Estimated Ingredient Costs */}
+      <div className="bg-white border border-slate-200 rounded-[2rem] p-5 shadow-sm">
+        <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-600 mb-4 flex items-center gap-2">
+          <DollarSign className="w-4 h-4" />
+          Ingredient Estimates
+        </h3>
+        <div className="space-y-3">
+          {ingredients.map((ing: any, idx: number) => (
+            <div key={idx} className="flex justify-between items-center text-xs border-b border-slate-100 last:border-0 pb-2 last:pb-0">
+              <div>
+                <p className="font-bold text-slate-800">{ing.item}</p>
+                <p className="text-[9px] text-slate-400 font-mono mt-0.5">QTY: {ing.quantity}</p>
+              </div>
+              <span className="font-black text-emerald-700 font-mono">{ing.estimated_price}</span>
+            </div>
+          ))}
+          {ingredients.length === 0 && (
+            <p className="text-[10px] text-slate-400 font-medium italic text-center py-2">No ingredients data available.</p>
+          )}
         </div>
       </div>
 
-      <div className="bg-fuchsia-500/10 p-5 border border-fuchsia-500/30 text-center space-y-2 relative shadow-[0_0_20px_rgba(217,70,239,0.2)]" style={{ clipPath: 'polygon(10px 0, 100% 0, 100% 100%, 0 100%, 0 10px)' }}>
-        <div className="text-[9px] uppercase text-fuchsia-400 font-black tracking-[0.4em]">Final Quote</div>
-        <div className="text-3xl font-black font-mono tracking-tighter text-white neon-text-fuchsia">{data.optimized_quote}</div>
-        <div className="text-[7px] text-fuchsia-500/60 uppercase tracking-[0.5em] font-mono leading-none">Market Optimized Integration</div>
+      {/* Staffing Needs & Service Fees */}
+      <div className="bg-white border border-slate-200 rounded-[2rem] p-5 shadow-sm space-y-5">
+        <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-600 flex items-center gap-2">
+          <Users className="w-4 h-4" />
+          Logistics & Service Fees
+        </h3>
+        
+        <div className="grid grid-cols-2 gap-3">
+          <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+            <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest block mb-1">Total Staff Needed</span>
+            <span className="font-black text-slate-800 text-lg">{staff_breakdown.total_staff_needed || 0}</span>
+          </div>
+          <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+            <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest block mb-1">Total Labor Cost</span>
+            <span className="font-black text-blue-700 text-sm font-mono">{staff_breakdown.labor_costs?.total_labor || 'TBD'}</span>
+          </div>
+        </div>
+
+        <div className="space-y-2 text-xs">
+          <div className="flex justify-between items-center">
+            <span className="font-bold text-slate-600">Chefs ({staff_breakdown.chefs || 0})</span>
+            <span className="font-mono text-slate-500">{staff_breakdown.labor_costs?.chef_per_hour || 'TBD'}</span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className="font-bold text-slate-600">Servers ({staff_breakdown.servers || 0})</span>
+            <span className="font-mono text-slate-500">{staff_breakdown.labor_costs?.server_per_event || 'TBD'}</span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className="font-bold text-slate-600">Helpers ({staff_breakdown.helpers || 0})</span>
+            <span className="font-mono text-slate-500">{staff_breakdown.labor_costs?.helper_per_hour || 'TBD'}</span>
+          </div>
+        </div>
+
+        <div className="pt-4 border-t border-slate-100 flex justify-between items-center text-xs">
+          <div>
+            <span className="font-bold text-slate-800 flex items-center gap-1.5">
+              <Truck className="w-3.5 h-3.5 text-purple-500" />
+              Delivery & Driver Fee
+            </span>
+            <p className="text-[9px] text-slate-400 mt-0.5">Base: {delivery.base_fee} | Dist: {delivery.distance_km}</p>
+          </div>
+          <span className="font-black text-purple-700 font-mono">{delivery.estimated_delivery_fee || 'TBD'}</span>
+        </div>
       </div>
     </div>
   );
@@ -5072,13 +5446,17 @@ function MenuEditor({ menu, onChange }: { menu: any[], onChange: (menu: any[]) =
             <p className="text-xs text-slate-500 mb-4 line-clamp-2">{item.description}</p>
             <div className="flex items-center gap-4">
               <div className="flex-1">
-                <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 block mb-1">Portion/Guest</label>
-                <input
-                  type="text"
-                  value={item.portion_per_guest}
-                  onChange={(e) => updatePortion(i, e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs outline-none focus:border-emerald-500"
-                />
+                <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 block mb-1">Adjust Quantity / Portion</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={item.portion_per_guest}
+                    onChange={(e) => updatePortion(i, e.target.value)}
+                    placeholder="e.g. 2 pieces, 150g, 1 glass"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-700 outline-none focus:border-emerald-500 transition-all"
+                  />
+                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest whitespace-nowrap">Per Guest</span>
+                </div>
               </div>
               <div className="flex-1">
                 <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 block mb-1">Category</label>

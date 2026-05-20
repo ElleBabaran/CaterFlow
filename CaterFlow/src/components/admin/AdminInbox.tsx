@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Inbox, Users, ChefHat, MapPin, Calendar, DollarSign, Send, X, MessageCircle } from 'lucide-react';
+import { Inbox, Users, ChefHat, MapPin, Calendar, DollarSign, Send, X, MessageCircle, Receipt, Truck } from 'lucide-react';
 
 interface ReceivedPlan {
   _id: string;
@@ -33,12 +33,14 @@ export function AdminInbox({
   adminName,
   onSendMessage,
   onUpdateStatus,
+  getAuthToken,
 }: {
   plans: ReceivedPlan[];
   adminUid: string;
   adminName: string;
   onSendMessage: (planId: string, text: string) => Promise<void>;
   onUpdateStatus: (planId: string, status: ReceivedPlan['status'], extraFields?: any) => void;
+  getAuthToken?: () => Promise<string>;
 }) {
   const [selectedPlan, setSelectedPlan] = useState<ReceivedPlan | null>(null);
   const [messages, setMessages] = useState<Record<string, ChatMessage[]>>({});
@@ -51,6 +53,39 @@ export function AdminInbox({
     setDeliveryLocation(plan.location || '');
     if (plan.status === 'new') onUpdateStatus(plan._id, 'viewed');
   };
+
+  useEffect(() => {
+    if (!selectedPlan?.eventId || !getAuthToken) return;
+    let cancelled = false;
+
+    const loadChat = async () => {
+      try {
+        const token = await getAuthToken();
+        const res = await fetch(`/api/chat/${selectedPlan.eventId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const mapped: ChatMessage[] = (data.messages || []).map((m: any) => ({
+          senderId: m.senderId,
+          senderName: m.senderId === adminUid ? adminName : selectedPlan.customerName,
+          text: m.text || '',
+          timestamp: m.timestamp ? new Date(m.timestamp).toISOString() : new Date().toISOString(),
+          isAdmin: m.senderId === adminUid,
+        }));
+        setMessages((prev) => ({ ...prev, [selectedPlan._id]: mapped }));
+      } catch (err) {
+        console.error('Failed to load chat:', err);
+      }
+    };
+
+    loadChat();
+    const interval = setInterval(loadChat, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [selectedPlan?._id, selectedPlan?.eventId, adminUid, adminName, getAuthToken]);
 
   const handleSend = async () => {
     if (!newMsg.trim() || !selectedPlan) return;
@@ -152,27 +187,50 @@ export function AdminInbox({
                 </div>
 
                 {selectedPlan.status === 'accepted' && (
-                  <div className="bg-purple-900/10 border border-purple-500/20 rounded-2xl p-4 space-y-4">
-                    <div>
-                      <h3 className="text-xs font-black uppercase tracking-widest text-purple-400">Logistics & Delivery Approval</h3>
-                      <p className="text-[10px] text-slate-400 mt-1">Verify order completion and provide the final delivery location to dispatch the driver.</p>
+                  <div className="bg-purple-900/10 border border-purple-500/20 rounded-2xl p-6 space-y-5 relative overflow-hidden">
+                    {/* Decorative receipt edge */}
+                    <div className="absolute top-0 left-0 right-0 h-2 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMCIgaGVpZ2h0PSI4Ij48cGF0aCBkPSJNMCA4IEwxMCAwIEwyMCA4IFoiIGZpbGw9IiM2YjIxYTEiIGZpbGwtb3BhY2l0eT0iMC4xIi8+PC9zdmc+')] opacity-50" />
+                    
+                    <div className="flex items-center justify-between border-b border-purple-500/20 pb-4">
+                      <div>
+                        <h3 className="text-sm font-black uppercase tracking-widest text-purple-400">Dispatch Receipt</h3>
+                        <p className="text-[10px] text-slate-400 mt-1">Verify exact date, location, and orders before dispatching.</p>
+                      </div>
+                      <Receipt className="w-8 h-8 text-purple-500 opacity-80" />
                     </div>
+
+                    <div className="bg-white/5 rounded-xl p-4 border border-white/5 space-y-3">
+                      <div className="flex justify-between items-center text-xs">
+                         <span className="font-bold text-slate-500 uppercase tracking-widest">Target Date</span>
+                         <span className="font-black text-white">{selectedPlan.date}</span>
+                      </div>
+                      <div className="flex justify-between items-center text-xs">
+                         <span className="font-bold text-slate-500 uppercase tracking-widest">Order Total</span>
+                         <span className="font-black text-white">{selectedPlan.budget}</span>
+                      </div>
+                      <div className="flex justify-between items-center text-xs border-t border-white/10 pt-3">
+                         <span className="font-bold text-slate-500 uppercase tracking-widest">Guest Count</span>
+                         <span className="font-black text-white">{selectedPlan.guests} PAX</span>
+                      </div>
+                    </div>
+
                     <div className="flex gap-3 items-end">
                       <div className="flex-1 space-y-1">
-                        <label className="text-[9px] font-black uppercase tracking-widest text-slate-500">Delivery Address/Coordinates</label>
+                        <label className="text-[9px] font-black uppercase tracking-widest text-slate-500">Confirm Delivery Address / Exact Location</label>
                         <input 
                           type="text" 
                           value={deliveryLocation} 
                           onChange={e => setDeliveryLocation(e.target.value)} 
                           className="w-full bg-[var(--bg-color)] border border-[var(--border-color)] rounded-xl px-4 py-2 text-xs font-bold text-[var(--text-color)] outline-none focus:border-purple-500 transition-colors"
-                          placeholder="e.g. 14.5995, 120.9842 or 123 Main St"
+                          placeholder="Enter precise venue address or coordinates"
                         />
                       </div>
                       <button 
                         onClick={() => onUpdateStatus(selectedPlan._id, 'delivery_approved', { deliveryLocation })}
-                        className="bg-purple-600 hover:bg-purple-500 text-white rounded-xl px-5 py-2.5 text-xs font-black uppercase tracking-widest transition-colors shadow-lg shadow-purple-900/20"
+                        className="bg-purple-600 hover:bg-purple-500 text-white rounded-xl px-5 py-2.5 text-xs font-black uppercase tracking-widest transition-colors shadow-lg shadow-purple-900/20 flex items-center gap-2"
                       >
-                        Approve Delivery
+                        <Truck className="w-4 h-4" />
+                        Pass to Delivery
                       </button>
                     </div>
                   </div>

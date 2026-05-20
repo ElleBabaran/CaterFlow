@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { MapPin, Save, Store, DollarSign, Utensils, Globe, Camera, ShieldCheck, Key, Copy, RefreshCw, CheckCircle2 } from 'lucide-react';
-import { MapContainer, Marker, Popup, TileLayer } from 'react-leaflet';
+import { MapContainer, Marker, Popup, TileLayer, useMapEvents } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { inferVenueCoordinates } from '../../services/knowledgeBase';
@@ -25,7 +25,7 @@ const shopIcon = new L.Icon({
 });
 
 function InteractiveMarker({ position, setPosition, name, location }: any) {
-  const { useMapEvents } = require('react-leaflet');
+
   const map = useMapEvents({
     click(e: any) {
       setPosition(e.latlng);
@@ -64,7 +64,8 @@ export function AdminShopSetup({ profile, onSave }: { profile: any; onSave: (dat
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [shopPin, setShopPin] = useState<string>(profile?.pin || '');
+  // Start empty — will be set from profile once it loads
+  const [shopPin, setShopPin] = useState<string>('');
   const [pinCopied, setPinCopied] = useState(false);
 
   const generatePin = () => {
@@ -79,16 +80,22 @@ export function AdminShopSetup({ profile, onSave }: { profile: any; onSave: (dat
       setPinCopied(true);
       setTimeout(() => setPinCopied(false), 2000);
     } catch {
-      // fallback
+      // fallback: show pin in alert
+      alert(`Your PIN: ${shopPin}`);
     }
   };
 
-  // Auto-generate PIN if none exists
+  // Sync PIN from server profile (profile may arrive asynchronously after mount)
   useEffect(() => {
-    if (!shopPin && !profile?.pin) {
+    if (profile?.pin) {
+      // Profile loaded with an existing PIN — always prefer the DB value
+      setShopPin(profile.pin);
+    } else if (profile !== null && profile !== undefined && !profile?.pin) {
+      // Profile loaded but genuinely has no PIN yet — generate one
       generatePin();
     }
-  }, []);
+    // If profile is still null/undefined, wait for next render
+  }, [profile?.pin]);
 
   // Geocode when location changes (debounced)
   useEffect(() => {
@@ -109,6 +116,8 @@ export function AdminShopSetup({ profile, onSave }: { profile: any; onSave: (dat
       await onSave({ name, location, socials, shopImage, specialties, baseQuote: Number(baseQuote), coordinates: coords, pin: shopPin });
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
+    } catch (err: any) {
+      alert(`Failed to save: ${err.message || err}`);
     } finally {
       setSaving(false);
     }
@@ -126,49 +135,7 @@ export function AdminShopSetup({ profile, onSave }: { profile: any; onSave: (dat
         </div>
       </div>
 
-      {/* ── Staff PIN Section ── */}
-      <div className="bg-gradient-to-br from-emerald-50 to-teal-50 border border-emerald-200 rounded-[2rem] p-6 space-y-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-emerald-600 flex items-center justify-center shadow-md shadow-emerald-600/20">
-            <Key className="w-5 h-5 text-white" />
-          </div>
-          <div>
-            <p className="text-sm font-black text-emerald-900 uppercase tracking-widest">Staff Shop PIN</p>
-            <p className="text-[10px] text-emerald-700/70 font-bold">Share this PIN with your staff so they can link their accounts to your shop</p>
-          </div>
-        </div>
 
-        <div className="flex items-center gap-3">
-          <div className="flex-1 bg-white border-2 border-emerald-300 rounded-2xl px-6 py-4 text-center shadow-inner">
-            <p className="text-3xl font-black tracking-[0.4em] text-emerald-900 font-mono">
-              {shopPin || '------'}
-            </p>
-          </div>
-          <div className="flex flex-col gap-2">
-            <button
-              onClick={copyPin}
-              className={`w-12 h-12 rounded-xl flex items-center justify-center transition-all shadow-sm ${
-                pinCopied ? 'bg-emerald-600 text-white shadow-emerald-600/20' : 'bg-white border border-emerald-200 text-emerald-600 hover:bg-emerald-50'
-              }`}
-              title="Copy PIN"
-            >
-              {pinCopied ? <CheckCircle2 className="w-5 h-5" /> : <Copy className="w-5 h-5" />}
-            </button>
-            <button
-              onClick={generatePin}
-              className="w-12 h-12 rounded-xl bg-white border border-emerald-200 text-emerald-600 hover:bg-emerald-50 flex items-center justify-center transition-all shadow-sm"
-              title="Generate new PIN"
-            >
-              <RefreshCw className="w-5 h-5" />
-            </button>
-          </div>
-        </div>
-
-        <p className="text-[9px] text-emerald-700/60 font-bold uppercase tracking-widest flex items-center gap-1">
-          <ShieldCheck className="w-3 h-3" />
-          This PIN is unique to your shop. Regenerate if compromised.
-        </p>
-      </div>
 
       <div className="admin-card p-8 space-y-6">
         {/* Shop Name */}
@@ -276,6 +243,40 @@ export function AdminShopSetup({ profile, onSave }: { profile: any; onSave: (dat
             className="w-full admin-input"
             placeholder="1200"
           />
+        </div>
+
+        {/* Staff PIN Section */}
+        <div className="space-y-2 border-t border-[var(--border-color)] pt-6">
+          <label className="admin-label">
+            <Key className="w-3 h-3" /> Staff Access PIN
+          </label>
+          <p className="text-[10px] text-slate-500 leading-relaxed">
+            Share this PIN with your staff members so they can link their account to your shop.
+          </p>
+          <div className="flex items-center gap-2">
+            <div className="flex-1 admin-input font-mono text-lg tracking-[0.3em] text-center select-all cursor-text">
+              {shopPin || '——————'}
+            </div>
+            <button
+              type="button"
+              onClick={copyPin}
+              title="Copy PIN"
+              className="admin-button-secondary p-3 flex items-center gap-1 shrink-0"
+            >
+              {pinCopied ? <CheckCircle2 className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
+            </button>
+            <button
+              type="button"
+              onClick={generatePin}
+              title="Generate new PIN"
+              className="admin-button-secondary p-3 flex items-center gap-1 shrink-0"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </button>
+          </div>
+          {pinCopied && (
+            <p className="text-[10px] text-emerald-500 font-bold animate-pulse">✓ PIN copied to clipboard!</p>
+          )}
         </div>
 
         <button

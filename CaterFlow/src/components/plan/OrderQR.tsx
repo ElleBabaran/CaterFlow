@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { motion } from 'motion/react';
 import {
@@ -15,6 +15,8 @@ import {
   MapPin,
 } from 'lucide-react';
 import { calculateOrderFinance, estimateCookingMinutes, formatCurrencyAmount } from '../../services/budget';
+import { buildOrderPublicUrl } from '../../utils/publicUrl';
+import { QrPublicUrlField } from './QrPublicUrlField';
 
 interface OrderQRProps {
   orderId: string;
@@ -22,7 +24,11 @@ interface OrderQRProps {
 }
 
 export const OrderQR: React.FC<OrderQRProps> = ({ orderId, orderData }) => {
-  const publicUrl = `${window.location.origin}?orderId=${orderId}`;
+  const [publicUrl, setPublicUrl] = useState(() => buildOrderPublicUrl(orderId));
+
+  useEffect(() => {
+    setPublicUrl(buildOrderPublicUrl(orderId));
+  }, [orderId]);
 
   // Derive finance and cooking summaries from orderData if available
   const menu: any[] = orderData?.menu || [];
@@ -144,6 +150,8 @@ export const OrderQR: React.FC<OrderQRProps> = ({ orderId, orderData }) => {
           )}
         </div>
       )}
+
+      <QrPublicUrlField orderId={orderId} onUrlChange={setPublicUrl} />
 
       {/* QR Code */}
       <div className="relative p-6 bg-slate-50 rounded-[2.5rem] border-2 border-dashed border-slate-200 group text-center">

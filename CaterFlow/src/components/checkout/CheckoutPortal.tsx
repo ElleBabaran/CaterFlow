@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ChefHat, ClipboardList, Send, DollarSign, ArrowRight, ShieldCheck, Tag, MapPin, Calendar, Utensils, Users, Activity, AlertCircle, Leaf } from 'lucide-react';
+import { ChefHat, ClipboardList, Send, DollarSign, ArrowRight, ShieldCheck, Tag, MapPin, Calendar, Utensils, Users, Activity, AlertCircle, Leaf, CheckCircle2 } from 'lucide-react';
 import { parseBudgetDetails } from '../../services/budget';
-import { PostFinalizationView } from '../plan/PostFinalizationView';
 
 export function CheckoutPortal({ 
   eventId, 
@@ -156,7 +155,11 @@ export function CheckoutPortal({
     };
   });
 
-  const ingredientsGrandTotal = ingredientsWithCost.reduce((sum, item) => sum + item.totalCost, 0);
+  let ingredientsGrandTotal = ingredientsWithCost.reduce((sum, item) => sum + item.totalCost, 0);
+  if (ingredientsGrandTotal === 0) {
+    // Fallback for existing conversations that might not have a menu or blueprint yet
+    ingredientsGrandTotal = budgetValue * 0.40;
+  }
 
   const formatAmt = (n: number) => {
     return `₱${n.toLocaleString('en-PH', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
@@ -171,12 +174,31 @@ export function CheckoutPortal({
   if (status === 'finalized') {
     return (
       <div className="h-[calc(100vh-140px)] overflow-y-auto custom-scrollbar p-6">
-        <PostFinalizationView 
-          eventData={event} 
-          orderId={eventId} 
-          exactBudgetAmt={estimatedFoodTotal} 
-          onChatWithShop={onChatWithShop || (() => {})} 
-        />
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex flex-col items-center justify-center min-h-[50vh] gap-6 py-12 text-center"
+        >
+          <div className="w-20 h-20 rounded-[2rem] bg-emerald-100 flex items-center justify-center">
+            <CheckCircle2 className="w-10 h-10 text-emerald-600" />
+          </div>
+          <motion.div className="space-y-2 max-w-md">
+            <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight">Order Finalized</h3>
+            <p className="text-sm text-slate-500 font-medium leading-relaxed">
+              Shops, QR code, and shop chat are in the <span className="font-black text-emerald-700">Finalization</span> step — open that tab to continue.
+            </p>
+          </motion.div>
+          {onChatWithShop && (
+            <button
+              type="button"
+              onClick={() => onChatWithShop(shop)}
+              className="flex items-center gap-2 px-6 py-3 bg-slate-900 text-emerald-400 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-800 transition-all"
+            >
+              Open Shop Chat
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          )}
+        </motion.div>
       </div>
     );
   }
@@ -320,145 +342,127 @@ export function CheckoutPortal({
         </motion.div>
       </div>
 
-      {/* ── Two-column panel (acceptance + financial ledger) ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 flex-1 min-h-0">
-      {/* LEFT PANEL: Quick acceptance card & Chatbox */}
-      <div className="flex flex-col gap-6 overflow-hidden">
-        <div className="bg-white border border-slate-200 rounded-[2.5rem] p-8 shadow-sm flex-shrink-0">
-          <div className="flex items-center justify-between mb-6">
-             <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-emerald-100 rounded-2xl grid place-items-center text-emerald-700">
-                  <ChefHat className="w-6 h-6" />
-                </div>
-                <div>
-                   <h2 className="text-lg font-black text-slate-900">Casa Mesa Catering</h2>
-                   <p className="text-xs text-slate-500 font-bold uppercase tracking-wider">Official Partner Recommendation</p>
-                </div>
-             </div>
-             <span className={`px-4 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest ${status === 'finalized' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                {status.toUpperCase()}
-             </span>
+      {/* ── Financial Ledger (Full Width) ── */}
+      <div className="bg-white border border-slate-200 rounded-[2.5rem] p-8 shadow-sm flex-shrink-0">
+        <div className="flex items-center gap-4 mb-8 pb-6 border-b border-slate-100">
+          <div className="w-12 h-12 bg-emerald-100 rounded-2xl grid place-items-center text-emerald-700">
+            <DollarSign className="w-6 h-6" />
           </div>
-
-          <div className="space-y-4">
-            <div className="flex justify-between items-center py-4 border-y border-slate-100">
-              <span className="text-xs font-black text-slate-400 uppercase tracking-widest">Grand Food Estimate</span>
-              <span className="text-2xl font-black text-slate-950">{estimatedFoodTotal > 0 ? formatAmt(estimatedFoodTotal) : 'TBD'}</span>
-            </div>
-            
-            {status === 'suggested' && (
-              <div className="flex gap-3">
-                <button onClick={onAccept} className="flex-1 py-4 bg-emerald-700 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-emerald-800 transition shadow-lg active:scale-95 duration-200">
-                  Accept Proposal
-                </button>
-                <button className="flex-1 py-4 bg-slate-100 text-slate-600 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-slate-200 transition">
-                  Reject
-                </button>
-              </div>
-            )}
-            {status === 'accepted' && (
-              <button 
-                onClick={() => onFinalize(scaledMenu)} 
-                className="w-full py-4 bg-emerald-700 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-emerald-800 transition shadow-lg active:scale-95 duration-200"
-              >
-                Proceed to Finalization
-              </button>
-            )}
+          <div>
+            <h2 className="text-xl font-black text-slate-900 tracking-tight">Financial Ledger</h2>
+            <p className="text-[11px] text-slate-500 font-bold uppercase tracking-widest mt-1">Estimated Cost Breakdown</p>
           </div>
         </div>
 
-        <div className="bg-slate-50 border border-slate-200 rounded-[2.5rem] p-6 flex flex-col flex-1 overflow-hidden">
-           <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
-              {localMsgs.map((m, i) => (
-                <div key={i} className={`flex ${m.role === 'customer' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[80%] p-4 rounded-3xl text-sm font-medium ${m.role === 'customer' ? 'bg-emerald-700 text-white rounded-tr-none' : 'bg-white border border-slate-200 text-slate-800 rounded-tl-none'}`}>
-                    <p>{m.text}</p>
-                    <span className={`text-[8px] mt-1 block uppercase font-bold ${m.role === 'customer' ? 'text-emerald-200' : 'text-slate-400'}`}>{m.time}</span>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {/* Ingredients Estimate */}
+          <div className="bg-slate-50 border border-slate-100 rounded-[2rem] p-8 relative overflow-hidden group">
+            <div className="absolute -right-4 -top-4 w-24 h-24 bg-emerald-500/10 rounded-full blur-2xl group-hover:bg-emerald-500/20 transition-all" />
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2.5 bg-white rounded-xl shadow-sm">
+                <ClipboardList className="w-5 h-5 text-emerald-600" />
+              </div>
+              <h3 className="text-[11px] font-black uppercase tracking-widest text-slate-600">Ingredients Estimate</h3>
+            </div>
+            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-2">Estimated Raw Materials Price</p>
+            <p className="text-3xl font-black text-emerald-700">{formatAmt(ingredientsGrandTotal)}</p>
+          </div>
+
+          {/* Staff Count */}
+          <div className="bg-slate-50 border border-slate-100 rounded-[2rem] p-8 relative overflow-hidden group">
+            <div className="absolute -right-4 -top-4 w-24 h-24 bg-blue-500/10 rounded-full blur-2xl group-hover:bg-blue-500/20 transition-all" />
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2.5 bg-white rounded-xl shadow-sm">
+                <Users className="w-5 h-5 text-blue-600" />
+              </div>
+              <h3 className="text-[11px] font-black uppercase tracking-widest text-slate-600">Staff Count</h3>
+            </div>
+            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-2">Required Operational Team</p>
+            <p className="text-3xl font-black text-blue-700">{waitstaffCount + 3} Staffs</p>
+          </div>
+
+          {/* Total Staff Pay */}
+          <div className="bg-slate-50 border border-slate-100 rounded-[2rem] p-8 relative overflow-hidden group">
+            <div className="absolute -right-4 -top-4 w-24 h-24 bg-indigo-500/10 rounded-full blur-2xl group-hover:bg-indigo-500/20 transition-all" />
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2.5 bg-white rounded-xl shadow-sm">
+                <Activity className="w-5 h-5 text-indigo-600" />
+              </div>
+              <h3 className="text-[11px] font-black uppercase tracking-widest text-slate-600">Total Staff Pay</h3>
+            </div>
+            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-2">Estimated Labor Cost</p>
+            <p className="text-3xl font-black text-indigo-700">{formatAmt(staffTotal)}</p>
+          </div>
+        </div>
+
+        {/* ── Detailed Breakdowns ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-10 border-t border-slate-100 pt-10">
+          {/* Detailed Ingredients Breakdown */}
+          <div className="space-y-5">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-emerald-50 rounded-lg text-emerald-600">
+                <Leaf className="w-4 h-4" />
+              </div>
+              <h3 className="text-xs font-black uppercase tracking-widest text-slate-800">Ingredients Breakdown</h3>
+            </div>
+            <div className="space-y-2.5 max-h-[320px] overflow-y-auto custom-scrollbar pr-2">
+              {ingredientsWithCost.map((ing: any, i: number) => (
+                <div key={i} className="flex justify-between items-center bg-white p-4 rounded-2xl border border-slate-200 hover:border-emerald-200 transition-colors shadow-sm hover:shadow-md">
+                  <div className="flex flex-col">
+                    <span className="text-[13px] font-black text-slate-800">{ing.name}</span>
+                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">{ing.qty} @ {formatAmt(ing.unitPrice)}/unit</span>
                   </div>
+                  <span className="text-sm font-black text-emerald-700 font-mono">{formatAmt(ing.totalCost)}</span>
                 </div>
               ))}
-           </div>
-           <div className="mt-4 flex gap-2">
-             <input 
-              value={msg} onChange={e => setMsg(e.target.value)}
-              onKeyPress={e => e.key === 'Enter' && send()}
-              placeholder="Message shop owner..."
-              className="flex-1 bg-white border border-slate-200 rounded-2xl px-5 py-3 text-sm outline-none focus:border-emerald-500 shadow-sm font-bold"
-             />
-             <button onClick={send} className="w-12 h-12 bg-slate-900 text-emerald-400 rounded-2xl grid place-items-center hover:bg-emerald-800 transition active:scale-95">
-               <Send className="w-5 h-5" />
-             </button>
-           </div>
+              {ingredientsWithCost.length === 0 && (
+                <div className="p-6 text-center border border-dashed border-slate-200 rounded-2xl bg-slate-50">
+                  <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">No detailed ingredient breakdown available</p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Detailed Staff Breakdown */}
+          <div className="space-y-5">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-blue-50 rounded-lg text-blue-600">
+                <Users className="w-4 h-4" />
+              </div>
+              <h3 className="text-xs font-black uppercase tracking-widest text-slate-800">Staff Payroll Breakdown</h3>
+            </div>
+            <div className="space-y-2.5 max-h-[320px] overflow-y-auto custom-scrollbar pr-2">
+              <div className="flex justify-between items-center bg-white p-4 rounded-2xl border border-slate-200 hover:border-blue-200 transition-colors shadow-sm hover:shadow-md">
+                <div className="flex flex-col">
+                  <span className="text-[13px] font-black text-slate-800">Head Chef</span>
+                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">1 Personnel • Premium Rate</span>
+                </div>
+                <span className="text-sm font-black text-blue-700 font-mono">{formatAmt(4000)}</span>
+              </div>
+              <div className="flex justify-between items-center bg-white p-4 rounded-2xl border border-slate-200 hover:border-blue-200 transition-colors shadow-sm hover:shadow-md">
+                <div className="flex flex-col">
+                  <span className="text-[13px] font-black text-slate-800">Sous Chef / Kitchen Prep</span>
+                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">1 Personnel • Standard Rate</span>
+                </div>
+                <span className="text-sm font-black text-blue-700 font-mono">{formatAmt(3500)}</span>
+              </div>
+              <div className="flex justify-between items-center bg-white p-4 rounded-2xl border border-slate-200 hover:border-blue-200 transition-colors shadow-sm hover:shadow-md">
+                <div className="flex flex-col">
+                  <span className="text-[13px] font-black text-slate-800">Waitstaff / Service Crew</span>
+                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">{waitstaffCount} Personnel @ {formatAmt(1500)} Each</span>
+                </div>
+                <span className="text-sm font-black text-blue-700 font-mono">{formatAmt(waitstaffTotal)}</span>
+              </div>
+              <div className="flex justify-between items-center bg-white p-4 rounded-2xl border border-slate-200 hover:border-blue-200 transition-colors shadow-sm hover:shadow-md">
+                <div className="flex flex-col">
+                  <span className="text-[13px] font-black text-slate-800">Logistics & Delivery</span>
+                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">1 Personnel • Transport Rate</span>
+                </div>
+                <span className="text-sm font-black text-blue-700 font-mono">{formatAmt(logisticsTotal)}</span>
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
-
-      {/* RIGHT PANEL: Detailed Costing & Ingredients procurement list */}
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] p-8 shadow-sm overflow-y-auto custom-scrollbar flex flex-col justify-between">
-         <div className="space-y-8">
-            <h3 className="text-xs font-black uppercase tracking-[0.2em] text-slate-400 flex items-center gap-2">
-              <ClipboardList className="w-4 h-4 text-emerald-600" />
-              Event Financial Ledger
-            </h3>
-
-            <section className="space-y-4">
-              <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Estimated Cost Per Food Item</p>
-              <div className="space-y-3 bg-slate-50 border border-slate-100 rounded-2xl p-4">
-                 {scaledMenu.map((m: any, i: number) => {
-                   const pricePerPax = m.price;
-                   const itemTotal = pricePerPax * guests;
-                   
-                   return (
-                     <div key={i} className="flex justify-between items-center text-xs pb-3 border-b border-slate-200 last:border-b-0 last:pb-0">
-                        <div className="flex flex-col">
-                           <span className="font-bold text-slate-800">{m.dish}</span>
-                           <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">{m.portion_per_guest} serving per guest</span>
-                        </div>
-                        <div className="text-right">
-                          <span className="font-mono text-slate-800 font-black">{formatAmt(itemTotal)}</span>
-                          <span className="text-[9px] text-slate-400 font-bold block uppercase">{formatAmt(pricePerPax)} / pax</span>
-                        </div>
-                     </div>
-                   );
-                 })}
-              </div>
-            </section>
-
-            {/* Wholesale Ingredients Procurement List */}
-            <section className="space-y-4">
-              <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Ingredient wholesale ledger (Bulk Lowest prices)</p>
-              <div className="overflow-hidden border border-slate-200 rounded-2xl shadow-sm">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50 border-b border-slate-200">
-                      <th className="px-4 py-3 text-[9px] font-black uppercase tracking-widest text-slate-400">Ingredient</th>
-                      <th className="px-4 py-3 text-[9px] font-black uppercase tracking-widest text-slate-400 text-center">Required Quantity</th>
-                      <th className="px-4 py-3 text-[9px] font-black uppercase tracking-widest text-slate-400 text-right">Est. Wholesale Price</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 bg-white">
-                    {ingredientsWithCost.slice(0, 15).map((ing) => (
-                      <tr key={ing.id} className="hover:bg-slate-50/50 transition-colors">
-                        <td className="px-4 py-3 text-xs font-bold text-slate-800">
-                          {ing.name}
-                          <span className="text-[8px] text-slate-400 font-black uppercase tracking-widest block">{ing.category}</span>
-                        </td>
-                        <td className="px-4 py-3 text-xs font-mono font-bold text-slate-600 text-center">{ing.qty}</td>
-                        <td className="px-4 py-3 text-xs font-mono font-bold text-emerald-700 text-right">
-                          {formatAmt(ing.totalCost)}
-                          <span className="text-[8px] text-slate-400 font-black block uppercase">est. {formatAmt(ing.unitPrice)}/unit</span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div className="flex justify-between items-center bg-slate-900 text-emerald-400 p-4 rounded-xl font-mono text-xs">
-                <span className="uppercase font-black tracking-widest">Total Bulk Procurement:</span>
-                <span className="font-black text-sm">{formatAmt(ingredientsGrandTotal)}</span>
-              </div>
-             </section>
-         </div>
-      </div>
       </div>
     </motion.div>
   );

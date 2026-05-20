@@ -31,18 +31,26 @@ export const MarketplaceChat: React.FC<{
   eventData: any,
   menuItems: any[],
   chatbotHistory?: any[],
+  allPlans?: any[],
   onClose?: () => void
-}> = ({ eventId, shop, currentUser, eventData, menuItems, chatbotHistory = [], onClose }) => {
+}> = ({ eventId, shop, currentUser, eventData, menuItems, chatbotHistory = [], allPlans = [], onClose }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [showPlanSelector, setShowPlanSelector] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Polling for real-time messages (every 3 seconds)
   useEffect(() => {
+    if (!eventId || !currentUser) return;
+
     const fetchChat = async () => {
       try {
-        const response = await fetch(`/api/chat/${eventId}`);
+        const token = await currentUser.getIdToken();
+        const response = await fetch(`/api/chat/${eventId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) return;
         const data = await response.json();
         if (data.messages) {
           setMessages(data.messages);
@@ -55,7 +63,7 @@ export const MarketplaceChat: React.FC<{
     fetchChat();
     const interval = setInterval(fetchChat, 3000);
     return () => clearInterval(interval);
-  }, [eventId]);
+  }, [eventId, currentUser]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -67,8 +75,14 @@ export const MarketplaceChat: React.FC<{
     if ((!inputText.trim() && type === 'text') || isSending) return;
 
     setIsSending(true);
+    
+    // Use customPayload for the specific plan if provided, otherwise fallback to current context
+    const planEventData = customPayload?.eventData || eventData;
+    const planMenu = customPayload?.menuItems || menuItems;
+    const planHistory = customPayload?.chatbotHistory || chatbotHistory;
+    
     const payload = {
-      eventId,
+      eventId, // This is now the unified thread ID
       shopId: shop._id,
       text: type === 'receipt' 
         ? "I've sent an order summary for review." 
@@ -77,11 +91,11 @@ export const MarketplaceChat: React.FC<{
         : inputText,
       type,
       attachment: type === 'receipt' ? {
-        menu: menuItems,
-        event: eventData,
+        menu: planMenu,
+        event: planEventData,
         customer: currentUser.displayName || currentUser.email
       } : type === 'chat_history' ? {
-        chatHistory: chatbotHistory,
+        chatHistory: planHistory,
         customer: currentUser.displayName || currentUser.email
       } : null
     };
@@ -107,19 +121,19 @@ export const MarketplaceChat: React.FC<{
           const amount = numeric ? Number(numeric) : 0;
           return Number.isFinite(amount) ? amount : 0;
         };
-        const quoteVal = menuItems?.reduce((acc: number, cur: any) => acc + (cleanPrice(cur.price) * (cur.quantity || 1)), 0) || 0;
+        const quoteVal = planMenu?.reduce((acc: number, cur: any) => acc + (cleanPrice(cur.price) * (cur.quantity || 1)), 0) || 0;
         
         const planPayload = {
           shopId: shop._id,
           eventId: eventId,
           customerName: currentUser.displayName || currentUser.email || 'Client',
           customerEmail: currentUser.email || 'client@caterflow.com',
-          eventType: eventData.event_type || eventData.eventType || 'Catering Event',
-          guests: Number(eventData.guest_count || eventData.guests || 0),
-          budget: String(eventData.budget || 'TBD'),
-          location: eventData.event_location || eventData.location || 'TBD',
-          date: eventData.event_date || eventData.date || 'TBD',
-          menuSummary: menuItems?.map((item: any) => item.dish) || [],
+          eventType: planEventData?.event_type || planEventData?.eventType || 'Catering Event',
+          guests: Number(planEventData?.guest_count || planEventData?.guests || 0),
+          budget: String(planEventData?.budget || 'TBD'),
+          location: planEventData?.event_location || planEventData?.location || 'TBD',
+          date: planEventData?.event_date || planEventData?.date || 'TBD',
+          menuSummary: planMenu?.map((item: any) => item.dish) || [],
           quote: `₱${quoteVal.toLocaleString()}`
         };
         await fetch('/api/plans/send', {
@@ -155,21 +169,12 @@ export const MarketplaceChat: React.FC<{
           </div>
         </div>
         <div className="flex items-center gap-3">
-          {chatbotHistory && chatbotHistory.length > 0 && (
-            <button 
-              onClick={() => handleSendMessage('chat_history')}
-              className="hidden md:flex items-center gap-2 bg-amber-50 text-amber-700 px-4 py-2.5 rounded-xl border border-amber-100 text-[10px] font-black uppercase tracking-widest hover:bg-amber-100 transition-all"
-            >
-              <MessageCircle className="w-4 h-4" />
-              Send Chatbot History
-            </button>
-          )}
           <button 
-            onClick={() => handleSendMessage('receipt')}
+            onClick={() => setShowPlanSelector(true)}
             className="hidden md:flex items-center gap-2 bg-emerald-50 text-emerald-700 px-4 py-2.5 rounded-xl border border-emerald-100 text-[10px] font-black uppercase tracking-widest hover:bg-emerald-100 transition-all"
           >
             <FileText className="w-4 h-4" />
-            Send Receipt
+            Send Order Plan
           </button>
           <button className="p-3 bg-slate-50 text-slate-400 rounded-xl hover:bg-slate-100">
             <MoreVertical className="w-5 h-5" />
@@ -224,6 +229,53 @@ export const MarketplaceChat: React.FC<{
           </div>
         ))}
       </div>
+
+      {/* Plan Selector Modal */}
+      <AnimatePresence>
+        {showPlanSelector && (
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="absolute bottom-24 right-8 w-80 bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden z-10 flex flex-col max-h-[60%]"
+          >
+            <div className="p-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
+              <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-800">Select a Plan to Send</h4>
+              <button onClick={() => setShowPlanSelector(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-2 custom-scrollbar">
+              {allPlans.length === 0 ? (
+                <div className="p-6 text-center text-slate-400 text-xs">No AI plans available.</div>
+              ) : (
+                allPlans.map(plan => {
+                  const title = plan.title || plan.eventData?.event_type || plan.event_type || 'Catering Plan';
+                  const dateStr = plan.updatedAt || plan.createdAt ? new Date(plan.updatedAt || plan.createdAt).toLocaleDateString() : '';
+                  return (
+                    <button
+                      key={plan._id}
+                      onClick={() => {
+                        const customPayload = {
+                          eventData: plan.eventData || plan,
+                          menuItems: plan.eventData?.menu || plan.menu,
+                          chatbotHistory: plan.messages || []
+                        };
+                        handleSendMessage('receipt', customPayload);
+                        setShowPlanSelector(false);
+                      }}
+                      className="w-full text-left p-3 rounded-2xl hover:bg-emerald-50 transition-colors border border-transparent hover:border-emerald-100 mb-2 last:mb-0"
+                    >
+                      <p className="text-xs font-black text-slate-800 uppercase truncate">{title}</p>
+                      <p className="text-[10px] text-slate-500 mt-1">{plan.eventData?.event_date || plan.event_date || 'TBD'} • {dateStr}</p>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Input Area */}
       <div className="p-6 bg-white border-t border-slate-100">
